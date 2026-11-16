@@ -535,7 +535,7 @@
        return result;
     }
  
-+#ifdef _WIN32
++#if defined(_WIN32) && !defined(HASVK_WDDM_GRAPHICS)
 +   const struct elk_cs_prog_data *program = get_cs_prog_data(pipeline);
 +   if (program->local_size[0] > 64 || program->local_size[1] != 1 || program->local_size[2] != 1 ||
 +       program->base.total_scratch || program->base.total_shared) {
@@ -1202,7 +1202,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,633 @@
+@@ -0,0 +1,636 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -1446,6 +1446,9 @@
 +   p->pointSizeGranularity = 1.0f / 8.0f; p->lineWidthGranularity = 1.0f / 128.0f;
 +   p->strictLines = false; p->standardSampleLocations = true;
 +   p->optimalBufferCopyOffsetAlignment = p->optimalBufferCopyRowPitchAlignment = 128;
++   const uint32_t max_workgroup_size = MIN2(1024, 32 * physical->info.max_cs_workgroup_threads);
++   p->maxComputeSharedMemorySize = 64 * 1024; p->maxComputeWorkGroupInvocations = max_workgroup_size;
++   for (unsigned i = 0; i < 3; ++i) { p->maxComputeWorkGroupSize[i] = max_workgroup_size; p->maxComputeWorkGroupCount[i] = 65535; }
 +   /* Vulkan 1.0 features of HasVK for Gen8. */
 +   struct vk_features *f = &physical->vk.supported_features;
 +   f->robustBufferAccess = f->fullDrawIndexUint32 = f->imageCubeArray = f->independentBlend = true;

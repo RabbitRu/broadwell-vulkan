@@ -12,7 +12,7 @@ $taskReportPath=Join-Path $taskPackage 'diagnostics\graphics-report.json'
 $taskReport=Get-Content -LiteralPath $taskReportPath -Raw | ConvertFrom-Json
 if (-not $taskReport.passed -or -not $taskReport.forbiddenModulesAbsent -or $taskReport.cases.Count -ne 6 -or
     $taskReport.texturedDepthCases.Count -ne 12 -or $taskReport.queryCases.Count -ne 6 -or
-    $taskReport.drawCases.Count -ne 7 -or @($taskReport.drawCases | Where-Object {-not $_.guardsIntact -or $_.quads -ne 7}).Count -or
+    $taskReport.drawCases.Count -ne 11 -or $taskReport.computeCases.Count -ne 3 -or @($taskReport.drawCases | Where-Object {-not $_.guardsIntact -or $_.quads -ne 7}).Count -or
     $taskReport.transfer.imageCases.Count -ne 2 -or -not $taskReport.transfer.bufferCommands.copyRegions -or
     $taskReport.formatCoverage.formats.Count -lt 42 -or $taskReport.formatCoverage.shapes.Count -ne 4 -or
     $taskReport.missingCoreCommands.Count -gt 1 -or
@@ -27,7 +27,7 @@ $taskResult=[ordered]@{schema=1; testedUtc=[DateTime]::UtcNow.ToString('o'); har
     reportSha256=(Get-FileHash -LiteralPath $taskReportPath -Algorithm SHA256).Hash.ToLowerInvariant();
     triangleCases=6; textureUniformSamplerDepthCases=12; offscreenVulkanGraphicsValidated=$true;
     queryCases=6; occlusionPipelineStatisticsTimestampQueriesValidated=$true;
-    drawCases=7; chainedCommandBuffersAndSecondariesValidated=$true; vertexInputIndexedInstancedIndirectDrawsValidated=$true;
+    drawCases=11; computeCases=3; compute3dGroupsSharedMemoryIndirectDispatchValidated=$true; blendMsaaResolveStencilDynamicScissorValidated=$true; chainedCommandBuffersAndSecondariesValidated=$true; vertexInputIndexedInstancedIndirectDrawsValidated=$true;
     transferImageCases=2; bufferAndImageTransferCommandsValidated=$true;
     formatRoundTrips=$taskReport.formatCoverage.formats.Count; imageShapeRoundTrips=$taskReport.formatCoverage.shapes.Count;
     unsupportedOptionalFormats=@($taskReport.formatCoverage.unsupportedOptionalFormats);

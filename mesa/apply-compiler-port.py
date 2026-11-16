@@ -185,7 +185,9 @@ edit('src/intel/vulkan_hasvk/anv_descriptor_set.c', [
 pipeline_name = 'src/intel/vulkan_hasvk/anv_pipeline.c'
 pipeline_original = (originals / pipeline_name).read_text(encoding='utf-8')
 pipeline_replacements = [
-    ('   anv_genX(device->info, compute_pipeline_emit)(pipeline);', '''#ifdef _WIN32
+    # The compute-only build keeps its verified 1D/64-invocation gate; the
+    # graphics build accepts everything upstream does.
+    ('   anv_genX(device->info, compute_pipeline_emit)(pipeline);', '''#if defined(_WIN32) && !defined(HASVK_WDDM_GRAPHICS)
    const struct elk_cs_prog_data *program = get_cs_prog_data(pipeline);
    if (program->local_size[0] > 64 || program->local_size[1] != 1 || program->local_size[2] != 1 ||
        program->base.total_scratch || program->base.total_shared) {

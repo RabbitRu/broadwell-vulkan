@@ -241,6 +241,9 @@ static VkResult enumerate(struct vk_instance *base)
    p->pointSizeGranularity = 1.0f / 8.0f; p->lineWidthGranularity = 1.0f / 128.0f;
    p->strictLines = false; p->standardSampleLocations = true;
    p->optimalBufferCopyOffsetAlignment = p->optimalBufferCopyRowPitchAlignment = 128;
+   const uint32_t max_workgroup_size = MIN2(1024, 32 * physical->info.max_cs_workgroup_threads);
+   p->maxComputeSharedMemorySize = 64 * 1024; p->maxComputeWorkGroupInvocations = max_workgroup_size;
+   for (unsigned i = 0; i < 3; ++i) { p->maxComputeWorkGroupSize[i] = max_workgroup_size; p->maxComputeWorkGroupCount[i] = 65535; }
    /* Vulkan 1.0 features of HasVK for Gen8. */
    struct vk_features *f = &physical->vk.supported_features;
    f->robustBufferAccess = f->fullDrawIndexUint32 = f->imageCubeArray = f->independentBlend = true;

@@ -17,7 +17,7 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
    API(vkCreateFence); API(vkDestroyFence); API(vkQueueSubmit); API(vkWaitForFences);
    API(vkCreateBuffer); API(vkDestroyBuffer); API(vkGetBufferMemoryRequirements); API(vkBindBufferMemory);
    API(vkCmdBindVertexBuffers); API(vkCmdBindIndexBuffer); API(vkCmdDraw); API(vkCmdDrawIndexed);
-   API(vkCmdDrawIndirect); API(vkCmdDrawIndexedIndirect); API(vkCmdExecuteCommands);
+   API(vkCmdDrawIndirect); API(vkCmdDrawIndexedIndirect); API(vkCmdExecuteCommands); API(vkCmdSetScissor);
 #undef API
    using ReadImage = int (*)(VkImage, void *, uint64_t, uint32_t *);
    auto read_image = reinterpret_cast<ReadImage>(GetProcAddress(GetModuleHandleW(L"vulkan_hasvk_wddm.dll"), "hasvk_wddm_icd_read_image"));
@@ -65,8 +65,10 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
    const float q = 0.25f, cell = 0.5f;
    auto corners = [&](float dx, float dy, Vertex *v) { v[0] = {-1 + dx, -1 + dy}; v[1] = {-1 + dx + q, -1 + dy}; v[2] = {-1 + dx, -1 + dy + q}; v[3] = {-1 + dx + q, -1 + dy + q}; };
    auto unindexed = [&](float dx, float dy, Vertex *v) { Vertex c[4]; corners(dx, dy, c); const unsigned order[6] = {0, 1, 2, 2, 1, 3}; for (unsigned i = 0; i < 6; ++i) v[i] = c[order[i]]; };
-   uint8_t vertex_data[32 + 20 * sizeof(Vertex)]; memset(vertex_data, 0xee, sizeof(vertex_data));
-   Vertex vertices[20]; unindexed(0, 0, vertices); corners(0, 0, vertices + 6); unindexed(0, 2 * cell, vertices + 10); corners(cell, 2 * cell, vertices + 16);
+   uint8_t vertex_data[32 + 26 * sizeof(Vertex)]; memset(vertex_data, 0xee, sizeof(vertex_data));
+   Vertex vertices[26]; unindexed(0, 0, vertices); corners(0, 0, vertices + 6); unindexed(0, 2 * cell, vertices + 10); corners(cell, 2 * cell, vertices + 16);
+   /* Set D (vertices 20..25): one quad covering the whole target, for the stencil-masked pass. */
+   const Vertex whole[6] = {{-1, -1}, {1, -1}, {-1, 1}, {-1, 1}, {1, -1}, {1, 1}}; memcpy(vertices + 20, whole, sizeof(whole));
    memcpy(vertex_data + 32, vertices, sizeof(vertices));
    struct Instance { float ox, oy; uint8_t rgba[4]; };
    static_assert(sizeof(Instance) == 12, "Unexpected instance layout");
@@ -93,8 +95,12 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
    require(query_chunks != nullptr, "Missing command chunk diagnostics");
    struct Case { uint32_t size; VkImageTiling tiling; unsigned mode; };
    for (const Case &test_case : {Case{128, VK_IMAGE_TILING_LINEAR, 0}, Case{128, VK_IMAGE_TILING_OPTIMAL, 0}, Case{256, VK_IMAGE_TILING_LINEAR, 0}, Case{256, VK_IMAGE_TILING_OPTIMAL, 0},
-                                 Case{128, VK_IMAGE_TILING_OPTIMAL, 1}, Case{128, VK_IMAGE_TILING_OPTIMAL, 2}, Case{128, VK_IMAGE_TILING_OPTIMAL, 3}}) {
+                                 Case{128, VK_IMAGE_TILING_OPTIMAL, 1}, Case{128, VK_IMAGE_TILING_OPTIMAL, 2}, Case{128, VK_IMAGE_TILING_OPTIMAL, 3},
+                                 Case{128, VK_IMAGE_TILING_OPTIMAL, 4}, Case{128, VK_IMAGE_TILING_OPTIMAL, 5}, Case{128, VK_IMAGE_TILING_OPTIMAL, 6}, Case{128, VK_IMAGE_TILING_OPTIMAL, 7}}) {
       const uint32_t size = test_case.size; const VkImageTiling tiling = test_case.tiling; const unsigned mode_index = test_case.mode;
+      /* Debugging aid: HASVK_TEST_DRAW_MODES=4,6 runs only the listed modes. */
+      { char filter[64]; const DWORD length = GetEnvironmentVariableA("HASVK_TEST_DRAW_MODES", filter, sizeof(filter));
+        if (length && length < sizeof(filter) && !strchr(filter, static_cast<char>('0' + mode_index))) continue; }
       std::cerr << "Draw case " << size << " tiling=" << tiling << " mode=" << mode_index << '\n';
       VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; ii.imageType = VK_IMAGE_TYPE_2D; ii.format = attachment.format;
       ii.extent = {size, size, 1}; ii.mipLevels = ii.arrayLayers = 1; ii.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -109,8 +115,39 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
       VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO}; vi.image = image; vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
       vi.format = ii.format; vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
       VkImageView view{}; check(vkCreateImageView(device, &vi, nullptr, &view), "Create draw render target view");
-      VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO}; fi.renderPass = render_pass;
-      fi.attachmentCount = 1; fi.pAttachments = &view; fi.width = fi.height = size; fi.layers = 1;
+      /* Mode 4 = additive blending, 5 = 4x MSAA resolved by the render pass, 6 = stencil mask, 7 = dynamic scissor. */
+      VkRenderPass case_pass = render_pass; VkImage extra_image{}; VkDeviceMemory extra_memory{}; VkImageView extra_view{};
+      VkImageView framebuffer_views[2] = {view, VK_NULL_HANDLE}; uint32_t framebuffer_view_count = 1;
+      if (mode_index == 5 || mode_index == 6) {
+         VkImageCreateInfo ei = ii; ei.tiling = VK_IMAGE_TILING_OPTIMAL;
+         if (mode_index == 5) ei.samples = VK_SAMPLE_COUNT_4_BIT;
+         else { ei.format = VK_FORMAT_D24_UNORM_S8_UINT; ei.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; }
+         check(vkCreateImage(device, &ei, nullptr, &extra_image), "Create MSAA or stencil attachment");
+         VkMemoryRequirements er{}; vkGetImageMemoryRequirements(device, extra_image, &er);
+         VkMemoryAllocateInfo eai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; eai.allocationSize = er.size;
+         check(vkAllocateMemory(device, &eai, nullptr, &extra_memory), "Allocate MSAA or stencil attachment");
+         check(vkBindImageMemory(device, extra_image, extra_memory, 0), "Bind MSAA or stencil attachment");
+         VkImageViewCreateInfo ev = vi; ev.image = extra_image; ev.format = ei.format;
+         if (mode_index == 6) ev.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+         check(vkCreateImageView(device, &ev, nullptr, &extra_view), "Create MSAA or stencil view");
+         VkAttachmentDescription both[2] = {attachment, attachment};
+         VkAttachmentReference first{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}, second{1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+         VkSubpassDescription sp{}; sp.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS; sp.colorAttachmentCount = 1; sp.pColorAttachments = &first;
+         if (mode_index == 5) {      /* 0 = multisampled colour, 1 = resolve target read back below */
+            both[0].samples = VK_SAMPLE_COUNT_4_BIT; both[0].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; both[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            both[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; sp.pResolveAttachments = &second;
+            framebuffer_views[0] = extra_view; framebuffer_views[1] = view;
+         } else {                    /* 0 = colour, 1 = depth/stencil */
+            both[1].format = ei.format; both[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; both[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            both[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; both[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            second.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; sp.pDepthStencilAttachment = &second;
+            framebuffer_views[1] = extra_view;
+         }
+         VkRenderPassCreateInfo ci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO}; ci.attachmentCount = 2; ci.pAttachments = both; ci.subpassCount = 1; ci.pSubpasses = &sp;
+         check(vkCreateRenderPass(device, &ci, nullptr, &case_pass), "Create MSAA or stencil render pass"); framebuffer_view_count = 2;
+      }
+      VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO}; fi.renderPass = case_pass;
+      fi.attachmentCount = framebuffer_view_count; fi.pAttachments = framebuffer_views; fi.width = fi.height = size; fi.layers = 1;
       VkFramebuffer framebuffer{}; check(vkCreateFramebuffer(device, &fi, nullptr, &framebuffer), "Create draw framebuffer");
       VkPipelineShaderStageCreateInfo stages[2]{};
       for (unsigned i = 0; i < 2; ++i) { stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -130,13 +167,29 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
       VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO}; cb.attachmentCount = 1; cb.pAttachments = &blend;
       VkGraphicsPipelineCreateInfo pi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO}; pi.stageCount = 2; pi.pStages = stages;
       pi.pVertexInputState = &vertex; pi.pInputAssemblyState = &assembly; pi.pViewportState = &vp; pi.pRasterizationState = &raster;
-      pi.pMultisampleState = &ms; pi.pColorBlendState = &cb; pi.layout = layout; pi.renderPass = render_pass; pi.basePipelineIndex = -1;
+      pi.pMultisampleState = &ms; pi.pColorBlendState = &cb; pi.layout = layout; pi.renderPass = case_pass; pi.basePipelineIndex = -1;
+      if (mode_index == 4) { blend.blendEnable = VK_TRUE; blend.srcColorBlendFactor = blend.dstColorBlendFactor = blend.srcAlphaBlendFactor = blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+         blend.colorBlendOp = blend.alphaBlendOp = VK_BLEND_OP_ADD; }
+      if (mode_index == 5) ms.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT;
+      VkPipelineDepthStencilStateCreateInfo stencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+      if (mode_index == 6) {     /* first pipeline only writes stencil = 5 where geometry lands */
+         stencil.stencilTestEnable = VK_TRUE; stencil.front = {VK_STENCIL_OP_KEEP, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS, 0xff, 0xff, 5};
+         stencil.back = stencil.front; stencil.maxDepthBounds = 1; pi.pDepthStencilState = &stencil; blend.colorWriteMask = 0;
+      }
+      const VkDynamicState dynamic_scissor = VK_DYNAMIC_STATE_SCISSOR;
+      VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO}; dynamic.dynamicStateCount = 1; dynamic.pDynamicStates = &dynamic_scissor;
+      if (mode_index == 7) pi.pDynamicState = &dynamic;
       VkPipeline pipeline{}; check(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &pipeline), "Create vertex-input pipeline");
+      VkPipeline masked_pipeline{};
+      if (mode_index == 6) {     /* second pipeline draws colour only where stencil == 5 */
+         stencil.front = {VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_EQUAL, 0xff, 0, 5}; stencil.back = stencil.front; blend.colorWriteMask = 15;
+         check(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &masked_pipeline), "Create stencil-masked pipeline");
+      }
       VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; VkCommandPool pool{};
       check(vkCreateCommandPool(device, &pool_info, nullptr, &pool), "Create draw command pool");
       /* Modes: 0 = inline; 1 = inline with enough repeated draws to chain several command BOs;
        * 2 = two secondaries, one inheriting the framebuffer and one not; 3 = one chained secondary. */
-      const unsigned mode = mode_index;
+      const unsigned mode = mode_index; const bool use_secondaries = mode == 2 || mode == 3;
       VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; ca.commandPool = pool; ca.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ca.commandBufferCount = 1;
       VkCommandBuffer command{}; check(vkAllocateCommandBuffers(device, &ca, &command), "Allocate draw command buffer");
       VkCommandBuffer secondaries[2]{}; ca.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY; ca.commandBufferCount = 2;
@@ -161,7 +214,7 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
          vkCmdDrawIndexedIndirect(target, indirect_buffer, 64, 1, sizeof(VkDrawIndexedIndirectCommand)); /* set C, instance 0 */
       };
       const unsigned long_repeats = 6000;
-      if (mode >= 2) {
+      if (use_secondaries) {
          VkCommandBufferInheritanceInfo inherit{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO}; inherit.renderPass = render_pass; inherit.subpass = 0;
          VkCommandBufferBeginInfo sbegin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; sbegin.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT; sbegin.pInheritanceInfo = &inherit;
          inherit.framebuffer = framebuffer;
@@ -175,12 +228,18 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
          check(vkEndCommandBuffer(secondaries[1]), "End secondary without framebuffer");
       }
       VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; check(vkBeginCommandBuffer(command, &begin), "Begin draw command buffer");
-      VkClearValue clear{}; clear.color.float32[3] = 1;
-      VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; rp.renderPass = render_pass; rp.framebuffer = framebuffer;
-      rp.renderArea = scissor; rp.clearValueCount = 1; rp.pClearValues = &clear;
-      vkCmdBeginRenderPass(command, &rp, mode >= 2 ? VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS : VK_SUBPASS_CONTENTS_INLINE);
-      if (mode >= 2) vkCmdExecuteCommands(command, mode == 2 ? 2 : 1, secondaries);
-      else { first_half(command, mode == 1 ? long_repeats : 1); second_half(command, false); }
+      VkClearValue clears[2]{}; clears[0].color.float32[3] = 1;
+      if (mode_index == 4) clears[0].color.float32[0] = 0.2f;
+      VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; rp.renderPass = case_pass; rp.framebuffer = framebuffer;
+      rp.renderArea = scissor; rp.clearValueCount = framebuffer_view_count; rp.pClearValues = clears;
+      vkCmdBeginRenderPass(command, &rp, use_secondaries ? VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS : VK_SUBPASS_CONTENTS_INLINE);
+      if (use_secondaries) vkCmdExecuteCommands(command, mode == 2 ? 2 : 1, secondaries);
+      else {
+         const VkRect2D left_half{{0, 0}, {size / 2, size}};
+         if (mode == 7) vkCmdSetScissor(command, 0, 1, &left_half);
+         first_half(command, mode == 1 ? long_repeats : 1); second_half(command, false);
+         if (mode == 6) { vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, masked_pipeline); vkCmdDraw(command, 6, 1, 20, 0); }
+      }
       vkCmdEndRenderPass(command);
       VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
       vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
@@ -200,8 +259,11 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
       for (uint32_t y = 0; y < size; ++y) for (uint32_t x = 0; x < size; ++x) {
          const uint32_t cx = x / (size / 4), cy = y / (size / 4);
          const bool inside = x % (size / 4) < size / 8 && y % (size / 4) < size / 8 && owner[cy][cx] >= 0;
-         uint32_t expected = 0xff000000u;
-         if (inside) { memcpy(&expected, instances[owner[cy][cx]].rgba, 4); ++coloured; }
+         uint32_t expected = mode_index == 4 ? 0xff000033u : 0xff000000u;
+         if (inside && !(mode_index == 7 && x >= size / 2)) {
+            const uint8_t *colour = instances[mode_index == 6 ? 0 : owner[cy][cx]].rgba; memcpy(&expected, colour, 4); ++coloured;
+            if (mode_index == 4) expected = (expected & 0xffffff00u) | (colour[0] + 51u);   /* ONE + ONE over the 0.2 red clear */
+         }
          if (pixels[y * size + x] != expected && mismatches++ < 8)
             std::cerr << "Pixel " << x << ',' << y << " expected=" << std::hex << expected << " actual=" << pixels[y * size + x] << std::dec << '\n';
       }
@@ -210,9 +272,13 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
       for (uint64_t i = 0; i < bytes; ++i) if (i < offset || i >= offset + mr.size) require(guards[i] == 0x4b, "Draw render target guard overwritten");
       for (const Guarded &g : buffers) require(!memcmp(g.map, g.expected.data(), g.expected.size()), "Draw input buffer or its guards changed");
       results.push_back({{"size", size}, {"vkTiling", tiling}, {"comparedPixels", size * size}, {"colouredPixels", coloured}, {"quads", 7}, {"guardsIntact", true},
-         {"mode", mode_index == 0 ? "inline" : mode_index == 1 ? "inline, chained command BOs" : mode_index == 2 ? "two secondaries" : "chained secondary"},
+         {"mode", std::vector<const char *>{"inline", "inline, chained command BOs", "two secondaries", "chained secondary", "additive blending",
+            "4x MSAA with render-pass resolve", "stencil write then stencil-masked draw", "dynamic scissor"}[mode_index]},
          {"primaryCommandBos", primary_chunks}, {"secondaryCommandBos", secondary_chunks}});
       vkDestroyFence(device, fence, nullptr); vkDestroyCommandPool(device, pool, nullptr); vkDestroyPipeline(device, pipeline, nullptr);
+      if (masked_pipeline) vkDestroyPipeline(device, masked_pipeline, nullptr);
+      if (case_pass != render_pass) vkDestroyRenderPass(device, case_pass, nullptr);
+      if (extra_view) { vkDestroyImageView(device, extra_view, nullptr); vkDestroyImage(device, extra_image, nullptr); vkFreeMemory(device, extra_memory, nullptr); }
       vkDestroyFramebuffer(device, framebuffer, nullptr); vkDestroyImageView(device, view, nullptr);
       vkUnmapMemory(device, memory); vkDestroyImage(device, image, nullptr); vkFreeMemory(device, memory, nullptr);
    }
