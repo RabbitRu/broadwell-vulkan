@@ -17,6 +17,7 @@ static void check(VkResult result, const char *message) {
    if (result != VK_SUCCESS) throw std::runtime_error(std::string(message) + ": " + std::to_string(result));
 }
 #include "icd_graphics_test.hpp"
+#include "icd_query_test.hpp"
 int wmain(int argc, wchar_t **argv)
 {
    if (argc != 2) return 2;
@@ -33,7 +34,7 @@ int wmain(int argc, wchar_t **argv)
       VkInstance instance{}; check(create(&ci, nullptr, &instance), "Create instance");
 #define INSTANCE(name) auto name = reinterpret_cast<PFN_##name>(gipa(instance, #name)); require(name != nullptr, "Missing " #name)
       INSTANCE(vkEnumeratePhysicalDevices); INSTANCE(vkGetPhysicalDeviceProperties); INSTANCE(vkCreateDevice);
-      INSTANCE(vkGetDeviceProcAddr); INSTANCE(vkDestroyInstance);
+      INSTANCE(vkGetDeviceProcAddr); INSTANCE(vkDestroyInstance); INSTANCE(vkGetPhysicalDeviceFeatures); INSTANCE(vkGetPhysicalDeviceQueueFamilyProperties);
 #undef INSTANCE
       uint32_t count = 1; VkPhysicalDevice physical{};
       check(vkEnumeratePhysicalDevices(instance, &count, &physical), "Enumerate physical device");
@@ -44,6 +45,12 @@ int wmain(int argc, wchar_t **argv)
       float priority = 1;
       VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}; qi.queueCount = 1; qi.pQueuePriorities = &priority;
       VkDeviceCreateInfo di{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO}; di.queueCreateInfoCount = 1; di.pQueueCreateInfos = &qi;
+      VkPhysicalDeviceFeatures supported{}; vkGetPhysicalDeviceFeatures(physical, &supported);
+      require(supported.occlusionQueryPrecise == VK_TRUE && supported.pipelineStatisticsQuery == VK_TRUE, "Query features not advertised");
+      uint32_t families = 1; VkQueueFamilyProperties family{}; vkGetPhysicalDeviceQueueFamilyProperties(physical, &families, &family);
+      require(families == 1 && family.timestampValidBits >= 32 && family.timestampValidBits < 64 && properties.limits.timestampComputeAndGraphics == VK_TRUE &&
+         properties.limits.timestampPeriod > 0, "Timestamps not advertised");
+      VkPhysicalDeviceFeatures enabled{}; enabled.occlusionQueryPrecise = enabled.pipelineStatisticsQuery = VK_TRUE; di.pEnabledFeatures = &enabled;
       VkDevice device{}; check(vkCreateDevice(physical, &di, nullptr, &device), "Create hardware device");
       auto get_queue = reinterpret_cast<PFN_vkGetDeviceQueue>(vkGetDeviceProcAddr(device, "vkGetDeviceQueue"));
       auto destroy = reinterpret_cast<PFN_vkDestroyDevice>(vkGetDeviceProcAddr(device, "vkDestroyDevice"));
@@ -51,6 +58,7 @@ int wmain(int argc, wchar_t **argv)
       VkQueue queue{}; get_queue(device, 0, 0, &queue);
       report["cases"] = test_graphics(device, queue, vkGetDeviceProcAddr);
       report["texturedDepthCases"] = test_graphics(device, queue, vkGetDeviceProcAddr, true);
+      report["queryCases"] = test_queries(device, queue, vkGetDeviceProcAddr, properties.limits.timestampPeriod, family.timestampValidBits);
       destroy(device, nullptr); vkDestroyInstance(instance, nullptr);
       HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
       require(snapshot != INVALID_HANDLE_VALUE, "Module inventory failed");

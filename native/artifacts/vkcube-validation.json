@@ -1,0 +1,29 @@
+﻿{
+    "schema":  1,
+    "testedUtc":  "2026-11-16T13:12:04.4458039Z",
+    "hardware":  "8086:162b",
+    "driverVersion":  "20.19.15.5171",
+    "vkcube":  "Vulkan-Tools v1.3.301, upstream sources unmodified",
+    "icdSha256":  "7d5900e775368a9ab5119c89199bc05aec60dafff83442de09138a7c5e3eb9a1",
+    "vkcubeSha256":  "3aeebb86a7eca0a4305583fd2e558d7bc9f85f01c0d20a4a943b089a70b45de1",
+    "reportSha256":  "5c20523702dae7a03608fc6d8bde7a4b4333cb6d0a3ef47a166dc50c05d06d27",
+    "runSeconds":  600.43,
+    "exitCode":  0,
+    "closedBy":  "WM_CLOSE",
+    "resizeSteps":  92,
+    "resizeSizes":  [
+                        "500x500",
+                        "800x600",
+                        "1024x768",
+                        "640x640"
+                    ],
+    "minimizeRestoreSteps":  45,
+    "windowCaptures":  137,
+    "blankCaptures":  0,
+    "captureCheck":  "PrintWindow client capture, non-blank by sampled colour count; no per-pixel reference comparison",
+    "standardVkcubeLaunched":  true,
+    "tenMinuteVkcubeValidated":  true,
+    "validationLayersUsed":  false,
+    "ctsRun":  false,
+    "completeVulkanImplementation":  false
+}

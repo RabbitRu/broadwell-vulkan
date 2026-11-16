@@ -207,6 +207,11 @@ static VkResult enumerate(struct vk_instance *base)
    p->subPixelPrecisionBits = 8;
    p->pointSizeRange[0] = p->pointSizeRange[1] = p->lineWidthRange[0] = p->lineWidthRange[1] = 1;
    p->optimalBufferCopyOffsetAlignment = p->optimalBufferCopyRowPitchAlignment = 4;
+   /* PS_DEPTH_COUNT gives exact sample counts (HasVK genX_query.c). */
+   physical->vk.supported_features.occlusionQueryPrecise = true;
+   physical->vk.supported_features.pipelineStatisticsQuery = true;
+   p->timestampComputeAndGraphics = true;
+   p->timestampPeriod = 1000000000.0f / physical->info.timestamp_frequency;
    physical->vk.supported_extensions.KHR_swapchain = true;
    result = wsi_device_init(&physical->wsi_device, anv_physical_device_to_handle(physical), wddm_wsi_proc_addr,
       &base->alloc, -1, NULL, &(struct wsi_device_options){.sw_device = false});
@@ -253,7 +258,13 @@ VKAPI_ATTR void VKAPI_CALL anv_DestroyInstance(VkInstance handle, const VkAlloca
 VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice handle, uint32_t *count, VkQueueFamilyProperties2 *properties)
 {
    (void)handle;
-   if (properties && *count) properties[0].queueFamilyProperties = (VkQueueFamilyProperties){queue_flags(), 1, 0, {1, 1, 1}};
+   /* 36-bit TIMESTAMP register, as in HasVK; only meaningful with queries (graphics build). */
+#ifdef HASVK_WDDM_GRAPHICS
+   const uint32_t timestamp_bits = 36;
+#else
+   const uint32_t timestamp_bits = 0;
+#endif
+   if (properties && *count) properties[0].queueFamilyProperties = (VkQueueFamilyProperties){queue_flags(), 1, timestamp_bits, {1, 1, 1}};
    *count = properties && !*count ? 0 : 1;
 }
 VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceMemoryProperties(VkPhysicalDevice handle, VkPhysicalDeviceMemoryProperties *properties)

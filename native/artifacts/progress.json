@@ -1,6 +1,6 @@
 ﻿{
     "schema":  1,
-    "testedUtc":  "2026-11-16T11:41:54.9691638Z",
+    "testedUtc":  "2026-11-16T14:05:38.2079037Z",
     "hardware":  "8086:162b",
     "driverVersion":  "20.19.15.5171",
     "mesa":  "26.2.7",
@@ -14,23 +14,27 @@
     "proofs":  [
                    {
                        "file":  "validation.json",
-                       "sha256":  "0378e72cb69e6a323abfea8c35541d111770c3bd9ac267f61c44c1980fa21956"
+                       "sha256":  "3692e9da326416c5b0b660d26f3bb333dc1743380c9e8457d3560424df68a63c"
                    },
                    {
                        "file":  "elk-validation.json",
-                       "sha256":  "71d134eabea8a6078ce74fe73415797dc8cec6125c6ded7df4056c56678589f7"
+                       "sha256":  "3fbff15fc03a4ac14d30a06fe3b7cc2e9649f7a93f4b1270de4340ed81887887"
                    },
                    {
                        "file":  "spirv-validation.json",
-                       "sha256":  "8539e1079f383e7ff50ac45cfa0cac12779b47b924be461ba2353b5a4c925c8a"
+                       "sha256":  "791803890464e7cb4181fae0d46e772a07d7ac916274a73eca8d9e01f1acdec8"
                    },
                    {
                        "file":  "images-validation.json",
-                       "sha256":  "ead8aacaae591d1ab2ec4beec4ecc7e89b9da3dbdb2bd107af4ccc2c22d3b42e"
+                       "sha256":  "85aae73233207ddf24e988ee21f3f4a236e5eb1d049c5963c3d1bd07ef33b6a4"
                    },
                    {
                        "file":  "icd-validation.json",
-                       "sha256":  "e8976d0b2d65a99b7dd34a302226162381e94ef7a3ae4f02a02ff07ce6fc8cb5"
+                       "sha256":  "faa0df925264ae59cd21c399e38726ea73951bb0436819542537eea0247015cd"
+                   },
+                   {
+                       "file":  "graphics-validation.json",
+                       "sha256":  "7e887820c40f6745af7a421c4f57491e5ac6c997d15c708aa61411ff7287b593"
                    }
                ],
     "vulkanControlPlaneIcdValidated":  true,
@@ -42,6 +46,8 @@
     "vulkanComputeHardwareCases":  342,
     "pipelineCacheRoundtripValidated":  true,
     "vulkanStorageImageHardwareCases":  18,
+    "offscreenVulkanGraphicsValidated":  true,
+    "vulkanGraphicsHardwareCases":  18,
     "completeVulkanIcdImplemented":  false,
     "standardVkcubeLaunched":  false,
     "tenMinuteVkcubeValidated":  false

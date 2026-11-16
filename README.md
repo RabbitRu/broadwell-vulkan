@@ -5,8 +5,9 @@ Intel `20.19.15.5171`, WDDM 2.0. Цель — аппаратный Vulkan ICD н
 Mesa HasVK и запуск стандартного `vkcube` с выводом через CPU/GDI.
 
 **Через ICD проверены аппаратные Vulkan compute, RGBA8 storage images,
-треугольник, текстуры, sampler, динамические UBO и D16 depth. Win32 WSI/GDI
-подключён и собран; swapchain и `vkcube` ещё не запускались.** Через системный Vulkan loader
+треугольник, текстуры, sampler, динамические UBO и D16 depth. Через Win32
+WSI/GDI работает неизменённый `vkcube`: 10 минут с resize/minimize, выход 0.**
+Через системный Vulkan loader
 работают перечисление Iris, устройство/очередь, память, shader modules, pipelines,
 descriptor sets, запись `vkCmdDispatch`, barriers, fences и бинарные семафоры.
 Используются штатные SPIR-V → NIR → ELK, pipeline layout, push packing и эмиттер
@@ -103,7 +104,8 @@ MSVC 14.44.35207, SDK 10.0.26100.0 и хеши компиляторов/заго
 - Новые SPIR-V и графические тесты не используют захваченные ядра, состояния
   или описатели выделений Intel. Ключ `-SkipBuild` запускает проверки на текущих
   исполняемых файлах, хеши сборок включаются в отчёты.
-- `test-graphics.ps1` проверяет шесть Vulkan-треугольников и 12 вариантов с
+- `test-graphics.ps1` проверяет шесть случаев queries (см. ниже),
+  шесть Vulkan-треугольников и 12 вариантов с
   текстурой, sampler, динамическим UBO и D16: размеры 64/128/256, linear/Y-tiled,
   глубина включена и выключена. Все цветовые и depth-пиксели сравниваются с CPU;
   образцы на диагональном ребре исключены из сравнения покрытия. Проверяются
@@ -127,7 +129,7 @@ Intel UMD и предназначен только для этой пары GPU/
 библиотеки ELK/ISL/BLORP, Vulkan runtime, Win32 WSI, тесты и начальный ICD,
 исключая Linux DRM. Историческое имя опции сохранено. В инициализации Win32 WSI DXGI/DComp создаются только при наличии
 callback очереди D3D12: аппаратный драйвер с GDI-путём оставляет его пустым.
-Пока это проверка сборки; вывод через Vulkan swapchain ещё не проверен. Статическая
+Вывод через Vulkan swapchain проверен запуском `vkcube` (см. ниже). Статическая
 PCI-топология используется для этих тестов; реальные аппаратные маски WDDM
 ещё нужно подключить. Отдельный raw SPIR-V probe ограничен одним SSBO set 0/binding 0.
 В ICD уже используется полный frontend HasVK, но объявлены только 1D группы до
@@ -136,7 +138,7 @@ PCI-топология используется для этих тестов; р
 command buffers пока не включены; indirect dispatch не проверен. Vulkan images
 ограничены RGBA8/BGRA8/D16, 2D, одним mip/layer/sample, без aux/compression.
 В графическом тесте проверены RGBA8 render target/texture и D16 depth;
-BGRA8 swapchain пока только собран.
+BGRA8 swapchain проверен только запуском `vkcube`.
 Командный BO ограничен 64 КиБ, barriers консервативно выполняют полный flush.
 Пулы состояния и записанные команды освобождаются после ожидания fence.
 Треугольник в raw image probe использует фиксированный путь обработки вершин BLORP;
@@ -181,11 +183,43 @@ Launcher задаёт `VK_DRIVER_FILES` только дочернему проц
 
 Неизменённый `vkcube` Vulkan-Tools `v1.3.301` уже собирается скриптом
 `tools/build-vkcube.ps1`; архивы Vulkan-Tools, Vulkan-Headers и commit Volk
-закреплены SHA-256. Готовый EXE находится в `build/vkcube`, GPU-запуск ещё не проверен.
+закреплены SHA-256. Готовый EXE находится в `build/vkcube`.
 
-Следующий этап — аппаратная проверка Win32 WSI/GDI, затем
-десятиминутный прогон `vkcube` с resize/minimize. CTS, validation layers и
-совместимость с играми пока не проверялись. Системная регистрация ICD не выполняется.
+`tools/capture-vkcube.ps1` запускает его через локальный ICD без участия
+человека: снимает клиентскую область окна через `PrintWindow`, не активирует
+окно, а любой диалог vkcube считает ошибкой и завершает процесс. Прогон 600 с:
+92 изменения размера (500×500, 800×600, 1024×768, 640×640), 45 циклов
+minimize/restore, 137 непустых снимков, закрытие по `WM_CLOSE`, код выхода 0.
+Отчёт с хешами: [native/artifacts/vkcube-validation.json](native/artifacts/vkcube-validation.json).
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\capture-vkcube.ps1 -Frames 1000000 -ExerciseSeconds 600 -OutputDirectory .\build\vkcube-10min
+```
+
+![vkcube на Iris 6100 через HasVK/WDDM ICD](native/artifacts/vkcube-preview.png)
+
+Снимки проверяются только на непустоту (число различных цветов), попиксельного
+сравнения с эталоном нет. На снимках окна 1024×768 нижняя полоса белая — причина
+(обрезка захвата по экрану или размер swapchain) не установлена. Размеры меньше
+500×500 не проверялись. `test-all.ps1` vkcube не запускает, поэтому в
+`progress.json` флаги vkcube остаются `false`. Десятиминутный прогон выполнен
+на DLL до подключения queries; на текущей DLL vkcube проверен прогоном 60 с.
+
+Queries реализованы штатным `genX_query.c` HasVK (occlusion, pipeline statistics,
+timestamp; `occlusionQueryPrecise`, `pipelineStatisticsQuery`, 36 бит timestamp).
+Код performance-query расширений в этом файле отключён макросами: `intel_perf`
+для Windows не собирается, расширения не объявлены. `test-graphics.ps1`
+проверяет шесть случаев: число прошедших сэмплов равно числу закрашенных
+пикселей (один draw, пустой запрос, два draw), недоступный запрос даёт
+`VK_NOT_READY`, `vkCmdCopyQueryPoolResults` в 64/32 бита с availability и
+PARTIAL сверяется побайтно вместе с защитными областями, reset и повторное
+использование. Статистика одного треугольника: 3 вершины, 1 примитив, 3 запуска
+VS; число запусков FS проверяется только на правдоподобие. Разность timestamp
+сверяется с задержкой хоста 200 мс. Queries в secondary command buffers,
+`inheritedQueries` и compute-статистика не проверялись.
+
+Следующий этап — validation layers и CTS. Совместимость с играми не
+проверялась. Системная регистрация ICD не выполняется.
 
 ## Состав репозитория
 

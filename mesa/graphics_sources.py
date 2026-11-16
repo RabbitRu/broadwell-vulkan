@@ -66,7 +66,36 @@ def generate_graphics_sources(originals):
     start = blorp.index('   switch (device->info->verx10) {')
     end = blorp.index('\n   }', start) + len('\n   }')
     blorp = blorp[:start] + '   device->blorp.exec = gfx8_blorp_exec;' + blorp[end:]
+    # Upstream query code is kept verbatim. Performance-query extensions are
+    # not exposed and intel_perf is not built for Windows, so those unreachable
+    # branches are compiled out through no-op macros and their pool types are
+    # rejected at creation.
+    query = read('genX_query.c')
+    for include in ['#include <unistd.h>\n', '#include <fcntl.h>\n']:
+        assert query.count(include) == 1
+        query = query.replace(include, '')
+    marker = '#include "vk_util.h"\n'
+    assert query.count(marker) == 1
+    query = query.replace(marker, marker + '''
+#define intel_perf_get_n_passes(...) 0
+#define intel_perf_get_counters_passes(...) ((void)0)
+#define intel_perf_query_result_clear(...) ((void)0)
+#define intel_perf_query_result_accumulate_fields(...) ((void)0)
+#define intel_perf_query_result_write_mdapi(...) ((void)0)
+#define intel_perf_query_mdapi_write_marker(...) ((void)0)
+#define anv_perf_write_pass_results(...) ((void)0)
+''')
+    marker = '''   ANV_FROM_HANDLE(anv_device, device, _device);
+   const struct anv_physical_device *pdevice = device->physical;
+'''
+    assert query.count(marker) == 1
+    query = query.replace(marker, marker + '''   if (pCreateInfo->queryType != VK_QUERY_TYPE_OCCLUSION &&
+       pCreateInfo->queryType != VK_QUERY_TYPE_PIPELINE_STATISTICS &&
+       pCreateInfo->queryType != VK_QUERY_TYPE_TIMESTAMP)
+      return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
+''')
     return {
+        'src/intel/wddm_compiler/anv_wddm_graphics_query.c': query,
         'src/intel/wddm_compiler/anv_wddm_graphics_common.c': instrumentation(common),
         'src/intel/wddm_compiler/anv_wddm_graphics_gen8.c': instrumentation(hardware),
         'src/intel/wddm_compiler/anv_wddm_graphics_state.c': state,
