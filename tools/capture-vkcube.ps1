@@ -1,5 +1,7 @@
 param([int]$Frames = 600, [int[]]$CaptureAfterMs = @(2500, 4000), [string]$OutputDirectory, [int]$DeadlineSeconds = 120,
-    [string[]]$ExtraArguments = @(), [int]$ExerciseSeconds = 0, [int]$ExerciseIntervalMs = 1500)
+    [string[]]$ExtraArguments = @(), [int]$ExerciseSeconds = 0, [int]$ExerciseIntervalMs = 1500,
+    [switch]$Validate, [string]$LayerPath = 'C:\VulkanSDK-local\Bin')
+# -Validate: run under VK_LAYER_KHRONOS_validation; messages go to validation.log.
 # -ExerciseSeconds N: run for N seconds with periodic resize/minimize/restore and
 # finish with WM_CLOSE (pass a large -Frames so vkcube does not stop by itself).
 # Launches the unmodified vkcube through the local ICD and saves captures of its
@@ -28,7 +30,8 @@ public static class CubeWindow {
   [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hgt, uint flags);
   [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
   [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
-  public static void Resize(IntPtr h, int w, int hgt){ SetWindowPos(h, IntPtr.Zero, 0, 0, w, hgt, 0x16 /* NOMOVE|NOZORDER|NOACTIVATE */); }
+  // Moved to the screen origin: GDI presentation only paints the on-screen part of a window.
+  public static void Resize(IntPtr h, int w, int hgt){ SetWindowPos(h, IntPtr.Zero, 0, 0, w, hgt, 0x14 /* NOZORDER|NOACTIVATE */); }
   public static void Show(IntPtr h, int cmd){ ShowWindow(h, cmd); }
   public static void Close(IntPtr h){ PostMessage(h, 0x10 /* WM_CLOSE */, IntPtr.Zero, IntPtr.Zero); }
   static string Text(IntPtr h){ var s=new StringBuilder(4096); GetWindowText(h,s,4096); return s.ToString(); }
@@ -62,6 +65,15 @@ $taskStart.EnvironmentVariables['VK_DRIVER_FILES']=Join-Path $taskPackage 'intel
 $taskStart.EnvironmentVariables.Remove('VK_ICD_FILENAMES'); $taskStart.EnvironmentVariables.Remove('VK_ADD_DRIVER_FILES')
 $taskStart.EnvironmentVariables['VK_LOADER_LAYERS_DISABLE']='~implicit~'
 $taskStart.EnvironmentVariables['PATH']=$taskPackage+';'+$env:PATH
+if ($Validate) {
+    if (-not (Test-Path -LiteralPath (Join-Path $LayerPath 'VkLayer_khronos_validation.json'))) { throw "Validation layer not found in $LayerPath" }
+    $taskValidationLog=Join-Path (Resolve-Path -LiteralPath $OutputDirectory).Path 'validation.log'
+    if (Test-Path -LiteralPath $taskValidationLog) { Remove-Item -LiteralPath $taskValidationLog -Confirm:$false }
+    $taskStart.EnvironmentVariables['VK_LAYER_PATH']=$LayerPath
+    $taskStart.EnvironmentVariables['VK_INSTANCE_LAYERS']='VK_LAYER_KHRONOS_validation'
+    $taskStart.EnvironmentVariables['VK_KHRONOS_VALIDATION_DEBUG_ACTION']='VK_DBG_LAYER_ACTION_LOG_MSG'
+    $taskStart.EnvironmentVariables['VK_KHRONOS_VALIDATION_LOG_FILENAME']=$taskValidationLog
+}
 $taskProcess=[Diagnostics.Process]::Start($taskStart)
 $taskId=[uint32]$taskProcess.Id
 $taskErrors=$taskProcess.StandardError.ReadToEndAsync()
@@ -82,7 +94,9 @@ function Save-Capture([string]$Name, [string]$Action, [bool]$Keep) {
     $colors=@{}
     $stepX=[Math]::Max(1,[int]($bitmap.Width/64)); $stepY=[Math]::Max(1,[int]($bitmap.Height/64))
     for ($y=0; $y -lt $bitmap.Height; $y+=$stepY) { for ($x=0; $x -lt $bitmap.Width; $x+=$stepX) { $colors[$bitmap.GetPixel($x,$y).ToArgb()]=1 } }
-    $entry=[ordered]@{name=$Name; action=$Action; file=$path; width=$bitmap.Width; height=$bitmap.Height; elapsedMs=$taskWatch.ElapsedMilliseconds; distinctSampledColors=$colors.Count}
+    # Pixels the swapchain never painted keep the window class background (white).
+    $unpainted=0; foreach ($y in @(0, ($bitmap.Height-1))) { for ($x=0; $x -lt $bitmap.Width; $x+=$stepX) { if (($bitmap.GetPixel($x,$y).ToArgb() -band 0xffffff) -eq 0xffffff) { ++$unpainted } } }
+    $entry=[ordered]@{name=$Name; action=$Action; file=$path; width=$bitmap.Width; height=$bitmap.Height; elapsedMs=$taskWatch.ElapsedMilliseconds; distinctSampledColors=$colors.Count; unpaintedEdgeSamples=$unpainted}
     $bitmap.Dispose()
     $entry
 }
@@ -91,16 +105,16 @@ try {
         # Resize/minimize/restore cycle without activating the window, then WM_CLOSE.
         Wait-Cube 2500
         $taskSizes=@(@(500,500),@(800,600),@(320,240),@(1024,768),@(640,640),@(200,150))
-        $taskStep=0
+        $taskStep=0; $taskResize=0
         while ($taskWatch.Elapsed.TotalSeconds -lt $ExerciseSeconds -and -not $taskProcess.HasExited) {
             $taskWindow=[CubeWindow]::TopWindow($taskId)
             if ($taskWindow -eq [IntPtr]::Zero) { throw 'vkcube window not found' }
-            $size=$taskSizes[$taskStep % $taskSizes.Count]
+            $size=$taskSizes[$taskResize % $taskSizes.Count]
             if ($taskStep % 3 -eq 2) {
                 [CubeWindow]::Show($taskWindow, 7); Wait-Cube ($taskWatch.ElapsedMilliseconds+1500)   # SW_SHOWMINNOACTIVE
                 if ($taskProcess.HasExited) { break }
                 [CubeWindow]::Show($taskWindow, 4); $taskAction='minimize/restore'                    # SW_SHOWNOACTIVATE
-            } else { [CubeWindow]::Resize($taskWindow, $size[0], $size[1]); $taskAction="resize $($size[0])x$($size[1])" }
+            } else { [CubeWindow]::Resize($taskWindow, $size[0], $size[1]); $taskAction="resize $($size[0])x$($size[1])"; ++$taskResize }
             Wait-Cube ($taskWatch.ElapsedMilliseconds+1200)
             if ($taskProcess.HasExited) { break }
             $taskCaptures += Save-Capture ("step-{0:d4}" -f $taskStep) $taskAction ($taskStep -lt 12 -or $taskStep % 25 -eq 0)
@@ -119,7 +133,7 @@ try {
         Wait-Cube ($DeadlineSeconds*1000)
     }
     if (-not $taskProcess.HasExited) { $taskProcess.Kill(); $taskProcess.WaitForExit(); throw 'vkcube did not exit before the deadline' }
-    $taskBlank=@($taskCaptures | Where-Object { $_.distinctSampledColors -lt 20 })
+    $taskBlank=@($taskCaptures | Where-Object { $_.distinctSampledColors -lt 20 -or $_.unpaintedEdgeSamples })
     $taskResult=[ordered]@{frames=$Frames; exerciseSeconds=$ExerciseSeconds; exitCode=$taskProcess.ExitCode; seconds=[math]::Round($taskWatch.Elapsed.TotalSeconds,2);
         captureCount=$taskCaptures.Count; blankCaptures=$taskBlank.Count; captures=$taskCaptures}
     [IO.File]::WriteAllText((Join-Path $OutputDirectory 'report.json'), ($taskResult | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))

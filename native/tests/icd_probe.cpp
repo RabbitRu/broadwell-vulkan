@@ -356,7 +356,7 @@ int wmain(int argc, wchar_t **argv)
          std::string(properties.deviceName).find("HasVK/WDDM") != std::string::npos, "A different Vulkan driver was selected");
       report["deviceName"] = properties.deviceName; report["apiVersion"] = properties.apiVersion;
       VkPhysicalDeviceFeatures features{}; vkGetPhysicalDeviceFeatures(physical, &features);
-      require(!features.geometryShader && !features.tessellationShader && !features.shaderFloat64, "Unimplemented shader features were exposed");
+      require(!features.sparseBinding && !features.depthBounds && !features.textureCompressionASTC_LDR && !features.inheritedQueries, "Unsupported features were exposed");
       uint32_t family_count = 0; vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, nullptr);
       require(family_count == 1, "Expected one queue family");
       VkQueueFamilyProperties family{}; vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, &family);
@@ -373,7 +373,7 @@ int wmain(int argc, wchar_t **argv)
       float priority = 1;
       VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}; qi.queueCount = 1; qi.pQueuePriorities = &priority;
       VkDeviceCreateInfo di{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO}; di.queueCreateInfoCount = 1; di.pQueueCreateInfos = &qi;
-      VkPhysicalDeviceFeatures unsupported{}; unsupported.geometryShader = VK_TRUE; di.pEnabledFeatures = &unsupported;
+      VkPhysicalDeviceFeatures unsupported{}; unsupported.sparseBinding = VK_TRUE; di.pEnabledFeatures = &unsupported;
       VkDevice rejected{};
       require(vkCreateDevice(physical, &di, nullptr, &rejected) == VK_ERROR_FEATURE_NOT_PRESENT && !rejected, "Unsupported feature was not rejected");
       di.pEnabledFeatures = nullptr;

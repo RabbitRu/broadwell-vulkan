@@ -18,6 +18,9 @@ static void check(VkResult result, const char *message) {
 }
 #include "icd_graphics_test.hpp"
 #include "icd_query_test.hpp"
+#include "icd_draw_test.hpp"
+#include "icd_copy_test.hpp"
+#include "icd_format_test.hpp"
 int wmain(int argc, wchar_t **argv)
 {
    if (argc != 2) return 2;
@@ -34,7 +37,7 @@ int wmain(int argc, wchar_t **argv)
       VkInstance instance{}; check(create(&ci, nullptr, &instance), "Create instance");
 #define INSTANCE(name) auto name = reinterpret_cast<PFN_##name>(gipa(instance, #name)); require(name != nullptr, "Missing " #name)
       INSTANCE(vkEnumeratePhysicalDevices); INSTANCE(vkGetPhysicalDeviceProperties); INSTANCE(vkCreateDevice);
-      INSTANCE(vkGetDeviceProcAddr); INSTANCE(vkDestroyInstance); INSTANCE(vkGetPhysicalDeviceFeatures); INSTANCE(vkGetPhysicalDeviceQueueFamilyProperties);
+      INSTANCE(vkGetDeviceProcAddr); INSTANCE(vkDestroyInstance); INSTANCE(vkGetPhysicalDeviceFeatures); INSTANCE(vkGetPhysicalDeviceFormatProperties); INSTANCE(vkGetPhysicalDeviceQueueFamilyProperties);
 #undef INSTANCE
       uint32_t count = 1; VkPhysicalDevice physical{};
       check(vkEnumeratePhysicalDevices(instance, &count, &physical), "Enumerate physical device");
@@ -57,7 +60,24 @@ int wmain(int argc, wchar_t **argv)
       require(get_queue && destroy, "Missing device entry points");
       VkQueue queue{}; get_queue(device, 0, 0, &queue);
       report["cases"] = test_graphics(device, queue, vkGetDeviceProcAddr);
+      {
+         static const char *const core[] = {
+#include "vk10_commands.inc"
+         };
+         using HasEntry = int (*)(VkDevice, const char *);
+         auto has_entry = reinterpret_cast<HasEntry>(GetProcAddress(GetModuleHandleW(L"vulkan_hasvk_wddm.dll"), "hasvk_wddm_icd_has_entrypoint"));
+         require(has_entry != nullptr, "Missing entry-point diagnostics");
+         json missing = json::array();
+         for (const char *name : core) {
+            const int present = has_entry(device, name); require(present >= 0, "Entry-point diagnostics failed");
+            if (!present) missing.push_back(name);
+         }
+         report["coreCommands"] = sizeof(core) / sizeof(core[0]); report["missingCoreCommands"] = missing;
+      }
       report["texturedDepthCases"] = test_graphics(device, queue, vkGetDeviceProcAddr, true);
+      report["formatCoverage"] = test_formats(physical, vkGetPhysicalDeviceFormatProperties, device, queue, vkGetDeviceProcAddr);
+      report["transfer"] = test_copies(device, queue, vkGetDeviceProcAddr);
+      report["drawCases"] = test_draws(device, queue, vkGetDeviceProcAddr);
       report["queryCases"] = test_queries(device, queue, vkGetDeviceProcAddr, properties.limits.timestampPeriod, family.timestampValidBits);
       destroy(device, nullptr); vkDestroyInstance(instance, nullptr);
       HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());

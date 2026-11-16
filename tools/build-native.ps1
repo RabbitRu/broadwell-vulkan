@@ -1,10 +1,10 @@
-param([switch]$BuildOnly, [switch]$ProbeVa, [switch]$RunOnly)
+﻿param([switch]$BuildOnly, [switch]$ProbeVa, [switch]$RunOnly)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'import-toolchain.ps1')
 $taskBuild = Join-Path $taskRoot 'build\native'
 New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 $taskSources = @('native\src\hasvk_wddm.cpp','native\src\hasvk_wddm_c.cpp','native\src\intel_2019_profile.cpp','native\tests\probe.cpp','native\tests\icd_probe.cpp','native\tests\graphics_probe.cpp')
-$taskIncludes = @('/I', (Join-Path $taskRoot 'native\include'), '/I', (Join-Path $taskRoot 'third_party'), '/I', (Join-Path $taskRoot 'third_party\mesa-26.2.7\include'))
+$taskIncludes = @('/I', $taskBuild, '/I', (Join-Path $taskRoot 'native\include'), '/I', (Join-Path $taskRoot 'third_party'), '/I', (Join-Path $taskRoot 'third_party\mesa-26.2.7\include'))
 Push-Location $taskBuild
 try {
     if (-not $RunOnly) {

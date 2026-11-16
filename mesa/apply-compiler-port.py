@@ -230,35 +230,19 @@ static inline uint64_t anv_image_modifier(const struct anv_image *image)
    return image->vk.drm_format_mod;
 #endif
 }''')
+# The compute-only build keeps its three-format gate. With graphics, image
+# creation is upstream; only auxiliary surfaces (HiZ/CCS/MCS) stay disabled.
 image_after = image_after.replace('   vk_image_init(&device->vk, &image->vk, pCreateInfo);', '''#ifdef _WIN32
-   if (pCreateInfo->imageType != VK_IMAGE_TYPE_2D ||
-       (pCreateInfo->format != VK_FORMAT_R8G8B8A8_UNORM
-#ifdef HASVK_WDDM_GRAPHICS
-        && pCreateInfo->format != VK_FORMAT_D16_UNORM
-        && pCreateInfo->format != VK_FORMAT_B8G8R8A8_UNORM
-#endif
-       ) ||
+#ifndef HASVK_WDDM_GRAPHICS
+   if (pCreateInfo->imageType != VK_IMAGE_TYPE_2D || pCreateInfo->format != VK_FORMAT_R8G8B8A8_UNORM ||
        (pCreateInfo->flags & ~VK_IMAGE_CREATE_ALIAS_BIT) || pCreateInfo->mipLevels != 1 || pCreateInfo->arrayLayers != 1 ||
        pCreateInfo->samples != VK_SAMPLE_COUNT_1_BIT || pCreateInfo->extent.depth != 1 ||
        !pCreateInfo->extent.width || !pCreateInfo->extent.height ||
        pCreateInfo->extent.width > 4096 || pCreateInfo->extent.height > 4096 ||
        (pCreateInfo->tiling != VK_IMAGE_TILING_LINEAR && pCreateInfo->tiling != VK_IMAGE_TILING_OPTIMAL) ||
-       (pCreateInfo->usage & ~(VK_IMAGE_USAGE_STORAGE_BIT
-#ifdef HASVK_WDDM_GRAPHICS
-         | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-           VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
-         | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+       (pCreateInfo->usage & ~VK_IMAGE_USAGE_STORAGE_BIT)) return VK_ERROR_FORMAT_NOT_SUPPORTED;
 #endif
-       ))) return VK_ERROR_FORMAT_NOT_SUPPORTED;
    create_info->isl_extra_usage_flags |= ISL_SURF_USAGE_DISABLE_AUX_BIT;
-#ifdef HASVK_WDDM_GRAPHICS
-   if (pCreateInfo->format == VK_FORMAT_D16_UNORM &&
-       (pCreateInfo->tiling != VK_IMAGE_TILING_OPTIMAL ||
-        (pCreateInfo->usage & ~(VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT))))
-      return VK_ERROR_FORMAT_NOT_SUPPORTED;
-   if (pCreateInfo->format != VK_FORMAT_D16_UNORM && (pCreateInfo->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))
-      return VK_ERROR_FORMAT_NOT_SUPPORTED;
-#endif
 #endif
    vk_image_init(&device->vk, &image->vk, pCreateInfo);''')
 edit(image_name, [(image_before, image_after)])
@@ -439,7 +423,11 @@ for signature in ['static uint32_t\nget_sampler_count(', 'static UNUSED struct a
     compute_emitter += '\n' + gen_pipeline[start:end] + '\n'
 owned_sources['src/intel/wddm_compiler/anv_wddm_compute_emit.c'] = compute_emitter
 formats = (originals / 'src/intel/vulkan_hasvk/anv_formats.c').read_text(encoding='utf-8')
-owned_sources['src/intel/wddm_compiler/anv_wddm_format_table.c'] = formats[:formats.index('// Format capabilities')]
+format_split = formats.index('// Format capabilities')
+# The capability queries (format features, image format properties) are the
+# upstream ones whenever graphics is built.
+owned_sources['src/intel/wddm_compiler/anv_wddm_format_table.c'] = (
+    formats[:format_split] + '#ifdef HASVK_WDDM_GRAPHICS\n' + formats[format_split:] + '\n#endif\n')
 owned_sources.update(generate_compute_sources(originals))
 owned_sources.update(generate_graphics_sources(originals))
 for name in ['hasvk_wddm.h', 'hasvk_wddm.hpp']:

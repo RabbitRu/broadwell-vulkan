@@ -16,7 +16,7 @@ if ($LASTEXITCODE) { throw 'ICD test SPIR-V generation failed' }
 if ($LASTEXITCODE) { throw 'ICD image SPIR-V generation failed' }
 & (Join-Path $taskRoot '.tools\python\python.exe') (Join-Path $PSScriptRoot 'gen-graphics-probes.py') --output $taskShaderInputs
 if ($LASTEXITCODE) { throw 'ICD graphics SPIR-V generation failed' }
-foreach ($name in @('storage-image-write.spv','storage-image-read.spv','triangle.vert.spv','triangle.frag.spv','textured.vert.spv','textured.frag.spv')) {
+foreach ($name in @('storage-image-write.spv','storage-image-read.spv','triangle.vert.spv','triangle.frag.spv','textured.vert.spv','textured.frag.spv','attributes.vert.spv','attributes.frag.spv')) {
     Copy-Item -LiteralPath (Join-Path $taskShaderInputs $name) -Destination $taskShaders
 }
 foreach ($algorithm in @('xor32','lcg32','mix32')) {

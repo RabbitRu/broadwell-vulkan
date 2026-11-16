@@ -106,10 +106,73 @@ def generate(fragment, textured=False):
     return struct.pack('<' + 'I' * len(words), *words)
 
 
+def generate_attributes(fragment):
+    """VS: position (loc 0) + per-instance offset (loc 1) and colour (loc 2);
+    the colour is passed flat to the FS, which writes it unchanged."""
+    next_id = 1
+    annotations, declarations, body, prefix = [], [], [], []
+
+    def ident():
+        nonlocal next_id
+        value = next_id
+        next_id += 1
+        return value
+
+    def emit(target, name, *args):
+        target.extend([(len(args) + 1) << 16 | opcodes[name], *args])
+
+    def typ(name, *args):
+        result = ident(); emit(declarations, name, result, *args); return result
+
+    def op(name, t, *args):
+        result = ident(); emit(body, name, t, result, *args); return result
+
+    def variable(t, storage, decoration, value):
+        result = ident(); emit(declarations, 'OpVariable', typ('OpTypePointer', storage, t), result, storage)
+        emit(annotations, 'OpDecorate', result, enums['Decoration'][decoration], value)
+        return result
+
+    void = typ('OpTypeVoid'); floating = typ('OpTypeFloat', 32)
+    vec4 = typ('OpTypeVector', floating, 4); vec2 = typ('OpTypeVector', floating, 2)
+    function = typ('OpTypeFunction', void)
+    inp, out = enums['StorageClass']['Input'], enums['StorageClass']['Output']
+    if fragment:
+        dest = variable(vec4, out, 'Location', 0)
+        colour = variable(vec4, inp, 'Location', 0)
+        interfaces = [dest, colour]
+    else:
+        dest = variable(vec4, out, 'BuiltIn', enums['BuiltIn']['Position'])
+        position, offset = variable(vec2, inp, 'Location', 0), variable(vec2, inp, 'Location', 1)
+        source = variable(vec4, inp, 'Location', 2)
+        colour = variable(vec4, out, 'Location', 0)
+        interfaces = [dest, position, offset, source, colour]
+        zero = ident(); emit(declarations, 'OpConstant', floating, zero, 0)
+        one = ident(); emit(declarations, 'OpConstant', floating, one, 0x3f800000)
+    emit(annotations, 'OpDecorate', colour, enums['Decoration']['Flat'])
+    main = ident(); emit(body, 'OpFunction', void, main, 0, function); emit(body, 'OpLabel', ident())
+    if fragment:
+        emit(body, 'OpStore', dest, op('OpLoad', vec4, colour))
+    else:
+        moved = op('OpFAdd', vec2, op('OpLoad', vec2, position), op('OpLoad', vec2, offset))
+        value = op('OpCompositeConstruct', vec4, op('OpCompositeExtract', floating, moved, 0),
+                   op('OpCompositeExtract', floating, moved, 1), zero, one)
+        emit(body, 'OpStore', colour, op('OpLoad', vec4, source))
+        emit(body, 'OpStore', dest, value)
+    emit(body, 'OpReturn'); emit(body, 'OpFunctionEnd')
+    emit(prefix, 'OpCapability', enums['Capability']['Shader'])
+    emit(prefix, 'OpMemoryModel', 0, enums['MemoryModel']['GLSL450'])
+    emit(prefix, 'OpEntryPoint', enums['ExecutionModel']['Fragment' if fragment else 'Vertex'], main, 0x6e69616d, 0, *interfaces)
+    if fragment:
+        emit(prefix, 'OpExecutionMode', main, enums['ExecutionMode']['OriginUpperLeft'])
+    words = [0x07230203, 0x10000, 0, next_id, 0, *prefix, *annotations, *declarations, *body]
+    return struct.pack('<' + 'I' * len(words), *words)
+
+
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output', type=Path, default=root / 'build/icd-shader-inputs')
 output = parser.parse_args().output.resolve(); output.mkdir(parents=True, exist_ok=True)
 for fragment in [False, True]:
     (output / ('triangle.frag.spv' if fragment else 'triangle.vert.spv')).write_bytes(generate(fragment))
     (output / ('textured.frag.spv' if fragment else 'textured.vert.spv')).write_bytes(generate(fragment, True))
+    (output / ('attributes.frag.spv' if fragment else 'attributes.vert.spv')).write_bytes(generate_attributes(fragment))
 print('Generated fresh SPIR-V vertex/fragment modules')

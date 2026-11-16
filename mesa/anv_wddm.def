@@ -11,3 +11,4 @@ EXPORTS
     hasvk_wddm_icd_query_compute_pipeline
     hasvk_wddm_icd_query_command_buffer
     hasvk_wddm_icd_read_image
+    hasvk_wddm_icd_has_entrypoint

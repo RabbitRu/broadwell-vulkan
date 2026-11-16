@@ -1,16 +1,29 @@
 ﻿{
     "schema":  1,
-    "testedUtc":  "2026-11-16T14:05:31.4248545Z",
+    "testedUtc":  "2026-11-16T16:35:19.5486397Z",
     "hardware":  "8086:162b",
     "driverVersion":  "20.19.15.5171",
-    "icdSha256":  "2ddbde22e384ca3b795870de54c1bd8874c559114a433bc14d56ec26fe92448b",
-    "clientSha256":  "494aec7e2a2c28d048d8547e73fc690efe72b50875cf979e3e277bf6c8ba3a6d",
-    "reportSha256":  "bfc5a77f3e5073359cfffb755258c76534eeac644cfce26ca7bfae90aadfd104",
+    "icdSha256":  "14b9a3f41fa4932c97f099c785a022a7e19110b80b6a55c24b6f50543f0d3dd7",
+    "clientSha256":  "3cc284788733780d6fb4d2f0d81f156fb531a14e0c9255d5fba3b64dc2910942",
+    "reportSha256":  "62cffdb059c5187c8a4382947082521b6771a0c71c65105b9ade05e738f7f36e",
     "triangleCases":  6,
     "textureUniformSamplerDepthCases":  12,
     "offscreenVulkanGraphicsValidated":  true,
     "queryCases":  6,
     "occlusionPipelineStatisticsTimestampQueriesValidated":  true,
+    "drawCases":  4,
+    "vertexInputIndexedInstancedIndirectDrawsValidated":  true,
+    "transferImageCases":  2,
+    "bufferAndImageTransferCommandsValidated":  true,
+    "formatRoundTrips":  47,
+    "imageShapeRoundTrips":  4,
+    "unsupportedOptionalFormats":  [
+
+                                   ],
+    "coreCommands":  137,
+    "missingCoreCommands":  [
+                                "vkEnumerateInstanceLayerProperties"
+                            ],
     "linearAndYTiledTargetsValidated":  true,
     "independentColorAndD16PixelChecks":  true,
     "guardsIntact":  true,

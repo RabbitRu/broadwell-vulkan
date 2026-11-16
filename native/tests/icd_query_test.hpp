@@ -153,7 +153,7 @@ static json test_queries(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr
       vkCmdBeginRenderPass(commands[1], &rp, VK_SUBPASS_CONTENTS_INLINE);
       vkCmdBeginQuery(commands[1], queries, 0, VK_QUERY_CONTROL_PRECISE_BIT); vkCmdEndQuery(commands[1], queries, 0);
       vkCmdEndRenderPass(commands[1]);
-      vkCmdPipelineBarrier(commands[1], VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+      vkCmdPipelineBarrier(commands[1], VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
       check(vkEndCommandBuffer(commands[1]), "End query reuse command buffer");
       run(commands[1], "Submit query reuse");
       check(vkGetQueryPoolResults(device, queries, 0, 3, sizeof(wide), wide, 16, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT | VK_QUERY_RESULT_WAIT_BIT), "Get reused occlusion results");
@@ -175,7 +175,7 @@ static json test_queries(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr
       vkCmdBeginQuery(commands[2], statistics, 0, 0); vkCmdDraw(commands[2], 3, 1, 0, 0); vkCmdEndQuery(commands[2], statistics, 0);
       vkCmdEndRenderPass(commands[2]);
       vkCmdWriteTimestamp(commands[2], VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, stamps, 1);
-      vkCmdPipelineBarrier(commands[2], VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+      vkCmdPipelineBarrier(commands[2], VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
       check(vkEndCommandBuffer(commands[2]), "End statistics command buffer");
       run(commands[2], "Submit statistics and timestamps");
       const DWORD delay_ms = 200; Sleep(delay_ms);

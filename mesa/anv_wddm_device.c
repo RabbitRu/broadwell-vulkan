@@ -190,23 +190,73 @@ static VkResult enumerate(struct vk_instance *base)
    p->maxImageDimension2D = 4096; p->maxImageArrayLayers = 1;
    p->maxPerStageDescriptorStorageImages = p->maxDescriptorSetStorageImages = 1;
 #ifdef HASVK_WDDM_GRAPHICS
-   p->maxColorAttachments = 1;
-   p->maxFramebufferWidth = p->maxFramebufferHeight = 4096; p->maxFramebufferLayers = 1;
-   p->framebufferColorSampleCounts = p->sampledImageColorSampleCounts = p->storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT;
-   p->maxFragmentOutputAttachments = 1; p->maxFragmentCombinedOutputResources = 64;
-   p->framebufferDepthSampleCounts = p->sampledImageDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT;
-   p->maxSamplerAllocationCount = 4000; p->maxSamplerAnisotropy = 1;
-   p->maxPerStageDescriptorSamplers = p->maxDescriptorSetSamplers = 16;
-   p->maxPerStageDescriptorSampledImages = p->maxDescriptorSetSampledImages = 16;
-   p->maxDescriptorSetUniformBuffersDynamic = 8;
-   p->maxVertexInputAttributes = p->maxVertexInputBindings = 16;
+   /* Vulkan 1.0 limits of HasVK for Gen8 (anv_device.c get_properties). Compute
+    * and memory limits above stay at what the Windows path has verified. */
+   enum { MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BUFFERS = 64, MAX_PER_STAGE_DESCRIPTOR_INPUT_ATTACHMENTS = 64,
+      MAX_DESCRIPTOR_SET_INPUT_ATTACHMENTS = 256 }; /* as in anv_device.c */
+   const VkSampleCountFlags sample_counts = isl_device_get_sample_counts(&physical->isl_dev);
+   p->maxImageDimension1D = p->maxImageDimension2D = p->maxImageDimensionCube = 1 << 14;
+   p->maxImageDimension3D = 1 << 11; p->maxImageArrayLayers = 1 << 11;
+   p->maxTexelBufferElements = 128 * 1024 * 1024; p->maxUniformBufferRange = 1u << 27;
+   p->maxPushConstantsSize = MAX_PUSH_CONSTANTS_SIZE; p->maxSamplerAllocationCount = 64 * 1024;
+   p->maxPerStageDescriptorSamplers = 128; p->maxDescriptorSetSamplers = 6 * 128;
+   p->maxPerStageDescriptorUniformBuffers = MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BUFFERS;
+   p->maxDescriptorSetUniformBuffers = 6 * MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BUFFERS;
+   p->maxDescriptorSetStorageBuffers = 6 * 64;
+   p->maxPerStageDescriptorSampledImages = 128; p->maxDescriptorSetSampledImages = 6 * 128;
+   p->maxPerStageDescriptorStorageImages = MAX_IMAGES; p->maxDescriptorSetStorageImages = 6 * MAX_IMAGES;
+   p->maxPerStageDescriptorInputAttachments = MAX_PER_STAGE_DESCRIPTOR_INPUT_ATTACHMENTS;
+   p->maxDescriptorSetInputAttachments = MAX_DESCRIPTOR_SET_INPUT_ATTACHMENTS;
+   p->maxPerStageResources = MAX_BINDING_TABLE_SIZE - MAX_RTS - 1;
+   p->maxDescriptorSetUniformBuffersDynamic = p->maxDescriptorSetStorageBuffersDynamic = MAX_DYNAMIC_BUFFERS / 2;
+   p->maxVertexInputAttributes = MAX_VES; p->maxVertexInputBindings = MAX_VBS;
    p->maxVertexInputAttributeOffset = 2047; p->maxVertexInputBindingStride = 2048;
-   p->maxVertexOutputComponents = p->maxFragmentInputComponents = 64;
-   p->maxViewports = 1; p->maxViewportDimensions[0] = p->maxViewportDimensions[1] = 4096;
-   p->viewportBoundsRange[0] = -8192; p->viewportBoundsRange[1] = 8192;
-   p->subPixelPrecisionBits = 8;
-   p->pointSizeRange[0] = p->pointSizeRange[1] = p->lineWidthRange[0] = p->lineWidthRange[1] = 1;
-   p->optimalBufferCopyOffsetAlignment = p->optimalBufferCopyRowPitchAlignment = 4;
+   p->maxVertexOutputComponents = 128;
+   p->maxTessellationGenerationLevel = 64; p->maxTessellationPatchSize = 32;
+   p->maxTessellationControlPerVertexInputComponents = p->maxTessellationControlPerVertexOutputComponents = 128;
+   p->maxTessellationControlPerPatchOutputComponents = 128; p->maxTessellationControlTotalOutputComponents = 2048;
+   p->maxTessellationEvaluationInputComponents = p->maxTessellationEvaluationOutputComponents = 128;
+   p->maxGeometryShaderInvocations = 32; p->maxGeometryInputComponents = p->maxGeometryOutputComponents = 128;
+   p->maxGeometryOutputVertices = 256; p->maxGeometryTotalOutputComponents = 1024;
+   p->maxFragmentInputComponents = 116; p->maxFragmentOutputAttachments = 8; p->maxFragmentDualSrcAttachments = 1;
+   p->maxFragmentCombinedOutputResources = MAX_RTS + 64 + MAX_IMAGES;
+   p->subPixelPrecisionBits = p->subTexelPrecisionBits = p->mipmapPrecisionBits = 8;
+   p->maxDrawIndexedIndexValue = UINT32_MAX; p->maxDrawIndirectCount = UINT32_MAX;
+   p->maxSamplerLodBias = 16; p->maxSamplerAnisotropy = 16;
+   p->maxViewports = MAX_VIEWPORTS; p->maxViewportDimensions[0] = p->maxViewportDimensions[1] = 1 << 14;
+   p->viewportBoundsRange[0] = INT16_MIN; p->viewportBoundsRange[1] = INT16_MAX; p->viewportSubPixelBits = 13;
+   p->minTexelBufferOffsetAlignment = 16;
+   p->minTexelOffset = -8; p->maxTexelOffset = 7; p->minTexelGatherOffset = -32; p->maxTexelGatherOffset = 31;
+   p->minInterpolationOffset = -0.5f; p->maxInterpolationOffset = 0.4375f; p->subPixelInterpolationOffsetBits = 4;
+   p->maxFramebufferWidth = p->maxFramebufferHeight = 1 << 14; p->maxFramebufferLayers = 1 << 11;
+   p->framebufferColorSampleCounts = p->framebufferDepthSampleCounts = p->framebufferStencilSampleCounts = sample_counts;
+   p->framebufferNoAttachmentsSampleCounts = sample_counts; p->maxColorAttachments = MAX_RTS;
+   p->sampledImageColorSampleCounts = p->sampledImageIntegerSampleCounts = sample_counts;
+   p->sampledImageDepthSampleCounts = p->sampledImageStencilSampleCounts = sample_counts;
+   p->storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT; p->maxSampleMaskWords = 1;
+   p->maxClipDistances = p->maxCullDistances = p->maxCombinedClipAndCullDistances = 8;
+   p->discreteQueuePriorities = 2;
+   p->pointSizeRange[0] = 0.125f; p->pointSizeRange[1] = 255.875f;
+   p->lineWidthRange[0] = 0; p->lineWidthRange[1] = 7.9921875f;
+   p->pointSizeGranularity = 1.0f / 8.0f; p->lineWidthGranularity = 1.0f / 128.0f;
+   p->strictLines = false; p->standardSampleLocations = true;
+   p->optimalBufferCopyOffsetAlignment = p->optimalBufferCopyRowPitchAlignment = 128;
+   /* Vulkan 1.0 features of HasVK for Gen8, except inheritedQueries (no
+    * secondary command buffers yet) and the shader storage-image ones HasVK
+    * itself leaves off. */
+   struct vk_features *f = &physical->vk.supported_features;
+   f->robustBufferAccess = f->fullDrawIndexUint32 = f->imageCubeArray = f->independentBlend = true;
+   f->geometryShader = f->tessellationShader = f->sampleRateShading = f->dualSrcBlend = f->logicOp = true;
+   f->multiDrawIndirect = f->drawIndirectFirstInstance = f->depthClamp = f->depthBiasClamp = true;
+   f->fillModeNonSolid = f->wideLines = f->largePoints = f->alphaToOne = f->multiViewport = true;
+   f->samplerAnisotropy = f->textureCompressionETC2 = f->textureCompressionBC = true;
+   f->fragmentStoresAndAtomics = f->shaderTessellationAndGeometryPointSize = f->shaderImageGatherExtended = true;
+   f->shaderStorageImageExtendedFormats = f->shaderStorageImageWriteWithoutFormat = true;
+   f->shaderUniformBufferArrayDynamicIndexing = f->shaderSampledImageArrayDynamicIndexing = true;
+   f->shaderStorageBufferArrayDynamicIndexing = f->shaderStorageImageArrayDynamicIndexing = true;
+   f->shaderClipDistance = f->shaderCullDistance = true;
+   f->shaderFloat64 = physical->info.has_64bit_float; f->shaderInt64 = f->shaderInt16 = true;
+   f->variableMultisampleRate = true;
    /* PS_DEPTH_COUNT gives exact sample counts (HasVK genX_query.c). */
    physical->vk.supported_features.occlusionQueryPrecise = true;
    physical->vk.supported_features.pipelineStatisticsQuery = true;
@@ -275,6 +325,9 @@ VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceMemoryProperties(VkPhysicalDevic
    properties->memoryHeaps[0] = (VkMemoryHeap){128ull << 20, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
    properties->memoryTypes[0] = (VkMemoryType){physical->memory.types[0].propertyFlags, 0};
 }
+/* With graphics enabled, format and image-format queries are upstream HasVK
+ * (anv_formats.c); this short list serves the compute-only build. */
+#ifndef HASVK_WDDM_GRAPHICS
 VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceFormatProperties(VkPhysicalDevice handle, VkFormat format, VkFormatProperties *properties)
 {
    (void)handle; memset(properties, 0, sizeof(*properties));
@@ -315,6 +368,57 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_GetPhysicalDeviceImageFormatProperties(VkPhys
 #endif
    return VK_SUCCESS;
 }
+#endif
+/* VK_KHR_get_physical_device_properties2 is advertised, so the loader and
+ * layers call the "2" queries directly; they must not be left unimplemented. */
+VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice handle, VkPhysicalDeviceMemoryProperties2 *properties)
+{
+   anv_GetPhysicalDeviceMemoryProperties(handle, &properties->memoryProperties);
+}
+#ifndef HASVK_WDDM_GRAPHICS
+VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice handle, VkFormat format, VkFormatProperties2 *properties)
+{
+   anv_GetPhysicalDeviceFormatProperties(handle, format, &properties->formatProperties);
+   vk_foreach_struct(ext, properties->pNext) {
+      if (ext->sType == VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3) {
+         VkFormatProperties3 *wide = (void *)ext;
+         wide->linearTilingFeatures = properties->formatProperties.linearTilingFeatures;
+         wide->optimalTilingFeatures = properties->formatProperties.optimalTilingFeatures;
+         wide->bufferFeatures = properties->formatProperties.bufferFeatures;
+      }
+   }
+}
+VKAPI_ATTR VkResult VKAPI_CALL anv_GetPhysicalDeviceImageFormatProperties2(VkPhysicalDevice handle,
+   const VkPhysicalDeviceImageFormatInfo2 *info, VkImageFormatProperties2 *properties)
+{
+   /* External memory, modifiers, stencil usage and view-format lists are not supported. */
+   vk_foreach_struct_const(ext, info->pNext) {
+      if (ext->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO &&
+          ((const VkPhysicalDeviceExternalImageFormatInfo *)ext)->handleType == 0) continue;
+      memset(&properties->imageFormatProperties, 0, sizeof(properties->imageFormatProperties));
+      return VK_ERROR_FORMAT_NOT_SUPPORTED;
+   }
+   VkResult result = anv_GetPhysicalDeviceImageFormatProperties(handle, info->format, info->type, info->tiling,
+      info->usage, info->flags, &properties->imageFormatProperties);
+   if (result != VK_SUCCESS) return result;
+   vk_foreach_struct(ext, properties->pNext) {
+      if (ext->sType == VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES)
+         memset(&((VkExternalImageFormatProperties *)ext)->externalMemoryProperties, 0, sizeof(VkExternalMemoryProperties));
+   }
+   return VK_SUCCESS;
+}
+/* Sparse resources are not supported: no sparse formats. */
+VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceSparseImageFormatProperties(VkPhysicalDevice handle, VkFormat format, VkImageType type,
+   VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageTiling tiling, uint32_t *count, VkSparseImageFormatProperties *properties)
+{
+   (void)handle; (void)format; (void)type; (void)samples; (void)usage; (void)tiling; (void)properties; *count = 0;
+}
+VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceSparseImageFormatProperties2(VkPhysicalDevice handle,
+   const VkPhysicalDeviceSparseImageFormatInfo2 *info, uint32_t *count, VkSparseImageFormatProperties2 *properties)
+{
+   (void)handle; (void)info; (void)properties; *count = 0;
+}
+#endif
 static VkResult queue_lost(struct vk_queue *queue, const char *message)
 {
    VkResult result = vk_queue_set_lost(queue, "%s", message);
@@ -494,6 +598,14 @@ PUBLIC int hasvk_wddm_icd_query_stats(VkDevice handle, uint64_t *completed, uint
    struct anv_wddm_device_state *w = device->wddm;
    mtx_lock(&w->mutex); *completed = w->completed; *stamp = *(uint32_t *)hasvk_wddm_bo_map(w->completion); mtx_unlock(&w->mutex);
    return 0;
+}
+/* Coverage diagnostics: whether a Vulkan command resolves to a real function. */
+PUBLIC int hasvk_wddm_icd_has_entrypoint(VkDevice handle, const char *name)
+{
+   ANV_FROM_HANDLE(anv_device, device, handle);
+   if (!device || !name) return -1;
+   if (vk_device_get_proc_addr(&device->vk, name)) return 1;
+   return vk_instance_get_proc_addr_unchecked(&device->physical->instance->vk, name) != NULL;
 }
 PUBLIC int hasvk_wddm_icd_query_memory(VkDevice handle, uint64_t *bytes, uint32_t *count)
 {
