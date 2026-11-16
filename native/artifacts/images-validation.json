@@ -1,0 +1,94 @@
+﻿{
+    "schema":  1,
+    "testedUtc":  "2026-11-16T11:41:31.1721937Z",
+    "hardware":  "8086:162b",
+    "driverVersion":  "20.19.15.5171",
+    "probeSha256":  "664cd0ebbff9ffdb49e1e67a8c15032ac67a82b68dd0f901eced40ff40944a16",
+    "cases":  [
+                  {
+                      "name":  "37x23-linear",
+                      "passed":  true,
+                      "pixelsVerified":  4255,
+                      "guardBytesVerified":  20480,
+                      "shadersCompiledAndIsaValidated":  6,
+                      "reportSha256":  "67ff4bf031d5eb0e00addadf7086038896c3172560bec103a76a5adb34b138ed"
+                  },
+                  {
+                      "name":  "37x23-x",
+                      "passed":  true,
+                      "pixelsVerified":  4255,
+                      "guardBytesVerified":  20480,
+                      "shadersCompiledAndIsaValidated":  6,
+                      "reportSha256":  "0fcf88308811c9b8690cd3eb58b42ca62167e967409113c193694de923f48391"
+                  },
+                  {
+                      "name":  "37x23-y",
+                      "passed":  true,
+                      "pixelsVerified":  4255,
+                      "guardBytesVerified":  20480,
+                      "shadersCompiledAndIsaValidated":  6,
+                      "reportSha256":  "d3aa7feee2ba85731edb19f31cfa84f7433740ba407a4382c62ee48cbe2dfb0a"
+                  },
+                  {
+                      "name":  "129x67-linear",
+                      "passed":  true,
+                      "pixelsVerified":  43215,
+                      "guardBytesVerified":  20480,
+                      "shadersCompiledAndIsaValidated":  6,
+                      "reportSha256":  "c263e9bf2a228537b3bfa21d23ebf4cae994c55bd6572609eba4913d31127037"
+                  },
+                  {
+                      "name":  "129x67-x",
+                      "passed":  true,
+                      "pixelsVerified":  43215,
+                      "guardBytesVerified":  20480,
+                      "shadersCompiledAndIsaValidated":  6,
+                      "reportSha256":  "5f4cbee5aad80de81d1ed4caf9168ff5dfef601f22962454782383d1a4874537"
+                  },
+                  {
+                      "name":  "129x67-y",
+                      "passed":  true,
+                      "pixelsVerified":  43215,
+                      "guardBytesVerified":  20480,
+                      "shadersCompiledAndIsaValidated":  6,
+                      "reportSha256":  "aabdb03d77aec856ce5eb85f279c81d6d1b06f40152e3a48e8cf9b524e775aac"
+                  },
+                  {
+                      "name":  "257x131-linear",
+                      "passed":  true,
+                      "pixelsVerified":  168335,
+                      "guardBytesVerified":  20480,
+                      "shadersCompiledAndIsaValidated":  6,
+                      "reportSha256":  "08cd7f039d0a38b3af3c01c73a5c85c51aea8ed6e13b493fb5388a1151dfe524"
+                  },
+                  {
+                      "name":  "257x131-x",
+                      "passed":  true,
+                      "pixelsVerified":  168335,
+                      "guardBytesVerified":  20480,
+                      "shadersCompiledAndIsaValidated":  6,
+                      "reportSha256":  "1d9de935289b021b8c71cff9dd197750ea1fe2d13fde3b4e7915302e0be7fad3"
+                  },
+                  {
+                      "name":  "257x131-y",
+                      "passed":  true,
+                      "pixelsVerified":  168335,
+                      "guardBytesVerified":  20480,
+                      "shadersCompiledAndIsaValidated":  6,
+                      "reportSha256":  "e3020ef21978e91069a2953f21da7ee96cef00c67107e3454602e16e7bde7d01"
+                  }
+              ],
+    "mesaIslBlorpElkOnWddmValidated":  true,
+    "bgraLinearXTiledYTiledClearValidated":  true,
+    "rgbaTextureSamplingValidated":  true,
+    "d16YTiledClearValidated":  true,
+    "cTransportLifetimeRejectionsValidated":  true,
+    "genericLinearAllocationBackingImagesValidated":  true,
+    "auxiliaryCompressionEnabled":  false,
+    "stableCpuReadonlyPoolsAndGrowthValidated":  true,
+    "depthTestingOrGeometryOverlapValidated":  true,
+    "texturedTriangleValidated":  true,
+    "spirvVertexShaderValidated":  false,
+    "vulkanIcdImplemented":  false,
+    "hardwareVkcubeValidated":  false
+}

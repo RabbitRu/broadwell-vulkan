@@ -1,0 +1,512 @@
+/* Windows platform for real HasVK objects, compute and Mesa runtime.
+ * This experimental ICD is not yet a conformant Vulkan implementation.
+ * Graphics pipelines and presentation remain disabled. */
+#include "anv_wddm.h"
+#include "compiler/glsl_types.h"
+#include "compiler/elk/elk_eu.h"
+#include "util/cnd_monotonic.h"
+#include "util/os_time.h"
+#undef NSEC_PER_SEC
+#include "util/timespec.h"
+#include <stdarg.h>
+
+struct anv_wddm_sync {
+   struct vk_sync vk;
+   bool signaled;
+};
+static struct anv_wddm_device_state *state(struct vk_device *device)
+{
+   return anv_wddm_state(device);
+}
+static VkResult sync_init(struct vk_device *d, struct vk_sync *s, uint64_t initial)
+{
+   (void)d; ((struct anv_wddm_sync *)s)->signaled = initial != 0; return VK_SUCCESS;
+}
+static void sync_finish(struct vk_device *d, struct vk_sync *s) { (void)d; (void)s; }
+static VkResult sync_signal(struct vk_device *d, struct vk_sync *s, uint64_t value)
+{
+   (void)value;
+   struct anv_wddm_device_state *w = state(d);
+   mtx_lock(&w->mutex); ((struct anv_wddm_sync *)s)->signaled = true;
+   u_cnd_monotonic_broadcast(&w->condition); mtx_unlock(&w->mutex);
+   return VK_SUCCESS;
+}
+static VkResult sync_reset(struct vk_device *d, struct vk_sync *s)
+{
+   struct anv_wddm_device_state *w = state(d);
+   mtx_lock(&w->mutex); ((struct anv_wddm_sync *)s)->signaled = false; mtx_unlock(&w->mutex);
+   return VK_SUCCESS;
+}
+static VkResult sync_move(struct vk_device *d, struct vk_sync *dst, struct vk_sync *src)
+{
+   struct anv_wddm_device_state *w = state(d);
+   mtx_lock(&w->mutex);
+   ((struct anv_wddm_sync *)dst)->signaled = ((struct anv_wddm_sync *)src)->signaled;
+   ((struct anv_wddm_sync *)src)->signaled = false;
+   u_cnd_monotonic_broadcast(&w->condition); mtx_unlock(&w->mutex);
+   return VK_SUCCESS;
+}
+static VkResult sync_wait_many(struct vk_device *d, uint32_t count, const struct vk_sync_wait *waits,
+                                enum vk_sync_wait_flags flags, uint64_t timeout)
+{
+   if (!count) return VK_SUCCESS;
+   struct anv_wddm_device_state *w = state(d);
+   mtx_lock(&w->mutex);
+   for (;;) {
+      if (vk_device_is_lost_no_report(d)) { mtx_unlock(&w->mutex); return VK_ERROR_DEVICE_LOST; }
+      uint32_t ready = 0;
+      for (uint32_t i = 0; i < count; ++i) ready += ((struct anv_wddm_sync *)waits[i].sync)->signaled;
+      if ((flags & VK_SYNC_WAIT_ANY) ? ready != 0 : ready == count) { mtx_unlock(&w->mutex); return VK_SUCCESS; }
+      if (timeout != UINT64_MAX && os_time_get_nano() >= timeout) { mtx_unlock(&w->mutex); return VK_TIMEOUT; }
+      int result;
+      if (timeout == UINT64_MAX) result = u_cnd_monotonic_wait(&w->condition, &w->mutex);
+      else {
+         struct timespec time; timespec_from_nsec(&time, timeout);
+         result = u_cnd_monotonic_timedwait(&w->condition, &w->mutex, &time);
+      }
+      if (result != thrd_success && result != thrd_timedout) { mtx_unlock(&w->mutex); return VK_ERROR_DEVICE_LOST; }
+   }
+}
+static const struct vk_sync_type wddm_sync_type = {
+   .size = sizeof(struct anv_wddm_sync),
+   .features = VK_SYNC_FEATURE_BINARY | VK_SYNC_FEATURE_GPU_WAIT | VK_SYNC_FEATURE_GPU_MULTI_WAIT |
+      VK_SYNC_FEATURE_CPU_WAIT | VK_SYNC_FEATURE_CPU_RESET | VK_SYNC_FEATURE_CPU_SIGNAL |
+      VK_SYNC_FEATURE_WAIT_ANY | VK_SYNC_FEATURE_WAIT_PENDING,
+   .init = sync_init, .finish = sync_finish, .signal = sync_signal, .reset = sync_reset,
+   .move = sync_move, .wait_many = sync_wait_many,
+};
+static void compiler_log(void *data, unsigned *id, const char *format, ...)
+{
+   (void)data; (void)id;
+   va_list arguments; va_start(arguments, format); vfprintf(stderr, format, arguments); va_end(arguments);
+}
+static const struct vk_instance_extension_table instance_extensions = {
+   .KHR_get_physical_device_properties2 = true,
+   .EXT_debug_utils = true,
+#ifdef HASVK_WDDM_GRAPHICS
+   .KHR_surface = true, .KHR_win32_surface = true,
+#endif
+};
+#ifdef HASVK_WDDM_GRAPHICS
+static PFN_vkVoidFunction wddm_wsi_proc_addr(VkPhysicalDevice handle, const char *name)
+{
+   ANV_FROM_HANDLE(anv_physical_device, physical, handle);
+   return vk_instance_get_proc_addr_unchecked(&physical->instance->vk, name);
+}
+#endif
+static VkQueueFlags queue_flags(void)
+{
+   return VK_QUEUE_COMPUTE_BIT
+#ifdef HASVK_WDDM_GRAPHICS
+      | VK_QUEUE_GRAPHICS_BIT
+#endif
+      ;
+}
+static VkImageUsageFlags image_usage(void)
+{
+   return VK_IMAGE_USAGE_STORAGE_BIT
+#ifdef HASVK_WDDM_GRAPHICS
+      | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+#endif
+      ;
+}
+static void physical_destroy(struct vk_physical_device *base)
+{
+   struct anv_physical_device *physical = container_of(base, struct anv_physical_device, vk);
+#ifdef HASVK_WDDM_GRAPHICS
+   if (base->wsi_device) wsi_device_finish(&physical->wsi_device, &physical->instance->vk.alloc);
+#endif
+   ralloc_free(physical->compiler);
+   glsl_type_singleton_decref();
+   vk_physical_device_finish(base);
+   vk_free(&physical->instance->vk.alloc, physical);
+}
+static VkResult enumerate(struct vk_instance *base)
+{
+   struct anv_instance *instance = container_of(base, struct anv_instance, vk);
+   struct hasvk_wddm_device *check = NULL;
+   if (hasvk_wddm_device_create(&check)) {
+      fprintf(stderr, "HasVK/WDDM: adapter rejected: %s\n", hasvk_wddm_error());
+      return VK_SUCCESS; /* No compatible adapter, as required for ICD enumeration. */
+   }
+   struct hasvk_wddm_adapter_info adapter;
+   int queried = hasvk_wddm_device_get_info(check, &adapter);
+   if (hasvk_wddm_device_destroy(check)) return vk_error(instance, VK_ERROR_INITIALIZATION_FAILED);
+   if (queried) return VK_ERROR_INITIALIZATION_FAILED;
+   struct anv_physical_device *physical = vk_zalloc(&base->alloc, sizeof(*physical), 8, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+   if (!physical) return VK_ERROR_OUT_OF_HOST_MEMORY;
+   struct vk_physical_device_dispatch_table dispatch;
+   vk_physical_device_dispatch_table_from_entrypoints(&dispatch, &anv_physical_device_entrypoints, true);
+#ifdef HASVK_WDDM_GRAPHICS
+   vk_physical_device_dispatch_table_from_entrypoints(&dispatch, &wsi_physical_device_entrypoints, false);
+#endif
+   VkResult result = vk_physical_device_init(&physical->vk, base, NULL, NULL, NULL, &dispatch);
+   if (result != VK_SUCCESS) { vk_free(&base->alloc, physical); return result; }
+   physical->instance = instance;
+   if (!intel_get_device_info_for_build(0x162b, &physical->info)) {
+      vk_physical_device_finish(&physical->vk); vk_free(&base->alloc, physical); return VK_ERROR_INITIALIZATION_FAILED;
+   }
+   glsl_type_singleton_init_or_ref();
+   physical->compiler = elk_compiler_create(NULL, &physical->info);
+   if (!physical->compiler) { physical_destroy(&physical->vk); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+   physical->compiler->shader_debug_log = compiler_log;
+   physical->compiler->shader_perf_log = compiler_log;
+   isl_device_init(&physical->isl_dev, &physical->info);
+   physical->supports_48bit_addresses = physical->use_softpin = true;
+   physical->gtt_size = 16ull << 30;
+   physical->memory.heap_count = physical->memory.type_count = 1;
+   physical->memory.heaps[0] = (struct anv_memory_heap){.size = 128ull << 20, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
+   physical->memory.types[0] = (struct anv_memory_type){
+      .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+      .heapIndex = 0,
+   };
+   physical->queue.family_count = 1;
+   physical->queue.families[0] = (struct anv_queue_family){queue_flags(), 1, INTEL_ENGINE_CLASS_RENDER};
+   physical->sync_types[0] = &wddm_sync_type;
+   physical->vk.supported_sync_types = physical->sync_types;
+   physical->vk.pipeline_cache_import_ops = anv_cache_import_ops;
+   struct vk_properties *p = &physical->vk.properties;
+   p->apiVersion = VK_API_VERSION_1_0;
+   p->driverVersion = VK_MAKE_VERSION(0, 1, 0);
+   p->vendorID = 0x8086; p->deviceID = 0x162b; p->deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+   memcpy(p->deviceLUID, &adapter.luid_low, 4); memcpy(p->deviceLUID + 4, &adapter.luid_high, 4);
+   p->deviceLUIDValid = true; p->deviceNodeMask = 1;
+   snprintf(p->deviceName, sizeof(p->deviceName), "Intel Iris 6100 HasVK/WDDM experimental compute");
+   memcpy(p->pipelineCacheUUID, "HASVK-WDDM-00001", VK_UUID_SIZE);
+   p->maxMemoryAllocationCount = 4096;
+   p->maxStorageBufferRange = 128u << 20;
+   p->minMemoryMapAlignment = 4096; p->nonCoherentAtomSize = 64; p->bufferImageGranularity = 4096;
+   p->minStorageBufferOffsetAlignment = 16; p->minUniformBufferOffsetAlignment = ANV_UBO_ALIGNMENT;
+   p->timestampPeriod = 1;
+   p->maxComputeWorkGroupInvocations = 64;
+   p->maxComputeWorkGroupSize[0] = 64; p->maxComputeWorkGroupSize[1] = p->maxComputeWorkGroupSize[2] = 1;
+   p->maxComputeWorkGroupCount[0] = 65535; p->maxComputeWorkGroupCount[1] = p->maxComputeWorkGroupCount[2] = 1;
+   p->maxBoundDescriptorSets = MAX_SETS;
+   p->maxPushConstantsSize = 128; p->maxUniformBufferRange = 65536;
+   p->maxPerStageDescriptorStorageBuffers = p->maxDescriptorSetStorageBuffers = 64;
+   p->maxPerStageDescriptorUniformBuffers = p->maxDescriptorSetUniformBuffers = 12;
+   p->maxPerStageResources = 128;
+   p->maxImageDimension2D = 4096; p->maxImageArrayLayers = 1;
+   p->maxPerStageDescriptorStorageImages = p->maxDescriptorSetStorageImages = 1;
+#ifdef HASVK_WDDM_GRAPHICS
+   p->maxColorAttachments = 1;
+   p->maxFramebufferWidth = p->maxFramebufferHeight = 4096; p->maxFramebufferLayers = 1;
+   p->framebufferColorSampleCounts = p->sampledImageColorSampleCounts = p->storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+   p->maxFragmentOutputAttachments = 1; p->maxFragmentCombinedOutputResources = 64;
+   p->framebufferDepthSampleCounts = p->sampledImageDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+   p->maxSamplerAllocationCount = 4000; p->maxSamplerAnisotropy = 1;
+   p->maxPerStageDescriptorSamplers = p->maxDescriptorSetSamplers = 16;
+   p->maxPerStageDescriptorSampledImages = p->maxDescriptorSetSampledImages = 16;
+   p->maxDescriptorSetUniformBuffersDynamic = 8;
+   p->maxVertexInputAttributes = p->maxVertexInputBindings = 16;
+   p->maxVertexInputAttributeOffset = 2047; p->maxVertexInputBindingStride = 2048;
+   p->maxVertexOutputComponents = p->maxFragmentInputComponents = 64;
+   p->maxViewports = 1; p->maxViewportDimensions[0] = p->maxViewportDimensions[1] = 4096;
+   p->viewportBoundsRange[0] = -8192; p->viewportBoundsRange[1] = 8192;
+   p->subPixelPrecisionBits = 8;
+   p->pointSizeRange[0] = p->pointSizeRange[1] = p->lineWidthRange[0] = p->lineWidthRange[1] = 1;
+   p->optimalBufferCopyOffsetAlignment = p->optimalBufferCopyRowPitchAlignment = 4;
+   physical->vk.supported_extensions.KHR_swapchain = true;
+   result = wsi_device_init(&physical->wsi_device, anv_physical_device_to_handle(physical), wddm_wsi_proc_addr,
+      &base->alloc, -1, NULL, &(struct wsi_device_options){.sw_device = false});
+   if (result != VK_SUCCESS) { physical_destroy(&physical->vk); return result; }
+   physical->vk.wsi_device = &physical->wsi_device;
+   physical->wsi_device.supports_modifiers = false;
+   physical->wsi_device.disable_unordered_submits = true;
+#endif
+   list_addtail(&physical->vk.link, &base->physical_devices.list);
+   return VK_SUCCESS;
+}
+VKAPI_ATTR VkResult VKAPI_CALL anv_EnumerateInstanceVersion(uint32_t *version)
+{ *version = VK_API_VERSION_1_0; return VK_SUCCESS; }
+VKAPI_ATTR VkResult VKAPI_CALL anv_EnumerateInstanceExtensionProperties(const char *layer, uint32_t *count, VkExtensionProperties *properties)
+{
+   if (layer) return VK_ERROR_LAYER_NOT_PRESENT;
+   return vk_enumerate_instance_extension_properties(&instance_extensions, count, properties);
+}
+VKAPI_ATTR VkResult VKAPI_CALL anv_CreateInstance(const VkInstanceCreateInfo *info, const VkAllocationCallbacks *allocator, VkInstance *out)
+{
+   *out = VK_NULL_HANDLE;
+   if (!allocator) allocator = vk_default_allocator();
+   struct anv_instance *instance = vk_zalloc(allocator, sizeof(*instance), 8, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+   if (!instance) return VK_ERROR_OUT_OF_HOST_MEMORY;
+   struct vk_instance_dispatch_table dispatch;
+   vk_instance_dispatch_table_from_entrypoints(&dispatch, &anv_instance_entrypoints, true);
+#ifdef HASVK_WDDM_GRAPHICS
+   vk_instance_dispatch_table_from_entrypoints(&dispatch, &wsi_instance_entrypoints, false);
+#endif
+   VkResult result = vk_instance_init(&instance->vk, &instance_extensions, &dispatch, info, allocator);
+   if (result != VK_SUCCESS) { vk_free(allocator, instance); return result; }
+   instance->vk.physical_devices.enumerate = enumerate;
+   instance->vk.physical_devices.destroy = physical_destroy;
+   process_intel_debug_variable();
+   *out = anv_instance_to_handle(instance);
+   return VK_SUCCESS;
+}
+VKAPI_ATTR void VKAPI_CALL anv_DestroyInstance(VkInstance handle, const VkAllocationCallbacks *allocator)
+{
+   (void)allocator; ANV_FROM_HANDLE(anv_instance, instance, handle);
+   if (!instance) return;
+   vk_instance_finish(&instance->vk); vk_free(&instance->vk.alloc, instance);
+}
+VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice handle, uint32_t *count, VkQueueFamilyProperties2 *properties)
+{
+   (void)handle;
+   if (properties && *count) properties[0].queueFamilyProperties = (VkQueueFamilyProperties){queue_flags(), 1, 0, {1, 1, 1}};
+   *count = properties && !*count ? 0 : 1;
+}
+VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceMemoryProperties(VkPhysicalDevice handle, VkPhysicalDeviceMemoryProperties *properties)
+{
+   ANV_FROM_HANDLE(anv_physical_device, physical, handle);
+   memset(properties, 0, sizeof(*properties));
+   properties->memoryHeapCount = properties->memoryTypeCount = 1;
+   properties->memoryHeaps[0] = (VkMemoryHeap){128ull << 20, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
+   properties->memoryTypes[0] = (VkMemoryType){physical->memory.types[0].propertyFlags, 0};
+}
+VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceFormatProperties(VkPhysicalDevice handle, VkFormat format, VkFormatProperties *properties)
+{
+   (void)handle; memset(properties, 0, sizeof(*properties));
+   if (format == VK_FORMAT_R8G8B8A8_UNORM
+#ifdef HASVK_WDDM_GRAPHICS
+       || format == VK_FORMAT_B8G8R8A8_UNORM
+#endif
+      )
+      properties->linearTilingFeatures = properties->optimalTilingFeatures = VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT
+#ifdef HASVK_WDDM_GRAPHICS
+         | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
+#endif
+         ;
+#ifdef HASVK_WDDM_GRAPHICS
+   if (format == VK_FORMAT_D16_UNORM)
+      properties->optimalTilingFeatures = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+#endif
+}
+VKAPI_ATTR VkResult VKAPI_CALL anv_GetPhysicalDeviceImageFormatProperties(VkPhysicalDevice handle, VkFormat f, VkImageType t,
+   VkImageTiling tiling, VkImageUsageFlags usage, VkImageCreateFlags flags, VkImageFormatProperties *properties)
+{
+   (void)handle; memset(properties, 0, sizeof(*properties));
+   if ((f != VK_FORMAT_R8G8B8A8_UNORM
+#ifdef HASVK_WDDM_GRAPHICS
+        && f != VK_FORMAT_D16_UNORM
+        && f != VK_FORMAT_B8G8R8A8_UNORM
+#endif
+       ) || t != VK_IMAGE_TYPE_2D || flags ||
+       (tiling != VK_IMAGE_TILING_LINEAR && tiling != VK_IMAGE_TILING_OPTIMAL) || (usage & ~image_usage()))
+      return VK_ERROR_FORMAT_NOT_SUPPORTED;
+   *properties = (VkImageFormatProperties){.maxExtent = {4096, 4096, 1}, .maxMipLevels = 1,
+      .maxArrayLayers = 1, .sampleCounts = VK_SAMPLE_COUNT_1_BIT, .maxResourceSize = 128ull << 20};
+#ifdef HASVK_WDDM_GRAPHICS
+   if (f == VK_FORMAT_D16_UNORM && (tiling != VK_IMAGE_TILING_OPTIMAL ||
+       (usage & ~(VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT))))
+      return VK_ERROR_FORMAT_NOT_SUPPORTED;
+   if (f != VK_FORMAT_D16_UNORM && (usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) return VK_ERROR_FORMAT_NOT_SUPPORTED;
+#endif
+   return VK_SUCCESS;
+}
+static VkResult queue_lost(struct vk_queue *queue, const char *message)
+{
+   VkResult result = vk_queue_set_lost(queue, "%s", message);
+   struct anv_wddm_device_state *w = state(queue->base.device);
+   mtx_lock(&w->mutex); u_cnd_monotonic_broadcast(&w->condition); mtx_unlock(&w->mutex);
+   return result;
+}
+static VkResult submit(struct vk_queue *queue, struct vk_queue_submit *work)
+{
+   struct anv_device *device = container_of(queue->base.device, struct anv_device, vk);
+   struct anv_wddm_device_state *w = device->wddm;
+   if (vk_queue_submit_has_bind(work)) return VK_ERROR_FEATURE_NOT_PRESENT;
+   VkResult result = vk_sync_wait_many(&device->vk, work->wait_count, work->waits, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
+   if (result != VK_SUCCESS) return result;
+   for (uint32_t i = 0; i < work->command_buffer_count; ++i) {
+      struct anv_cmd_buffer *cmd = container_of(work->command_buffers[i], struct anv_cmd_buffer, vk);
+      if (anv_wddm_execute_command(cmd)) return queue_lost(queue, "HasVK command buffer submission/completion failed");
+   }
+   uint32_t serial = (uint32_t)(w->completed + 1);
+   uint64_t target = intel_canonical_address(hasvk_wddm_bo_address(w->completion));
+   uint32_t *batch = hasvk_wddm_bo_map(w->entry);
+   batch[0] = 0x10000002; batch[1] = (uint32_t)target; batch[2] = target >> 32; batch[3] = serial;
+   batch[4] = 0x05000000; batch[5] = 0;
+   if (hasvk_wddm_submit_wait(w->transport, w->entry, 0, 24)) {
+      return queue_lost(queue, hasvk_wddm_error());
+   }
+   const uint32_t *actual = hasvk_wddm_bo_map(w->completion);
+   if (actual[0] != serial) return queue_lost(queue, "GPU completion counter mismatch");
+   for (unsigned i = 1; i < 1024; ++i) if (actual[i] != 0x39393939) return queue_lost(queue, "GPU guard corrupted");
+   mtx_lock(&w->mutex); ++w->completed; mtx_unlock(&w->mutex);
+   return vk_sync_signal_many(&device->vk, work->signal_count, work->signals);
+}
+#ifdef HASVK_WDDM_GRAPHICS
+/* Device initialization runs before the queue is returned to the application. */
+VkResult anv_queue_submit_simple_batch(struct anv_queue *queue, struct anv_batch *batch)
+{
+   struct anv_wddm_device_state *w = queue->device->wddm;
+   size_t bytes = (char *)batch->next - (char *)batch->start;
+   if (batch->status != VK_SUCCESS) return batch->status;
+   if (!bytes || bytes > 8180) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+   size_t aligned = align(bytes, 8);
+   memcpy(hasvk_wddm_bo_map(w->entry), batch->start, bytes);
+   if (aligned > bytes) memset((char *)hasvk_wddm_bo_map(w->entry) + bytes, 0, aligned - bytes);
+   if (hasvk_wddm_submit_wait(w->transport, w->entry, 0, aligned))
+      return vk_errorf(queue->device, VK_ERROR_DEVICE_LOST, "WDDM initialization batch: %s", hasvk_wddm_error());
+   return VK_SUCCESS;
+}
+#endif
+static void state_finish(struct anv_wddm_device_state *w)
+{
+   if (!w) return;
+   hasvk_wddm_bo_destroy(w->completion); hasvk_wddm_bo_destroy(w->entry);
+   if (w->client_heap_initialized) {
+      util_vma_heap_finish(&w->client_heap); util_vma_heap_finish(&w->state_heap);
+   }
+   if (w->reservation) hasvk_wddm_release(w->transport, w->reservation);
+   if (w->transport && hasvk_wddm_device_destroy(w->transport)) fprintf(stderr, "HasVK/WDDM cleanup: %s\n", hasvk_wddm_error());
+   u_cnd_monotonic_destroy(&w->condition); mtx_destroy(&w->mutex);
+   free(w);
+}
+VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle, const VkDeviceCreateInfo *info,
+   const VkAllocationCallbacks *allocator, VkDevice *out)
+{
+   *out = VK_NULL_HANDLE;
+   ANV_FROM_HANDLE(anv_physical_device, physical, physical_handle);
+   if (info->queueCreateInfoCount != 1 || info->pQueueCreateInfos[0].queueFamilyIndex != 0 ||
+       info->pQueueCreateInfos[0].queueCount != 1 || info->pQueueCreateInfos[0].flags) return VK_ERROR_INITIALIZATION_FAILED;
+   struct anv_device *device = vk_zalloc2(&physical->instance->vk.alloc, allocator, sizeof(*device), 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+   if (!device) return VK_ERROR_OUT_OF_HOST_MEMORY;
+   struct vk_device_dispatch_table dispatch;
+   vk_device_dispatch_table_from_entrypoints(&dispatch, &anv_device_entrypoints, true);
+   vk_device_dispatch_table_from_entrypoints(&dispatch, &gfx8_device_entrypoints, false);
+#ifdef HASVK_WDDM_GRAPHICS
+   vk_device_dispatch_table_from_entrypoints(&dispatch, &wsi_device_entrypoints, false);
+#endif
+   VkResult result = vk_device_init(&device->vk, &physical->vk, &dispatch, info, allocator);
+   if (result != VK_SUCCESS) { vk_free2(&physical->instance->vk.alloc, allocator, device); return result; }
+   anv_device_set_physical(device, physical);
+   device->vk.command_buffer_ops = &anv_cmd_buffer_ops;
+   struct anv_wddm_device_state *w = calloc(1, sizeof(*w));
+   if (!w) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
+   device->wddm = w;
+   if (mtx_init(&w->mutex, mtx_plain) != thrd_success) { free(w); device->wddm = NULL; result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
+   if (u_cnd_monotonic_init(&w->condition) != thrd_success) { mtx_destroy(&w->mutex); free(w); device->wddm = NULL; result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
+   if (hasvk_wddm_device_create(&w->transport) || hasvk_wddm_reserve(w->transport, 16ull << 30, 0, &w->reservation)) {
+      result = VK_ERROR_INITIALIZATION_FAILED; goto fail_state;
+   }
+   w->origin = (w->reservation + 0xffffffffull) & ~0xffffffffull;
+   util_vma_heap_init(&w->client_heap, w->origin + 0x1c0000000, 4ull << 30);
+   util_vma_heap_init(&w->state_heap, w->origin + 0x200000, (7ull << 30) - 0x200000);
+   w->client_heap_initialized = true;
+   if (hasvk_wddm_bo_create(w->transport, 8192, w->origin + 0x2c0000000, 1, &w->entry) ||
+       hasvk_wddm_bo_create(w->transport, 4096, w->origin + 0x2c0200000, 1, &w->completion)) { result = VK_ERROR_OUT_OF_DEVICE_MEMORY; goto fail_state; }
+   memset(hasvk_wddm_bo_map(w->completion), 0x39, 4096);
+   result = anv_wddm_pools_init(device);
+   if (result != VK_SUCCESS) goto fail_state;
+   device->null_surface_state = anv_state_pool_alloc(&device->surface_state_pool, device->isl_dev.ss.size, device->isl_dev.ss.align);
+   isl_null_fill_state(&device->isl_dev, device->null_surface_state.map, .size = isl_extent3d(1, 1, 1));
+   result = anv_device_alloc_bo(device, "workaround", 4096, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &device->workaround_bo);
+   if (result != VK_SUCCESS) goto fail_state;
+   device->workaround_address = (struct anv_address){device->workaround_bo, 0};
+   anv_scratch_pool_init(device, &device->scratch_pool);
+   struct vk_pipeline_cache_create_info cache_info = {0};
+   device->default_pipeline_cache = vk_pipeline_cache_create(&device->vk, &cache_info, NULL);
+   if (!device->default_pipeline_cache) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_state; }
+#ifdef HASVK_WDDM_GRAPHICS
+   cache_info.force_enable = true;
+   device->internal_cache = vk_pipeline_cache_create(&device->vk, &cache_info, NULL);
+   if (!device->internal_cache) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_state; }
+   anv_device_init_blorp(device);
+   anv_wddm_init_border_colors(device);
+#endif
+   device->queues = vk_zalloc(&device->vk.alloc, sizeof(*device->queues), 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+   if (!device->queues) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_state; }
+   device->vk.submit_mode = VK_QUEUE_SUBMIT_MODE_THREADED;
+   result = vk_queue_init(&device->queues[0].vk, &device->vk, &info->pQueueCreateInfos[0], 0);
+   if (result != VK_SUCCESS) goto fail_queue_alloc;
+   device->queues[0].device = device; device->queues[0].family = &physical->queue.families[0];
+   device->queues[0].vk.driver_submit = submit;
+   device->queue_count = 1;
+#ifdef HASVK_WDDM_GRAPHICS
+   result = gfx8_init_device_state(device);
+   if (result != VK_SUCCESS) { vk_queue_finish(&device->queues[0].vk); goto fail_queue_alloc; }
+#endif
+   *out = anv_device_to_handle(device);
+   return VK_SUCCESS;
+fail_queue_alloc:
+   vk_free(&device->vk.alloc, device->queues);
+fail_state:
+   fprintf(stderr, "HasVK/WDDM device init: %s\n", hasvk_wddm_error());
+   if (device->default_pipeline_cache) vk_pipeline_cache_destroy(device->default_pipeline_cache, NULL);
+#ifdef HASVK_WDDM_GRAPHICS
+   if (device->internal_cache) { anv_device_finish_blorp(device); vk_pipeline_cache_destroy(device->internal_cache, NULL); }
+#endif
+   anv_scratch_pool_finish(device, &device->scratch_pool);
+   anv_device_release_bo(device, device->workaround_bo);
+   anv_wddm_pools_finish(device);
+   state_finish(w); device->wddm = NULL;
+fail_base:
+   vk_device_finish(&device->vk); vk_free(&device->vk.alloc, device);
+   return result;
+}
+VKAPI_ATTR void VKAPI_CALL anv_DestroyDevice(VkDevice handle, const VkAllocationCallbacks *allocator)
+{
+   (void)allocator; ANV_FROM_HANDLE(anv_device, device, handle);
+   if (!device) return;
+   vk_queue_finish(&device->queues[0].vk); vk_free(&device->vk.alloc, device->queues);
+   vk_pipeline_cache_destroy(device->default_pipeline_cache, NULL);
+#ifdef HASVK_WDDM_GRAPHICS
+   anv_device_finish_blorp(device); vk_pipeline_cache_destroy(device->internal_cache, NULL);
+#endif
+   anv_scratch_pool_finish(device, &device->scratch_pool);
+   anv_device_release_bo(device, device->workaround_bo);
+   anv_wddm_pools_finish(device);
+   state_finish(device->wddm);
+   vk_device_finish(&device->vk); vk_free(&device->vk.alloc, device);
+}
+#ifndef HASVK_WDDM_GRAPHICS
+VKAPI_ATTR VkResult VKAPI_CALL anv_CreateGraphicsPipelines(VkDevice device, VkPipelineCache cache, uint32_t count,
+   const VkGraphicsPipelineCreateInfo *infos, const VkAllocationCallbacks *allocator, VkPipeline *out)
+{
+   (void)device; (void)cache; (void)infos; (void)allocator;
+   for (uint32_t i = 0; i < count; ++i) out[i] = VK_NULL_HANDLE;
+   return VK_ERROR_FEATURE_NOT_PRESENT;
+}
+#endif
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL anv_GetDeviceProcAddr(VkDevice handle, const char *name)
+{ ANV_FROM_HANDLE(anv_device, device, handle); return vk_device_get_proc_addr(&device->vk, name); }
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL anv_GetInstanceProcAddr(VkInstance handle, const char *name)
+{ ANV_FROM_HANDLE(anv_instance, instance, handle); return vk_instance_get_proc_addr(instance ? &instance->vk : NULL, &anv_instance_entrypoints, name); }
+PUBLIC VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vk_icdGetInstanceProcAddr(VkInstance instance, const char *name)
+{ return anv_GetInstanceProcAddr(instance, name); }
+PUBLIC int hasvk_wddm_icd_query_stats(VkDevice handle, uint64_t *completed, uint64_t *stamp)
+{
+   ANV_FROM_HANDLE(anv_device, device, handle);
+   if (!device || !completed || !stamp) return -1;
+   struct anv_wddm_device_state *w = device->wddm;
+   mtx_lock(&w->mutex); *completed = w->completed; *stamp = *(uint32_t *)hasvk_wddm_bo_map(w->completion); mtx_unlock(&w->mutex);
+   return 0;
+}
+PUBLIC int hasvk_wddm_icd_query_memory(VkDevice handle, uint64_t *bytes, uint32_t *count)
+{
+   ANV_FROM_HANDLE(anv_device, device, handle);
+   if (!device || !bytes || !count) return -1;
+   struct anv_wddm_device_state *w = device->wddm;
+   mtx_lock(&w->mutex); *bytes = w->allocated_bytes; *count = w->allocation_count; mtx_unlock(&w->mutex);
+   return 0;
+}
+PUBLIC int hasvk_wddm_icd_query_compute_pipeline(VkPipeline handle, uint32_t *values)
+{
+   ANV_FROM_HANDLE(anv_pipeline, base, handle);
+   if (!base || !values || base->type != ANV_PIPELINE_COMPUTE) return -1;
+   struct anv_compute_pipeline *pipeline = anv_pipeline_to_compute(base);
+   const struct anv_shader_bin *shader = pipeline->cs;
+   const struct elk_cs_prog_data *program = (const void *)shader->prog_data;
+   const struct elk_isa_info *isa = &base->device->physical->compiler->isa;
+   if (!shader->kernel_size || !elk_validate_instructions(isa, shader->kernel.map, 0, shader->kernel_size, NULL)) return -1;
+   values[0] = shader->kernel_size;
+   for (unsigned i = 0; i < 3; ++i) values[1 + i] = program->local_size[i];
+   values[4] = program->prog_mask; values[5] = shader->bind_map.surface_count;
+   values[6] = program->base.nr_params; values[7] = program->base.total_scratch;
+   values[8] = program->base.total_shared; values[9] = shader->kernel.offset;
+   values[10] = (char *)base->batch.next - (char *)base->batch.start;
+   values[11] = program->push.per_thread.regs;
+   return 0;
+}

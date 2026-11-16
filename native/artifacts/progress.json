@@ -1,0 +1,48 @@
+﻿{
+    "schema":  1,
+    "testedUtc":  "2026-11-16T11:41:54.9691638Z",
+    "hardware":  "8086:162b",
+    "driverVersion":  "20.19.15.5171",
+    "mesa":  "26.2.7",
+    "nativePositiveCases":  20,
+    "expectedRejections":  7,
+    "nirHardwareCases":  3,
+    "spirvHardwareCases":  63,
+    "imageHardwareCases":  9,
+    "csharpControlsPassed":  true,
+    "allImplementedHardwareTestsPassed":  true,
+    "proofs":  [
+                   {
+                       "file":  "validation.json",
+                       "sha256":  "0378e72cb69e6a323abfea8c35541d111770c3bd9ac267f61c44c1980fa21956"
+                   },
+                   {
+                       "file":  "elk-validation.json",
+                       "sha256":  "71d134eabea8a6078ce74fe73415797dc8cec6125c6ded7df4056c56678589f7"
+                   },
+                   {
+                       "file":  "spirv-validation.json",
+                       "sha256":  "8539e1079f383e7ff50ac45cfa0cac12779b47b924be461ba2353b5a4c925c8a"
+                   },
+                   {
+                       "file":  "images-validation.json",
+                       "sha256":  "ead8aacaae591d1ab2ec4beec4ecc7e89b9da3dbdb2bd107af4ccc2c22d3b42e"
+                   },
+                   {
+                       "file":  "icd-validation.json",
+                       "sha256":  "e8976d0b2d65a99b7dd34a302226162381e94ef7a3ae4f02a02ff07ce6fc8cb5"
+                   }
+               ],
+    "vulkanControlPlaneIcdValidated":  true,
+    "gpuConfirmedVulkanSubmissions":  834,
+    "wddmVulkanMemoryCases":  72,
+    "mesaStatePoolGpuReadbacks":  270,
+    "bufferDescriptorChecks":  54,
+    "vulkanComputeValidated":  true,
+    "vulkanComputeHardwareCases":  342,
+    "pipelineCacheRoundtripValidated":  true,
+    "vulkanStorageImageHardwareCases":  18,
+    "completeVulkanIcdImplemented":  false,
+    "standardVkcubeLaunched":  false,
+    "tenMinuteVkcubeValidated":  false
+}

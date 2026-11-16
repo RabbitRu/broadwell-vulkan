@@ -1,0 +1,12 @@
+{
+  "msvc": "14.44.35207",
+  "msvcCompilerSha256": "e87e78b3ef6580b75aebda843f8a22e874612d9f766344046551399f898eb226",
+  "windowsSdk": "10.0.26100.0",
+  "sdkHeaders": {
+    "d3dkmthk.h": "113d427b97ceb0175c90ca2f0fbf0a8531dbf6fc4de9b46af8338cd3e2559dd7",
+    "d3dukmdt.h": "b904e5c89e854f6c1ab925035dcf5e4bb3f5600949f57d9e5febbf7d1cdc9594"
+  },
+  "clangVersion": "19.1.5",
+  "clangCompilerSha256": "93faf6d0a9e66ed1629eb1c9ca638a070aa1839b9490a87ff89b9cb39eeae36b",
+  "python": "3.12.10"
+}

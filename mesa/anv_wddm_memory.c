@@ -1,0 +1,327 @@
+/*
+ * Copyright © 2015 Intel Corporation
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ */
+/* HasVK's Vulkan memory/buffer objects backed by the Windows transport.
+ * Only ordinary, host-visible allocations are supported in this bring-up.
+ * Import/export, sparse memory and capture/replay addresses remain disabled.
+ */
+#include "anv_wddm.h"
+
+/* Common helper from anv_cmd_buffer.c; kept here until that unit is ported. */
+#ifndef HASVK_WDDM_GRAPHICS
+enum isl_format
+anv_isl_format_for_descriptor_type(const struct anv_device *device, VkDescriptorType type)
+{
+   (void)device;
+   switch (type) {
+   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC: return ISL_FORMAT_R32G32B32A32_FLOAT;
+   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: return ISL_FORMAT_RAW;
+   default: UNREACHABLE("Invalid buffer descriptor type");
+   }
+}
+#endif
+
+/* Same ISL buffer-state path as anv_device.c, with the Windows BO address. */
+void
+anv_fill_buffer_surface_state(struct anv_device *device, struct anv_state state,
+                              enum isl_format format, struct isl_swizzle swizzle,
+                              isl_surf_usage_flags_t usage, struct anv_address address,
+                              uint32_t range, uint32_t stride)
+{
+   isl_buffer_fill_state(&device->isl_dev, state.map,
+      .address = anv_address_physical(address),
+      .mocs = isl_mocs(&device->isl_dev, usage, address.bo && address.bo->is_external),
+      .size_B = range, .format = format, .swizzle = swizzle, .stride_B = stride);
+}
+
+VkResult
+anv_device_alloc_bo(struct anv_device *device, const char *name, uint64_t size,
+                    enum anv_bo_alloc_flags flags, uint64_t explicit_address,
+                    struct anv_bo **out)
+{
+   *out = NULL;
+   const unsigned allowed = ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_SNOOPED |
+      ANV_BO_ALLOC_CAPTURE | ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS | ANV_BO_ALLOC_FIXED_ADDRESS;
+   const bool fixed = (flags & ANV_BO_ALLOC_FIXED_ADDRESS) != 0;
+   if ((flags & ~allowed) || (fixed ? !explicit_address || (explicit_address & 4095) : explicit_address != 0))
+      return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
+   if (!size || size > (128ull << 20))
+      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+   size = align64(size, 4096);
+   struct anv_bo *bo = vk_zalloc(&device->vk.alloc, sizeof(*bo), 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+   if (!bo) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   struct anv_wddm_device_state *w = device->wddm;
+   mtx_lock(&w->mutex);
+   if (w->allocation_count >= 4096 || w->next_bo_id == UINT32_MAX || size > (128ull << 20) - w->allocated_bytes) {
+      mtx_unlock(&w->mutex); vk_free(&device->vk.alloc, bo);
+      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+   }
+   struct util_vma_heap *heap = fixed ? &w->state_heap : &w->client_heap;
+   uint64_t address = fixed ? (util_vma_heap_alloc_addr(heap, explicit_address, size) ? explicit_address : 0) :
+      util_vma_heap_alloc(heap, size, 4096);
+   if (!address || hasvk_wddm_bo_create(w->transport, size, address, 1, &bo->wddm_bo)) {
+      if (address) util_vma_heap_free(heap, address, size);
+      mtx_unlock(&w->mutex); vk_free(&device->vk.alloc, bo);
+      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+   }
+   bo->name = name; bo->size = size; bo->offset = intel_canonical_address(address);
+   bo->refcount = 1; bo->flags = EXEC_OBJECT_PINNED;
+   bo->gem_handle = ++w->next_bo_id; /* HasVK dependency-list ID, not a GEM handle. */
+   bo->has_fixed_address = fixed;
+   bo->map = hasvk_wddm_bo_map(bo->wddm_bo);
+   bo->has_client_visible_address = (flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0;
+   w->allocated_bytes += size; ++w->allocation_count;
+   mtx_unlock(&w->mutex);
+   *out = bo;
+   return VK_SUCCESS;
+}
+
+VkResult
+anv_device_map_bo(struct anv_device *device, struct anv_bo *bo, uint64_t offset,
+                  size_t size, uint32_t flags, void **out)
+{
+   *out = NULL;
+   if (flags || offset > bo->size || size > bo->size - offset)
+      return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+   *out = (char *)bo->map + offset;
+   return VK_SUCCESS;
+}
+
+void
+anv_device_unmap_bo(struct anv_device *device, struct anv_bo *bo, void *map, size_t size)
+{
+   /* Lock2 mapping belongs to the BO and is released at BO destruction. */
+   (void)device; (void)bo; (void)map; (void)size;
+}
+
+void
+anv_device_release_bo(struct anv_device *device, struct anv_bo *bo)
+{
+   if (!bo || !p_atomic_dec_zero(&bo->refcount)) return;
+   struct anv_wddm_device_state *w = device->wddm;
+   mtx_lock(&w->mutex);
+   if (hasvk_wddm_bo_destroy(bo->wddm_bo)) {
+      fprintf(stderr, "HasVK/WDDM BO cleanup: %s\n", hasvk_wddm_error());
+      vk_device_set_lost(&device->vk, "WDDM BO destruction failed");
+   } else {
+      util_vma_heap_free(bo->has_fixed_address ? &w->state_heap : &w->client_heap, intel_48b_address(bo->offset), bo->size);
+      w->allocated_bytes -= bo->size; --w->allocation_count;
+   }
+   mtx_unlock(&w->mutex);
+   vk_free(&device->vk.alloc, bo);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+anv_AllocateMemory(VkDevice handle, const VkMemoryAllocateInfo *info,
+                   const VkAllocationCallbacks *allocator, VkDeviceMemory *out)
+{
+   ANV_FROM_HANDLE(anv_device, device, handle);
+   *out = VK_NULL_HANDLE;
+   if (info->memoryTypeIndex != 0 || !info->allocationSize || info->allocationSize > (128ull << 20))
+      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+   /* Unsupported allocation controls must not be silently accepted. */
+   vk_foreach_struct_const(ext, info->pNext) {
+      if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO) {
+         const VkMemoryDedicatedAllocateInfo *dedicated = (const void *)ext;
+         if (dedicated->image && dedicated->buffer) return VK_ERROR_FEATURE_NOT_PRESENT;
+      } else if (ext->sType == VK_STRUCTURE_TYPE_WSI_MEMORY_ALLOCATE_INFO_MESA) {
+         const struct wsi_memory_allocate_info *wsi = (const void *)ext;
+         if (wsi->implicit_sync || wsi->dma_buf_sync_file) return VK_ERROR_FEATURE_NOT_PRESENT;
+      } else {
+         return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
+      }
+   }
+   struct anv_device_memory *mem = vk_object_zalloc(&device->vk, allocator, sizeof(*mem), VK_OBJECT_TYPE_DEVICE_MEMORY);
+   if (!mem) return VK_ERROR_OUT_OF_HOST_MEMORY;
+   VkResult result = anv_device_alloc_bo(device, "user", info->allocationSize,
+      ANV_BO_ALLOC_MAPPED, 0, &mem->bo);
+   if (result != VK_SUCCESS) { vk_object_free(&device->vk, allocator, mem); return result; }
+   mem->type = &device->physical->memory.types[0];
+   mem->wddm_allocation_size = info->allocationSize;
+   const VkMemoryDedicatedAllocateInfo *dedicated = vk_find_struct_const(info->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
+   if (dedicated && dedicated->image) mem->dedicated_image = anv_image_from_handle(dedicated->image);
+   *out = anv_device_memory_to_handle(mem);
+   return VK_SUCCESS;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+anv_FreeMemory(VkDevice handle, VkDeviceMemory memory, const VkAllocationCallbacks *allocator)
+{
+   ANV_FROM_HANDLE(anv_device, device, handle);
+   ANV_FROM_HANDLE(anv_device_memory, mem, memory);
+   if (!mem) return;
+   anv_device_release_bo(device, mem->bo);
+   vk_object_free(&device->vk, allocator, mem);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+anv_MapMemory(VkDevice handle, VkDeviceMemory memory, VkDeviceSize offset,
+              VkDeviceSize size, VkMemoryMapFlags flags, void **out)
+{
+   ANV_FROM_HANDLE(anv_device, device, handle);
+   ANV_FROM_HANDLE(anv_device_memory, mem, memory);
+   *out = NULL;
+   if (!mem || mem->map || flags || offset >= mem->wddm_allocation_size)
+      return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+   if (size == VK_WHOLE_SIZE) size = mem->wddm_allocation_size - offset;
+   if (!size || size > mem->wddm_allocation_size - offset)
+      return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+   mem->map = mem->bo->map; mem->map_size = size; mem->map_delta = offset;
+   *out = (char *)mem->map + offset;
+   return VK_SUCCESS;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+anv_UnmapMemory(VkDevice handle, VkDeviceMemory memory)
+{
+   (void)handle; ANV_FROM_HANDLE(anv_device_memory, mem, memory);
+   if (mem) { mem->map = NULL; mem->map_size = mem->map_delta = 0; }
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+anv_FlushMappedMemoryRanges(VkDevice handle, uint32_t count, const VkMappedMemoryRange *ranges)
+{
+   /* This configuration exposes only HOST_COHERENT memory. The transport
+    * publishes CPU writes before submit and invalidates mappings after the
+    * actual GPU completion event, including for wait-idle/fence consumers. */
+   (void)handle; (void)count; (void)ranges; MemoryBarrier(); return VK_SUCCESS;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+anv_InvalidateMappedMemoryRanges(VkDevice handle, uint32_t count, const VkMappedMemoryRange *ranges)
+{
+   (void)handle; (void)count; (void)ranges; MemoryBarrier(); return VK_SUCCESS;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+anv_GetDeviceMemoryCommitment(VkDevice handle, VkDeviceMemory memory, VkDeviceSize *size)
+{
+   (void)handle; ANV_FROM_HANDLE(anv_device_memory, mem, memory);
+   *size = mem->wddm_allocation_size;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+anv_CreateBuffer(VkDevice handle, const VkBufferCreateInfo *info,
+                 const VkAllocationCallbacks *allocator, VkBuffer *out)
+{
+   ANV_FROM_HANDLE(anv_device, device, handle);
+   *out = VK_NULL_HANDLE;
+   if (info->flags || !info->size || info->size > (128ull << 20)) return VK_ERROR_FEATURE_NOT_PRESENT;
+   const VkBufferUsageFlags allowed = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+      VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+   if (info->usage & ~allowed) return VK_ERROR_FEATURE_NOT_PRESENT;
+   struct anv_buffer *buffer = vk_buffer_create(&device->vk, info, allocator, sizeof(*buffer));
+   if (!buffer) return VK_ERROR_OUT_OF_HOST_MEMORY;
+   buffer->address = ANV_NULL_ADDRESS;
+   *out = anv_buffer_to_handle(buffer);
+   return VK_SUCCESS;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+anv_DestroyBuffer(VkDevice handle, VkBuffer buffer_handle, const VkAllocationCallbacks *allocator)
+{
+   ANV_FROM_HANDLE(anv_device, device, handle);
+   ANV_FROM_HANDLE(anv_buffer, buffer, buffer_handle);
+   if (buffer) vk_buffer_destroy(&device->vk, allocator, &buffer->vk);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+anv_GetBufferMemoryRequirements2(VkDevice handle, const VkBufferMemoryRequirementsInfo2 *info,
+                                 VkMemoryRequirements2 *requirements)
+{
+   (void)handle; ANV_FROM_HANDLE(anv_buffer, buffer, info->buffer);
+   requirements->memoryRequirements = (VkMemoryRequirements){
+      .size = buffer->vk.size, .alignment = (buffer->vk.usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ? ANV_UBO_ALIGNMENT : 16,
+      .memoryTypeBits = 1,
+   };
+   vk_foreach_struct(ext, requirements->pNext) {
+      if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
+         VkMemoryDedicatedRequirements *dedicated = (void *)ext;
+         dedicated->prefersDedicatedAllocation = dedicated->requiresDedicatedAllocation = false;
+      }
+   }
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+anv_BindBufferMemory2(VkDevice handle, uint32_t count, const VkBindBufferMemoryInfo *infos)
+{
+   ANV_FROM_HANDLE(anv_device, device, handle);
+   for (uint32_t i = 0; i < count; ++i) {
+      ANV_FROM_HANDLE(anv_buffer, buffer, infos[i].buffer);
+      ANV_FROM_HANDLE(anv_device_memory, mem, infos[i].memory);
+      const uint64_t offset = infos[i].memoryOffset;
+      const uint64_t alignment = (buffer->vk.usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ? ANV_UBO_ALIGNMENT : 16;
+      if (!mem || offset % alignment || offset > mem->wddm_allocation_size ||
+          buffer->vk.size > mem->wddm_allocation_size - offset)
+         return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      buffer->address = (struct anv_address){.bo = mem->bo, .offset = offset};
+   }
+   return VK_SUCCESS;
+}
+
+/* Integration diagnostics, not a Vulkan entry point. Validate the actual
+ * descriptor and independently read the Gen8 surface's 64-bit base address. */
+PUBLIC int hasvk_wddm_icd_check_buffer_descriptor(VkDescriptorSet handle, uint32_t binding,
+   uint32_t element, VkBuffer buffer_handle, uint64_t offset, uint64_t range)
+{
+   ANV_FROM_HANDLE(anv_descriptor_set, set, handle);
+   ANV_FROM_HANDLE(anv_buffer, buffer, buffer_handle);
+   if (!set || !buffer || binding >= set->layout->binding_count) return -1;
+   const struct anv_descriptor_set_binding_layout *layout = &set->layout->binding[binding];
+   if (element >= layout->array_size) return -1;
+   const struct anv_descriptor *descriptor = &set->descriptors[layout->descriptor_index + element];
+   if (descriptor->buffer != buffer || descriptor->offset != offset || descriptor->range != range) return -1;
+   if (vk_descriptor_type_is_dynamic(layout->type)) return 0;
+   const struct anv_buffer_view *view = descriptor->set_buffer_view;
+   uint64_t expected = anv_address_physical(anv_address_add(buffer->address, offset));
+   if (!view || view->range != vk_buffer_range(&buffer->vk, offset, range) ||
+       anv_address_physical(view->address) != expected) return -1;
+   uint64_t surface_address;
+   memcpy(&surface_address, (const char *)view->surface_state.map + 32, 8);
+   return surface_address == expected ? 0 : -1;
+}
+/* Readback diagnostics only: shader execution is validated separately through
+ * an SSBO. This independent CPU detile checks the actual image allocation. */
+PUBLIC int hasvk_wddm_icd_read_image(VkImage handle, void *rgba, uint64_t bytes, uint32_t *tiling)
+{
+   ANV_FROM_HANDLE(anv_image, image, handle);
+   if (!image || !rgba || !tiling || (image->vk.format != VK_FORMAT_R8G8B8A8_UNORM && image->vk.format != VK_FORMAT_D16_UNORM) ||
+       image->planes[0].aux_usage != ISL_AUX_USAGE_NONE) return -1;
+   const struct anv_surface *surface = &image->planes[0].primary_surface;
+   const struct isl_surf *surf = &surface->isl;
+   const struct anv_address address = anv_image_address(image, &surface->memory_range);
+   const uint32_t width = image->vk.extent.width, height = image->vk.extent.height;
+   const uint32_t pixel_bytes = image->vk.format == VK_FORMAT_D16_UNORM ? 2 : 4;
+   if (!address.bo || bytes != (uint64_t)width * height * pixel_bytes || address.offset > address.bo->size ||
+       surf->size_B > address.bo->size - address.offset) return -1;
+   const char *source = (const char *)address.bo->map + address.offset;
+   if (surf->tiling == ISL_TILING_LINEAR) {
+      for (uint32_t y = 0; y < height; ++y) memcpy((char *)rgba + y * width * pixel_bytes, source + y * surf->row_pitch_B, width * pixel_bytes);
+   } else {
+      isl_memcpy_tiled_to_linear(0, width * pixel_bytes, 0, height, rgba, source, width * pixel_bytes, surf->row_pitch_B, false, surf->tiling, ISL_MEMCPY);
+   }
+   *tiling = surf->tiling;
+   return 0;
+}

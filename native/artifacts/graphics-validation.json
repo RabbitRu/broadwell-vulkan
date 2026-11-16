@@ -1,0 +1,18 @@
+﻿{
+    "schema":  1,
+    "testedUtc":  "2026-11-16T12:07:27.2300887Z",
+    "hardware":  "8086:162b",
+    "driverVersion":  "20.19.15.5171",
+    "icdSha256":  "8367cab48f04a866bb3e4e70ebc49e12ba2f0867e06933147281110e9b4ead59",
+    "clientSha256":  "376b1adbab44fe2f56faee37df1b2474a4ec67e9899425a9b5a5e30f81e7d38d",
+    "reportSha256":  "f5b6bb6cfac9f79dd2ed21ad432e8b1e6aad3b032513848431001f496f308131",
+    "triangleCases":  6,
+    "textureUniformSamplerDepthCases":  12,
+    "offscreenVulkanGraphicsValidated":  true,
+    "linearAndYTiledTargetsValidated":  true,
+    "independentColorAndD16PixelChecks":  true,
+    "guardsIntact":  true,
+    "intelUmdAndD3d12Absent":  true,
+    "completeVulkanImplementation":  false,
+    "hardwareVkcubeValidated":  false
+}

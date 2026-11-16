@@ -1,0 +1,15 @@
+.tools/
+third_party/
+build/
+gpu-probe/bin/
+gpu-probe/artifacts/
+gpu-probe/reference/
+__pycache__/
+*.pyc
+*.obj
+*.pdb
+*.exe
+*.dll
+*.lib
+*.a
+

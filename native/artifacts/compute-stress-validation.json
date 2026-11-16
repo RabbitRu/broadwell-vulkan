@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "startedUtc": "2026-11-16T09:03:16Z",
+  "executableSha256": "5d694dc1fbb91011298f034ac0e8c6c019ef37d8f229fd4986bb123cc294125c",
+  "kernelSha256": "32a95893a6f940d0ebe1d0f5fcea6c4c9da5aa25578b43c6757fa23346facd03",
+  "case": "C:\\Users\\zombi\u0435\\Documents\\ChatGPT\\MBP15\\build\\failures\\lcg32-local32-count257-20261116",
+  "requestedIterations": 500,
+  "completedIterations": 500,
+  "retries": 0,
+  "passed": true,
+  "elapsedSeconds": 410.719,
+  "originalFailureReportSha256": "0bef1f1cf52377652b0dc9101268675589d0820f428771e3f0aa827b0099d376",
+  "originalFailureExecutableSha256": "d10d9e135264b405200a4f8f8c58b2bf8c49d65498609c589535c193db30593c",
+  "mitigation": "Explicit CPU cache flush before and after real GPU completion; query WDDM execution state",
+  "rootCauseConfirmed": false,
+  "fullVulkanOrVkcubeValidation": false
+}

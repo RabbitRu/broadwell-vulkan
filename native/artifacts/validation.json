@@ -1,0 +1,146 @@
+﻿{
+    "schema":  1,
+    "testedUtc":  "2026-11-16T11:41:05.9192500Z",
+    "hardware":  "Intel Iris 6100 8086:162b",
+    "driverVersion":  "20.19.15.5171",
+    "executableSha256":  "d7819d663a21e79c066eada8d50cf8f3fbf1b4b83280a5c7ad0e6ddbe1f8c788",
+    "positiveCases":  [
+                          {
+                              "case":  "batch-chain-0",
+                              "passed":  true,
+                              "reportSha256":  "676de2bf426965999ce9f8f25aae0b26f68de63e2e6db0433eef7200e393e893"
+                          },
+                          {
+                              "case":  "compute-1",
+                              "passed":  true,
+                              "reportSha256":  "a656fbf5f0e29e94ca436c22d7d41935761342f9ded89e8b325c24b496e7dad1"
+                          },
+                          {
+                              "case":  "compute-16381",
+                              "passed":  true,
+                              "reportSha256":  "7f492baa32141cd8f2e061cc4a26e7cceb55400818be9e64f49d196d8c9e8c8e"
+                          },
+                          {
+                              "case":  "compute-257",
+                              "passed":  true,
+                              "reportSha256":  "5ecf9c2d574d5419e181663c3e0c2b3f239ffe08332e978d6230e81860e4feec"
+                          },
+                          {
+                              "case":  "generated-compute-1",
+                              "passed":  true,
+                              "reportSha256":  "bfd819ea11b4f93c0e932d07ddcaca6e49f8d9b18a2c55c57a0c556e3dd5c333"
+                          },
+                          {
+                              "case":  "generated-compute-16381",
+                              "passed":  true,
+                              "reportSha256":  "aa31b1323dde6fe6978e07d24a6465842405b1d856968af8eae7c97d0575b598"
+                          },
+                          {
+                              "case":  "generated-compute-257",
+                              "passed":  true,
+                              "reportSha256":  "d5280dfd18d36401fc05227326a5971535ee5ee266179eed9680d7f260087ba6"
+                          },
+                          {
+                              "case":  "generated-store-1048576",
+                              "passed":  true,
+                              "reportSha256":  "e43d31276d747b8f96c780d78cdd06f01b3fb216333c1abe3fb2cc750fbffc28"
+                          },
+                          {
+                              "case":  "generated-store-12288",
+                              "passed":  true,
+                              "reportSha256":  "853c5840c02e7c35bd0c1b7dc82b11f819813c88f2a6725f4434496e26668332"
+                          },
+                          {
+                              "case":  "generated-store-131072",
+                              "passed":  true,
+                              "reportSha256":  "f30112c8ec4ca88b187179108d1476b7e268d199e0e76d303b0e4d4e4ad645ff"
+                          },
+                          {
+                              "case":  "generated-store-4096",
+                              "passed":  true,
+                              "reportSha256":  "8682835375e91ade9e3fd4376992875aaf63c8df7ef36810ae86799e2bdfad38"
+                          },
+                          {
+                              "case":  "generated-store-4194304",
+                              "passed":  true,
+                              "reportSha256":  "537a3cb430570813e90593aee900a112c49379ba9cc8950b16ed5f0dab13554f"
+                          },
+                          {
+                              "case":  "generated-store-65536",
+                              "passed":  true,
+                              "reportSha256":  "0f9c9f58af3ff3bbcaa88e030ea987a584eb9dd558fce4387c87e132cd15c12e"
+                          },
+                          {
+                              "case":  "generated-store-69632",
+                              "passed":  true,
+                              "reportSha256":  "eba8dec0b667638c49d8a0d06773241221ee0580dabbed6eabff4ec1c4e49192"
+                          },
+                          {
+                              "case":  "generated-store-8192",
+                              "passed":  true,
+                              "reportSha256":  "d0d5c9bb50577c269a12509a23a93ceca73ed1a5ebf60a4f35847d8bd2b401f9"
+                          },
+                          {
+                              "case":  "profile-0",
+                              "passed":  true,
+                              "reportSha256":  "d90111a3ef0e42ede54d8531be9e44aa4e81406eefc5dc0cdcbe2d6de0354050"
+                          },
+                          {
+                              "case":  "store-0",
+                              "passed":  true,
+                              "reportSha256":  "c63707789a12ac238ebeffad967024c081e1c9656886663fe622875180ed1705"
+                          },
+                          {
+                              "case":  "va-0",
+                              "passed":  true,
+                              "reportSha256":  "f4d078174bd1f6249fdad685ab0ca12e036463209d260cfa57d9f8ff12527ef1"
+                          },
+                          {
+                              "case":  "va-layout-0",
+                              "passed":  true,
+                              "reportSha256":  "39b55da8d2d69f0eb84bc7f0710a6843356da5100a6fc3d28f1f2cf4e98ab8ca"
+                          },
+                          {
+                              "case":  "va-pool-0",
+                              "passed":  true,
+                              "reportSha256":  "33d62b2ec64acfee725a778fff3a9be096cb188dcc2d1e40d6e2eda0853a555c"
+                          }
+                      ],
+    "negativeCases":  [
+                          {
+                              "case":  0,
+                              "rejected":  true,
+                              "reason":  "Unsupported compute count/buffer shape"
+                          },
+                          {
+                              "case":  1,
+                              "rejected":  true,
+                              "reason":  "Unsupported compute count/buffer shape"
+                          },
+                          {
+                              "case":  2,
+                              "rejected":  true,
+                              "reason":  "Invalid store test size"
+                          },
+                          {
+                              "case":  3,
+                              "rejected":  true,
+                              "reason":  "Invalid store test size"
+                          },
+                          {
+                              "case":  4,
+                              "rejected":  true,
+                              "reason":  "Fixture SHA256 mismatch: C:\\Users\\zombiРµ\\Documents\\ChatGPT\\MBP15\\build\\native\\negative-bootstrap\\submit-header.bin"
+                          }
+                      ],
+    "postNegativeHealthPassed":  true,
+    "nativeCppTransportValidated":  true,
+    "generatedLinearAllocationMetadataValidated":  true,
+    "generated8192CommandHeaderValidated":  true,
+    "fourGiBVaWindowWithThreeExactMappingsValidated":  true,
+    "relocatedHasvkAddressLayoutValidated":  true,
+    "batchChainingAndAllocationReuseValidated":  true,
+    "independentSpirvCompilationValidated":  false,
+    "vulkanIcdImplemented":  false,
+    "hardwareVkcubeValidated":  false
+}

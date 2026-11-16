@@ -1,0 +1,13 @@
+LIBRARY vulkan_hasvk_wddm
+EXPORTS
+    vk_icdGetInstanceProcAddr
+    vk_icdGetPhysicalDeviceProcAddr
+    vk_icdNegotiateLoaderICDInterfaceVersion
+    vk_icdEnumerateAdapterPhysicalDevices
+    hasvk_wddm_icd_query_stats
+    hasvk_wddm_icd_query_memory
+    hasvk_wddm_icd_test_state_pools
+    hasvk_wddm_icd_check_buffer_descriptor
+    hasvk_wddm_icd_query_compute_pipeline
+    hasvk_wddm_icd_query_command_buffer
+    hasvk_wddm_icd_read_image

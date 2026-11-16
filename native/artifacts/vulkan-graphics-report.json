@@ -1,0 +1,172 @@
+{
+  "cases": [
+    {
+      "comparedPixels": 4064,
+      "depthTest": false,
+      "greenPixels": 496,
+      "guardsIntact": true,
+      "size": 64,
+      "textured": false,
+      "vkTiling": 1
+    },
+    {
+      "comparedPixels": 4064,
+      "depthTest": false,
+      "greenPixels": 496,
+      "guardsIntact": true,
+      "size": 64,
+      "textured": false,
+      "vkTiling": 0
+    },
+    {
+      "comparedPixels": 16320,
+      "depthTest": false,
+      "greenPixels": 2016,
+      "guardsIntact": true,
+      "size": 128,
+      "textured": false,
+      "vkTiling": 1
+    },
+    {
+      "comparedPixels": 16320,
+      "depthTest": false,
+      "greenPixels": 2016,
+      "guardsIntact": true,
+      "size": 128,
+      "textured": false,
+      "vkTiling": 0
+    },
+    {
+      "comparedPixels": 65408,
+      "depthTest": false,
+      "greenPixels": 8128,
+      "guardsIntact": true,
+      "size": 256,
+      "textured": false,
+      "vkTiling": 1
+    },
+    {
+      "comparedPixels": 65408,
+      "depthTest": false,
+      "greenPixels": 8128,
+      "guardsIntact": true,
+      "size": 256,
+      "textured": false,
+      "vkTiling": 0
+    }
+  ],
+  "forbiddenModulesAbsent": true,
+  "hardwareVkcubeValidated": false,
+  "passed": true,
+  "scope": "Vulkan offscreen graphics experiment",
+  "texturedDepthCases": [
+    {
+      "comparedPixels": 4064,
+      "depthTest": false,
+      "greenPixels": 0,
+      "guardsIntact": true,
+      "size": 64,
+      "textured": true,
+      "vkTiling": 1
+    },
+    {
+      "comparedPixels": 4064,
+      "depthTest": false,
+      "greenPixels": 0,
+      "guardsIntact": true,
+      "size": 64,
+      "textured": true,
+      "vkTiling": 0
+    },
+    {
+      "comparedPixels": 16320,
+      "depthTest": false,
+      "greenPixels": 0,
+      "guardsIntact": true,
+      "size": 128,
+      "textured": true,
+      "vkTiling": 1
+    },
+    {
+      "comparedPixels": 16320,
+      "depthTest": false,
+      "greenPixels": 0,
+      "guardsIntact": true,
+      "size": 128,
+      "textured": true,
+      "vkTiling": 0
+    },
+    {
+      "comparedPixels": 65408,
+      "depthTest": false,
+      "greenPixels": 0,
+      "guardsIntact": true,
+      "size": 256,
+      "textured": true,
+      "vkTiling": 1
+    },
+    {
+      "comparedPixels": 65408,
+      "depthTest": false,
+      "greenPixels": 0,
+      "guardsIntact": true,
+      "size": 256,
+      "textured": true,
+      "vkTiling": 0
+    },
+    {
+      "comparedPixels": 4064,
+      "depthTest": true,
+      "greenPixels": 120,
+      "guardsIntact": true,
+      "size": 64,
+      "textured": true,
+      "vkTiling": 1
+    },
+    {
+      "comparedPixels": 4064,
+      "depthTest": true,
+      "greenPixels": 120,
+      "guardsIntact": true,
+      "size": 64,
+      "textured": true,
+      "vkTiling": 0
+    },
+    {
+      "comparedPixels": 16320,
+      "depthTest": true,
+      "greenPixels": 496,
+      "guardsIntact": true,
+      "size": 128,
+      "textured": true,
+      "vkTiling": 1
+    },
+    {
+      "comparedPixels": 16320,
+      "depthTest": true,
+      "greenPixels": 496,
+      "guardsIntact": true,
+      "size": 128,
+      "textured": true,
+      "vkTiling": 0
+    },
+    {
+      "comparedPixels": 65408,
+      "depthTest": true,
+      "greenPixels": 2016,
+      "guardsIntact": true,
+      "size": 256,
+      "textured": true,
+      "vkTiling": 1
+    },
+    {
+      "comparedPixels": 65408,
+      "depthTest": true,
+      "greenPixels": 2016,
+      "guardsIntact": true,
+      "size": 256,
+      "textured": true,
+      "vkTiling": 0
+    }
+  ]
+}
