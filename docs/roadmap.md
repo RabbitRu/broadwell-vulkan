@@ -1,6 +1,6 @@
 # План реализации Vulkan для Iris 6100 (Broadwell) под Windows
 
-Состояние на 2026-11-16, коммит `4a3f8f6`. Цель — ICD на основе Mesa HasVK
+Состояние на 2026-11-17, коммит `07e13fe` и последующие. Цель — ICD на основе Mesa HasVK
 поверх WDDM-драйвера Intel `20.19.15.5171`, без Intel UMD и D3D12.
 
 Обозначения:
@@ -20,13 +20,16 @@ Vulkan 1.3 (`anv_device.c`, ветка `use_softpin`). Сейчас ICD объя
 |---|---|
 | WDDM-транспорт (устройство, память, отправка команд) | [x] для одного профиля GPU/драйвера |
 | Компилятор шейдеров SPIR-V → NIR → ELK → Gen8 | [x] compute, VS, FS |
-| Compute | [~] 1D-группы до 64 потоков, один SSBO |
-| Графический конвейер | [~] треугольники, текстура, UBO, D16 |
-| Изображения и форматы | [~] RGBA8, BGRA8, D16; 2D, один mip/слой/сэмпл |
+| Compute | [~] 3D-группы, shared memory, indirect dispatch; лимиты HasVK |
+| Графический конвейер | [~] vertex input, все формы draw, blending, stencil, MSAA 4x, scissor |
+| Изображения и форматы | [~] 47 форматов, 1D/2D/3D/cube, mip-уровни, слои; без aux-поверхностей |
+| Команды копирования | [x] fill/update/copy buffer, buffer↔image, copy/blit image, clears |
+| Командные буферы | [x] цепочка BO без ограничения размера, secondary |
 | Queries | [x] occlusion, pipeline statistics, timestamp |
 | WSI / swapchain | [x] Win32, BGRA8, FIFO, вывод через CPU/GDI |
 | Стандартные приложения | [x] `vkcube` 10 минут с resize/minimize |
-| Validation layers, CTS | [ ] |
+| Validation layers | [x] пробы и vkcube без ошибок |
+| CTS | [~] сборка `deqp-vk` в процессе, прогонов ещё не было |
 | Vulkan 1.1–1.3, расширения | [ ] |
 | Системная регистрация ICD, игры | [ ] |
 
@@ -47,35 +50,54 @@ Vulkan 1.3 (`anv_device.c`, ветка `use_softpin`). Сейчас ICD объя
 - [x] Память и буферы на реальных BO WDDM, один тип памяти (host-visible).
 - [x] Descriptor sets и pipeline layout HasVK, pipeline cache с сохранением и
   импортом.
-- [~] Только primary command buffers, командный BO до 64 КиБ, barriers делают
-  полный flush.
+- [x] Командный буфер — цепочка BO по 64 КиБ через `MI_BATCH_BUFFER_START`;
+  secondary command buffers копируются в primary (режим emit HasVK), проверены
+  оба варианта наследования framebuffer и secondary длиной в несколько BO.
+- [x] Все 137 команд Vulkan 1.0 разрешаются в реальные функции (кроме глобальной
+  `vkEnumerateInstanceLayerProperties`, её обслуживает loader).
+- [~] Barriers делают полный flush.
 
 ### Compute
 - [x] 342 случая на железе: 12 SPIR-V-модулей, группы 1/7/32/64, до 16 381
   элемента, сравнение с независимым расчётом на CPU.
 - [x] 18 случаев storage image (RGBA8 linear и Y-tiled).
-- [~] Объявлены только 1D-группы до 64 потоков; shared memory и scratch
-  отклоняются; indirect dispatch не проверен.
+- [x] Группы 8×4×2 с dispatch 3×2×2 (прямой и indirect), shared memory с
+  barrier; объявлены лимиты HasVK (до 1024 потоков в группе).
+- [~] Scratch (большие локальные массивы) разрешён, но тестом не покрыт.
 
 ### Графика
 - [x] Render pass, framebuffer, VS/FS из SPIR-V, draw: 6 треугольников.
 - [x] Текстура, sampler, динамический UBO, D16 depth test: 12 случаев с
   попиксельной сверкой цвета и глубины.
-- [~] Код BLORP (clear, copy, blit) собран и используется WSI, но отдельными
-  тестами покрыта только часть путей.
+- [x] Vertex input (два binding, смещения, UNORM8-атрибут), draw, indexed 16/32
+  бит, instanced, оба indirect: попиксельная сверка.
+- [x] Additive blending, stencil write + stencil-masked draw, MSAA 4x с resolve
+  в render pass, динамический scissor.
+- [x] Fill/update/copy buffer, buffer↔image с padded row length, copy image,
+  blit 2x nearest, clear color/depth image, `vkCmdClearAttachments`: побайтно.
+- [x] 47 форматов (цветные, depth, stencil): запись и чтение каждого mip-уровня
+  и слоя бит в бит; 1D, 3D, cube, полная mip-цепочка.
+- [x] Возможности форматов и лимиты — штатные таблицы HasVK; объявлены все
+  features Vulkan 1.0, которые объявляет HasVK для Gen8.
+- [~] Объявленные, но не покрытые тестами features: геометрические и
+  тесселяционные шейдеры, сжатые текстуры, cube arrays, несколько viewport,
+  sample shading, логические операции, depth clamp/bias, wide lines.
 
 ### Queries
 - [x] Штатный `genX_query.c`: occlusion (точный счёт), pipeline statistics,
   timestamp; чтение на CPU и копирование на GPU; reset и повторное использование.
-- [ ] Queries в secondary command buffers, performance queries.
+- [~] `inheritedQueries` объявлен вместе с secondary command buffers, отдельного
+  теста нет. Performance queries не поддерживаются.
 
 ### Вывод на экран
 - [x] `VK_KHR_surface`, `VK_KHR_win32_surface`, `VK_KHR_swapchain`; BGRA8, FIFO;
   кадр копируется GPU в CPU-буфер и выводится через GDI.
 - [x] Неизменённый `vkcube` v1.3.301: 600 с, 92 изменения размера, 45 циклов
   minimize/restore, выход 0.
-- [~] Снимки окна проверяются на непустоту, без попиксельного эталона. Белая
-  полоса внизу окна 1024×768 не объяснена.
+- [x] Размеры окна от 200×150 до 1024×768; скрипт проверяет, что края окна
+  закрашены. Прежняя белая полоса объяснилась: окно выходило за экран, а GDI
+  не рисует невидимую часть.
+- [~] Снимки окна проверяются на непустоту, без попиксельного эталона.
 
 ## 2. Рубеж A — корректный Vulkan 1.0
 
@@ -83,46 +105,41 @@ Vulkan 1.3 (`anv_device.c`, ветка `use_softpin`). Сейчас ICD объя
 полученный на предыдущем.
 
 ### A1. Инструменты проверки
-- [ ] Запуск `vkcube --validate` и тестов ICD под Khronos validation layers;
-  исправить замечания.
-- [ ] Собрать Vulkan CTS (dEQP) под Windows, наладить выборочный запуск и
-  сохранение результатов: `dEQP-VK.info.*`, `api.smoke.*`, `wsi.win32.*`.
+- [x] `tools/test-validation.ps1`: обе пробы и vkcube под
+  `VK_LAYER_KHRONOS_validation` (SDK 1.4.363.1 в `C:\VulkanSDK-local`, без
+  регистрации в системе), отрицательный контроль через `--force_errors`.
+- [~] `tools/build-cts.ps1` собирает `deqp-vk` (CTS 1.4.5.5) в
+  `C:\VulkanCTS-local`; сборка занимает часы. Выборочный запуск и сохранение
+  результатов (`dEQP-VK.info.*`, `api.smoke.*`, `wsi.win32.*`) — следующий шаг.
 - [ ] Завести список ожидаемых отказов CTS и сокращать его по разделам.
-- [ ] Разобраться с полосой на 1024×768; добавить попиксельную проверку кадра
-  swapchain и размеры окна меньше 500×500.
+- [ ] Попиксельная проверка кадра swapchain.
 
-### A2. Обязательные возможности 1.0, которых сейчас нет
-- [ ] Форматы: полный обязательный набор Vulkan 1.0 (R8/RG8/RGBA8 UNORM/SNORM/
-  UINT/SINT/SRGB, R16*, R32*, RGBA16F, RGBA32F, B10G11R11, E5B9G9R9, A2B10G10R10,
-  D32F, D24S8 или D32F_S8, S8) с правильными feature-флагами. В порте таблица
-  форматов уже есть, но наружу открыты три формата.
-- [ ] Изображения: 1D/3D/cube, mip-уровни, массивы слоёв, MSAA 4x, размеры до
-  обязательных лимитов (4096 для 2D уже объявлено).
-- [ ] Вспомогательные поверхности HiZ/CCS/MCS — либо реализовать, либо
-  осознанно оставить отключёнными (на корректность не влияет, только на скорость).
-- [ ] Stencil: формат, тест, операции, clear.
-- [ ] Compute: 3D-группы и обязательные лимиты (`maxComputeWorkGroupSize`
-  128×128×64, 128 потоков), shared memory, scratch, indirect dispatch.
-- [ ] Обязательные лимиты устройства: число вложений, descriptor-лимиты,
-  `maxImageArrayLayers` 256, `maxColorAttachments` 4, несколько viewport не
-  обязательны.
-- [ ] Команды копирования и преобразования с тестами: `vkCmdCopyBuffer`,
-  `CopyImage`, `CopyBufferToImage`, `CopyImageToBuffer`, `BlitImage`,
-  `ResolveImage`, `ClearColorImage`, `ClearDepthStencilImage`,
-  `ClearAttachments`, `FillBuffer`, `UpdateBuffer`.
-- [ ] Draw-команды: indexed, instanced, indirect; вершинные буферы и атрибуты
-  (сейчас тесты рисуют без vertex input).
-- [ ] Остальное состояние конвейера с тестами: blending, все топологии,
-  culling/front face, polygon mode, depth bias, scissor/viewport как dynamic
-  state, несколько render target, несколько subpass, input attachments.
-- [ ] Push constants, все типы дескрипторов (texel buffers, input attachment,
-  массивы), несколько descriptor sets.
-- [ ] Secondary command buffers и `vkCmdExecuteCommands` (сейчас отклоняются).
-- [ ] Командные буферы больше 64 КиБ (цепочки BO), повторное использование и
-  reset пулов.
-- [ ] Events (`vkCreateEvent`, `vkCmdSetEvent`, `vkCmdWaitEvents`).
-- [ ] Sparse-память не обязательна — оставить выключенной.
-
+### A2. Обязательные возможности 1.0
+- [x] Форматы: обязательный набор Vulkan 1.0 открыт штатными таблицами HasVK и
+  проверен записью/чтением (47 форматов).
+- [x] Изображения 1D/3D/cube, mip-уровни, массивы слоёв.
+- [~] MSAA: 4x с resolve проверен; 2x/8x, `vkCmdResolveImage`, sample shading — нет.
+- [ ] Вспомогательные поверхности HiZ/CCS/MCS отключены (на корректность не
+  влияет, только на скорость); включение — отдельная задача рубежа C.
+- [~] Stencil: тест и запись проверены; clear stencil-аспекта и раздельные
+  front/back операции — нет.
+- [x] Compute: 3D-группы, shared memory, indirect dispatch, лимиты HasVK.
+- [x] Лимиты устройства Vulkan 1.0 — как у HasVK (кроме памяти, см. A3).
+- [x] Команды копирования и clear с побайтной проверкой.
+- [ ] `vkCmdResolveImage`, blit с линейным фильтром и между разными форматами.
+- [x] Draw: indexed, instanced, indirect; вершинные буферы и атрибуты.
+- [~] Состояние конвейера: blending (additive), scissor (dynamic), stencil, MSAA
+  проверены. Без тестов: остальные режимы blending, топологии кроме
+  triangle list, culling, polygon mode, depth bias, несколько render target,
+  несколько subpass, input attachments.
+- [ ] Push constants, texel buffers, массивы дескрипторов, несколько descriptor
+  sets — код upstream, тестов нет.
+- [ ] Геометрические и тесселяционные шейдеры: объявлены, тестов нет.
+- [x] Secondary command buffers и `vkCmdExecuteCommands`.
+- [x] Командные буферы больше 64 КиБ.
+- [ ] Events (`vkCreateEvent`, `vkCmdSetEvent`, `vkCmdWaitEvents`): точки входа
+  есть, поведение не проверено.
+- [ ] Sparse-память не обязательна — оставлена выключенной.
 ### A3. Память и синхронизация
 - [ ] Несколько типов памяти и куч с честным бюджетом; выделения больше
   128 МиБ; проверка на больших объёмах.
@@ -198,9 +215,11 @@ validation layers не дают ошибок на тестах проекта и
 
 ## 6. Ближайшие шаги
 
-1. A1: validation layers на `vkcube` и тестах проекта.
-2. A1: сборка CTS и первый прогон `info`, `api.smoke`, `wsi.win32`.
-3. A2: открыть обязательные форматы и типы изображений, начиная с тех, на
-   которых падает больше всего тестов CTS.
-4. A2: vertex input, indexed/instanced draw, команды копирования.
-5. A3: асинхронная отправка команд.
+1. A1: дождаться сборки `deqp-vk`, первый прогон `info`, `api.smoke`,
+   `wsi.win32`; завести список отказов.
+2. A2: тесты на оставшееся состояние конвейера, push constants и типы
+   дескрипторов — либо сразу по результатам CTS.
+3. A3: асинхронная отправка команд, несколько типов памяти, выделения больше
+   128 МиБ.
+4. A3: потокобезопасность записи command buffers.
+5. A4: `VK_ERROR_OUT_OF_DATE_KHR`, `oldSwapchain`, режим IMMEDIATE.
