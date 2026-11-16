@@ -73,7 +73,8 @@ anv_device_alloc_bo(struct anv_device *device, const char *name, uint64_t size,
    if (!bo) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    struct anv_wddm_device_state *w = device->wddm;
    mtx_lock(&w->mutex);
-   if (w->allocation_count >= ANV_WDDM_MAX_BOS || w->next_bo_id == UINT32_MAX || size > ANV_WDDM_HEAP_BYTES - w->allocated_bytes) {
+   if (!w->bo_ids) w->bo_ids = calloc(BITSET_WORDS(ANV_WDDM_MAX_BOS + 1), sizeof(BITSET_WORD));
+   if (!w->bo_ids || w->allocation_count >= ANV_WDDM_MAX_BOS || size > ANV_WDDM_HEAP_BYTES - w->allocated_bytes) {
       mtx_unlock(&w->mutex); vk_free(&device->vk.alloc, bo);
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    }
@@ -87,7 +88,10 @@ anv_device_alloc_bo(struct anv_device *device, const char *name, uint64_t size,
    }
    bo->name = name; bo->size = size; bo->offset = intel_canonical_address(address);
    bo->refcount = 1; bo->flags = EXEC_OBJECT_PINNED;
-   bo->gem_handle = ++w->next_bo_id; /* HasVK dependency-list ID, not a GEM handle. */
+   /* Dependency-list id, not a GEM handle: lowest free id after the last one handed out. */
+   uint32_t id = w->bo_id_hint;
+   do { id = id % ANV_WDDM_MAX_BOS + 1; } while (BITSET_TEST(w->bo_ids, id));
+   BITSET_SET(w->bo_ids, id); w->bo_id_hint = id; bo->gem_handle = id;
    bo->has_fixed_address = fixed;
    bo->map = hasvk_wddm_bo_map(bo->wddm_bo);
    bo->has_client_visible_address = (flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0;
@@ -126,7 +130,7 @@ anv_device_release_bo(struct anv_device *device, struct anv_bo *bo)
       vk_device_set_lost(&device->vk, "WDDM BO destruction failed");
    } else {
       util_vma_heap_free(bo->has_fixed_address ? &w->state_heap : &w->client_heap, intel_48b_address(bo->offset), bo->size);
-      w->allocated_bytes -= bo->size; --w->allocation_count;
+      w->allocated_bytes -= bo->size; --w->allocation_count; BITSET_CLEAR(w->bo_ids, bo->gem_handle);
    }
    mtx_unlock(&w->mutex);
    vk_free(&device->vk.alloc, bo);

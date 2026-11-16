@@ -24,7 +24,10 @@ struct anv_wddm_device_state {
    uint32_t initialized_pools;
    uint64_t allocated_bytes;
    uint32_t allocation_count;
-   uint32_t next_bo_id;
+   /* BO ids index the per-batch dependency bitsets, so they are recycled
+    * rather than growing with every allocation the device ever made. */
+   BITSET_WORD *bo_ids;
+   uint32_t bo_id_hint;
    uint64_t command_batches_completed;
 };
 

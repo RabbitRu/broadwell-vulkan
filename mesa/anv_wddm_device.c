@@ -478,7 +478,7 @@ static void state_finish(struct anv_wddm_device_state *w)
    if (w->reservation) hasvk_wddm_release(w->transport, w->reservation);
    if (w->transport && hasvk_wddm_device_destroy(w->transport)) fprintf(stderr, "HasVK/WDDM cleanup: %s\n", hasvk_wddm_error());
    u_cnd_monotonic_destroy(&w->condition); mtx_destroy(&w->mutex);
-   free(w);
+   free(w->bo_ids); free(w);
 }
 VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle, const VkDeviceCreateInfo *info,
    const VkAllocationCallbacks *allocator, VkDevice *out)

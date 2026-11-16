@@ -1683,7 +1683,7 @@
 +   if (w->reservation) hasvk_wddm_release(w->transport, w->reservation);
 +   if (w->transport && hasvk_wddm_device_destroy(w->transport)) fprintf(stderr, "HasVK/WDDM cleanup: %s\n", hasvk_wddm_error());
 +   u_cnd_monotonic_destroy(&w->condition); mtx_destroy(&w->mutex);
-+   free(w);
++   free(w->bo_ids); free(w);
 +}
 +VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle, const VkDeviceCreateInfo *info,
 +   const VkAllocationCallbacks *allocator, VkDevice *out)
@@ -1841,7 +1841,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm.h
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,57 @@
 +/* Private Windows platform state for the HasVK port. */
 +#pragma once
 +#include "anv_private.h"
@@ -1868,7 +1868,10 @@
 +   uint32_t initialized_pools;
 +   uint64_t allocated_bytes;
 +   uint32_t allocation_count;
-+   uint32_t next_bo_id;
++   /* BO ids index the per-batch dependency bitsets, so they are recycled
++    * rather than growing with every allocation the device ever made. */
++   BITSET_WORD *bo_ids;
++   uint32_t bo_id_hint;
 +   uint64_t command_batches_completed;
 +};
 +
@@ -1898,7 +1901,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_memory.c
-@@ -0,0 +1,327 @@
+@@ -0,0 +1,331 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -1974,7 +1977,8 @@
 +   if (!bo) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 +   struct anv_wddm_device_state *w = device->wddm;
 +   mtx_lock(&w->mutex);
-+   if (w->allocation_count >= ANV_WDDM_MAX_BOS || w->next_bo_id == UINT32_MAX || size > ANV_WDDM_HEAP_BYTES - w->allocated_bytes) {
++   if (!w->bo_ids) w->bo_ids = calloc(BITSET_WORDS(ANV_WDDM_MAX_BOS + 1), sizeof(BITSET_WORD));
++   if (!w->bo_ids || w->allocation_count >= ANV_WDDM_MAX_BOS || size > ANV_WDDM_HEAP_BYTES - w->allocated_bytes) {
 +      mtx_unlock(&w->mutex); vk_free(&device->vk.alloc, bo);
 +      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 +   }
@@ -1988,7 +1992,10 @@
 +   }
 +   bo->name = name; bo->size = size; bo->offset = intel_canonical_address(address);
 +   bo->refcount = 1; bo->flags = EXEC_OBJECT_PINNED;
-+   bo->gem_handle = ++w->next_bo_id; /* HasVK dependency-list ID, not a GEM handle. */
++   /* Dependency-list id, not a GEM handle: lowest free id after the last one handed out. */
++   uint32_t id = w->bo_id_hint;
++   do { id = id % ANV_WDDM_MAX_BOS + 1; } while (BITSET_TEST(w->bo_ids, id));
++   BITSET_SET(w->bo_ids, id); w->bo_id_hint = id; bo->gem_handle = id;
 +   bo->has_fixed_address = fixed;
 +   bo->map = hasvk_wddm_bo_map(bo->wddm_bo);
 +   bo->has_client_visible_address = (flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0;
@@ -2027,7 +2034,7 @@
 +      vk_device_set_lost(&device->vk, "WDDM BO destruction failed");
 +   } else {
 +      util_vma_heap_free(bo->has_fixed_address ? &w->state_heap : &w->client_heap, intel_48b_address(bo->offset), bo->size);
-+      w->allocated_bytes -= bo->size; --w->allocation_count;
++      w->allocated_bytes -= bo->size; --w->allocation_count; BITSET_CLEAR(w->bo_ids, bo->gem_handle);
 +   }
 +   mtx_unlock(&w->mutex);
 +   vk_free(&device->vk.alloc, bo);
