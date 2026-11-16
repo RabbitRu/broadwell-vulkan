@@ -156,7 +156,7 @@ static VkResult enumerate(struct vk_instance *base)
    physical->supports_48bit_addresses = physical->use_softpin = true;
    physical->gtt_size = 16ull << 30;
    physical->memory.heap_count = physical->memory.type_count = 1;
-   physical->memory.heaps[0] = (struct anv_memory_heap){.size = 128ull << 20, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
+   physical->memory.heaps[0] = (struct anv_memory_heap){.size = ANV_WDDM_HEAP_BYTES, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
    physical->memory.types[0] = (struct anv_memory_type){
       .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
       .heapIndex = 0,
@@ -323,7 +323,7 @@ VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceMemoryProperties(VkPhysicalDevic
    ANV_FROM_HANDLE(anv_physical_device, physical, handle);
    memset(properties, 0, sizeof(*properties));
    properties->memoryHeapCount = properties->memoryTypeCount = 1;
-   properties->memoryHeaps[0] = (VkMemoryHeap){128ull << 20, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
+   properties->memoryHeaps[0] = (VkMemoryHeap){ANV_WDDM_HEAP_BYTES, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
    properties->memoryTypes[0] = (VkMemoryType){physical->memory.types[0].propertyFlags, 0};
 }
 /* With graphics enabled, format and image-format queries are upstream HasVK

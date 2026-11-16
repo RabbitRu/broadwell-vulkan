@@ -1361,7 +1361,7 @@
 +   physical->supports_48bit_addresses = physical->use_softpin = true;
 +   physical->gtt_size = 16ull << 30;
 +   physical->memory.heap_count = physical->memory.type_count = 1;
-+   physical->memory.heaps[0] = (struct anv_memory_heap){.size = 128ull << 20, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
++   physical->memory.heaps[0] = (struct anv_memory_heap){.size = ANV_WDDM_HEAP_BYTES, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
 +   physical->memory.types[0] = (struct anv_memory_type){
 +      .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 +      .heapIndex = 0,
@@ -1528,7 +1528,7 @@
 +   ANV_FROM_HANDLE(anv_physical_device, physical, handle);
 +   memset(properties, 0, sizeof(*properties));
 +   properties->memoryHeapCount = properties->memoryTypeCount = 1;
-+   properties->memoryHeaps[0] = (VkMemoryHeap){128ull << 20, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
++   properties->memoryHeaps[0] = (VkMemoryHeap){ANV_WDDM_HEAP_BYTES, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
 +   properties->memoryTypes[0] = (VkMemoryType){physical->memory.types[0].propertyFlags, 0};
 +}
 +/* With graphics enabled, format and image-format queries are upstream HasVK
@@ -1841,13 +1841,19 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm.h
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,54 @@
 +/* Private Windows platform state for the HasVK port. */
 +#pragma once
 +#include "anv_private.h"
 +#include "wddm/hasvk_wddm.h"
 +#include "util/cnd_monotonic.h"
 +#include "util/vma.h"
++
++/* One WDDM allocation is at most 128 MiB (transport profile). The device-wide
++ * budget is what the single Vulkan heap reports. */
++#define ANV_WDDM_MAX_BO_BYTES (128ull << 20)
++#define ANV_WDDM_HEAP_BYTES (2ull << 30)
++#define ANV_WDDM_MAX_BOS 65536u
 +
 +struct anv_wddm_device_state {
 +   struct hasvk_wddm_device *transport;
@@ -1961,14 +1967,14 @@
 +   const bool fixed = (flags & ANV_BO_ALLOC_FIXED_ADDRESS) != 0;
 +   if ((flags & ~allowed) || (fixed ? !explicit_address || (explicit_address & 4095) : explicit_address != 0))
 +      return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
-+   if (!size || size > (128ull << 20))
++   if (!size || size > ANV_WDDM_MAX_BO_BYTES)
 +      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 +   size = align64(size, 4096);
 +   struct anv_bo *bo = vk_zalloc(&device->vk.alloc, sizeof(*bo), 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
 +   if (!bo) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 +   struct anv_wddm_device_state *w = device->wddm;
 +   mtx_lock(&w->mutex);
-+   if (w->allocation_count >= 4096 || w->next_bo_id == UINT32_MAX || size > (128ull << 20) - w->allocated_bytes) {
++   if (w->allocation_count >= ANV_WDDM_MAX_BOS || w->next_bo_id == UINT32_MAX || size > ANV_WDDM_HEAP_BYTES - w->allocated_bytes) {
 +      mtx_unlock(&w->mutex); vk_free(&device->vk.alloc, bo);
 +      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 +   }
@@ -2033,7 +2039,7 @@
 +{
 +   ANV_FROM_HANDLE(anv_device, device, handle);
 +   *out = VK_NULL_HANDLE;
-+   if (info->memoryTypeIndex != 0 || !info->allocationSize || info->allocationSize > (128ull << 20))
++   if (info->memoryTypeIndex != 0 || !info->allocationSize || info->allocationSize > ANV_WDDM_MAX_BO_BYTES)
 +      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 +   /* Unsupported allocation controls must not be silently accepted. */
 +   vk_foreach_struct_const(ext, info->pNext) {
@@ -2122,7 +2128,7 @@
 +{
 +   ANV_FROM_HANDLE(anv_device, device, handle);
 +   *out = VK_NULL_HANDLE;
-+   if (info->flags || !info->size || info->size > (128ull << 20)) return VK_ERROR_FEATURE_NOT_PRESENT;
++   if (info->flags || !info->size || info->size > ANV_WDDM_MAX_BO_BYTES) return VK_ERROR_FEATURE_NOT_PRESENT;
 +   const VkBufferUsageFlags allowed = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
 +      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
 +      VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;

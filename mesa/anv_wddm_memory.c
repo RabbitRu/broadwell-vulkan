@@ -66,14 +66,14 @@ anv_device_alloc_bo(struct anv_device *device, const char *name, uint64_t size,
    const bool fixed = (flags & ANV_BO_ALLOC_FIXED_ADDRESS) != 0;
    if ((flags & ~allowed) || (fixed ? !explicit_address || (explicit_address & 4095) : explicit_address != 0))
       return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
-   if (!size || size > (128ull << 20))
+   if (!size || size > ANV_WDDM_MAX_BO_BYTES)
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    size = align64(size, 4096);
    struct anv_bo *bo = vk_zalloc(&device->vk.alloc, sizeof(*bo), 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
    if (!bo) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    struct anv_wddm_device_state *w = device->wddm;
    mtx_lock(&w->mutex);
-   if (w->allocation_count >= 4096 || w->next_bo_id == UINT32_MAX || size > (128ull << 20) - w->allocated_bytes) {
+   if (w->allocation_count >= ANV_WDDM_MAX_BOS || w->next_bo_id == UINT32_MAX || size > ANV_WDDM_HEAP_BYTES - w->allocated_bytes) {
       mtx_unlock(&w->mutex); vk_free(&device->vk.alloc, bo);
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    }
@@ -138,7 +138,7 @@ anv_AllocateMemory(VkDevice handle, const VkMemoryAllocateInfo *info,
 {
    ANV_FROM_HANDLE(anv_device, device, handle);
    *out = VK_NULL_HANDLE;
-   if (info->memoryTypeIndex != 0 || !info->allocationSize || info->allocationSize > (128ull << 20))
+   if (info->memoryTypeIndex != 0 || !info->allocationSize || info->allocationSize > ANV_WDDM_MAX_BO_BYTES)
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    /* Unsupported allocation controls must not be silently accepted. */
    vk_foreach_struct_const(ext, info->pNext) {
@@ -227,7 +227,7 @@ anv_CreateBuffer(VkDevice handle, const VkBufferCreateInfo *info,
 {
    ANV_FROM_HANDLE(anv_device, device, handle);
    *out = VK_NULL_HANDLE;
-   if (info->flags || !info->size || info->size > (128ull << 20)) return VK_ERROR_FEATURE_NOT_PRESENT;
+   if (info->flags || !info->size || info->size > ANV_WDDM_MAX_BO_BYTES) return VK_ERROR_FEATURE_NOT_PRESENT;
    const VkBufferUsageFlags allowed = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
       VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;

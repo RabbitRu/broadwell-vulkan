@@ -5,6 +5,12 @@
 #include "util/cnd_monotonic.h"
 #include "util/vma.h"
 
+/* One WDDM allocation is at most 128 MiB (transport profile). The device-wide
+ * budget is what the single Vulkan heap reports. */
+#define ANV_WDDM_MAX_BO_BYTES (128ull << 20)
+#define ANV_WDDM_HEAP_BYTES (2ull << 30)
+#define ANV_WDDM_MAX_BOS 65536u
+
 struct anv_wddm_device_state {
    struct hasvk_wddm_device *transport;
    struct hasvk_wddm_bo *entry, *completion;

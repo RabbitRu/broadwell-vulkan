@@ -74,9 +74,9 @@ static unsigned test_memory(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcA
       }
       uint64_t actual_bytes{}; uint32_t actual_count{};
       require(!stats(device, &actual_bytes, &actual_count) && actual_bytes == expected_bytes && actual_count == baseline_count + live.size(), "WDDM allocation accounting mismatch");
-      VkMemoryAllocateInfo full{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; full.allocationSize = 128ull << 20;
+      VkMemoryAllocateInfo full{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; full.allocationSize = (128ull << 20) + 4096;   /* above the largest single WDDM allocation */
       VkDeviceMemory rejected{};
-      require(vkAllocateMemory(device, &full, nullptr, &rejected) == VK_ERROR_OUT_OF_DEVICE_MEMORY && !rejected, "Heap budget was not enforced");
+      require(vkAllocateMemory(device, &full, nullptr, &rejected) == VK_ERROR_OUT_OF_DEVICE_MEMORY && !rejected, "Oversized allocation was not rejected");
       // Keep all allocations resident/mapped during a real GPU submission.
       // This tests lifetime/cache handling, not shader access to these buffers.
       VkSubmitInfo empty{VK_STRUCTURE_TYPE_SUBMIT_INFO}; check(vkQueueSubmit(queue, 1, &empty, VK_NULL_HANDLE), "Submit with live application allocations");

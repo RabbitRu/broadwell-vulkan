@@ -78,6 +78,7 @@ int wmain(int argc, wchar_t **argv)
       report["texturedDepthCases"] = test_graphics(device, queue, vkGetDeviceProcAddr, true);
       report["computeCases"] = test_compute(device, queue, vkGetDeviceProcAddr);
       report["formatCoverage"] = test_formats(physical, vkGetPhysicalDeviceFormatProperties, device, queue, vkGetDeviceProcAddr);
+      report["largeMemory"] = test_large_memory(device, queue, vkGetDeviceProcAddr);
       report["transfer"] = test_copies(device, queue, vkGetDeviceProcAddr);
       report["drawCases"] = test_draws(device, queue, vkGetDeviceProcAddr);
       report["queryCases"] = test_queries(device, queue, vkGetDeviceProcAddr, properties.limits.timestampPeriod, family.timestampValidBits);

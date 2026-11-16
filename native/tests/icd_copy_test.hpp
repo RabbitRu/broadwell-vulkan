@@ -206,3 +206,60 @@ static json test_copies(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr 
    vkDestroyCommandPool(device, pool, nullptr);
    return report;
 }
+
+/* Device memory well beyond the old 128 MiB budget: twelve live 64 MiB
+ * allocations (768 MiB), each written by the GPU at both ends in one batch. */
+static json test_large_memory(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr get)
+{
+#define API(name) auto name = reinterpret_cast<PFN_##name>(get(device, #name)); require(name != nullptr, "Missing " #name)
+   API(vkAllocateMemory); API(vkFreeMemory); API(vkMapMemory); API(vkCreateBuffer); API(vkDestroyBuffer); API(vkBindBufferMemory);
+   API(vkCreateCommandPool); API(vkDestroyCommandPool); API(vkAllocateCommandBuffers); API(vkBeginCommandBuffer); API(vkEndCommandBuffer);
+   API(vkCmdFillBuffer); API(vkCmdPipelineBarrier); API(vkCreateFence); API(vkDestroyFence); API(vkQueueSubmit); API(vkWaitForFences);
+#undef API
+   using MemoryStats = int (*)(VkDevice, uint64_t *, uint32_t *);
+   auto stats = reinterpret_cast<MemoryStats>(GetProcAddress(GetModuleHandleW(L"vulkan_hasvk_wddm.dll"), "hasvk_wddm_icd_query_memory"));
+   require(stats != nullptr, "Missing WDDM allocation diagnostics");
+   uint64_t baseline_bytes{}; uint32_t baseline_count{}; require(!stats(device, &baseline_bytes, &baseline_count), "Cannot query WDDM allocation usage");
+   const uint64_t size = 64ull << 20, edge = 65536; const unsigned count = 12;
+   struct Block { VkBuffer buffer{}; VkDeviceMemory memory{}; uint8_t *map{}; };
+   std::vector<Block> blocks(count);
+   VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; VkCommandPool pool{};
+   check(vkCreateCommandPool(device, &pool_info, nullptr, &pool), "Create large-memory command pool");
+   VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; ca.commandPool = pool; ca.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ca.commandBufferCount = 1;
+   VkCommandBuffer command{}; check(vkAllocateCommandBuffers(device, &ca, &command), "Allocate large-memory command buffer");
+   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; check(vkBeginCommandBuffer(command, &begin), "Begin large-memory command buffer");
+   for (unsigned i = 0; i < count; ++i) {
+      Block &b = blocks[i]; VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bi.size = size; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+      check(vkCreateBuffer(device, &bi, nullptr, &b.buffer), "Create 64 MiB buffer");
+      VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; ai.allocationSize = size;
+      check(vkAllocateMemory(device, &ai, nullptr, &b.memory), "Allocate 64 MiB of device memory");
+      check(vkBindBufferMemory(device, b.buffer, b.memory, 0), "Bind 64 MiB buffer");
+      void *map{}; check(vkMapMemory(device, b.memory, 0, VK_WHOLE_SIZE, 0, &map), "Map 64 MiB buffer"); b.map = static_cast<uint8_t *>(map);
+      memset(b.map, 0x11, edge); memset(b.map + size - edge, 0x22, edge);
+      for (uint64_t page = edge; page < size - edge; page += 1ull << 20) memset(b.map + page, static_cast<int>(0x40 + i), 4096);   /* sentinels the GPU must not touch */
+      vkCmdFillBuffer(command, b.buffer, 0, edge, 0xa0000000u + i); vkCmdFillBuffer(command, b.buffer, size - edge, edge, 0xb0000000u + i);
+   }
+   uint64_t live_bytes{}; uint32_t live_count{};
+   require(!stats(device, &live_bytes, &live_count) && live_bytes >= baseline_bytes + count * size && live_count >= baseline_count + count, "Large allocation accounting mismatch");
+   VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+   vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+   check(vkEndCommandBuffer(command), "End large-memory command buffer");
+   VkFenceCreateInfo fc{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; VkFence fence{}; check(vkCreateFence(device, &fc, nullptr, &fence), "Create large-memory fence");
+   VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &command;
+   check(vkQueueSubmit(queue, 1, &submit, fence), "Submit large-memory fills"); check(vkWaitForFences(device, 1, &fence, VK_TRUE, 30000000000ull), "Wait large-memory fills");
+   for (unsigned i = 0; i < count; ++i) {
+      const Block &b = blocks[i];
+      for (uint64_t word = 0; word < edge / 4; ++word) {
+         uint32_t low, high; memcpy(&low, b.map + word * 4, 4); memcpy(&high, b.map + size - edge + word * 4, 4);
+         require(low == 0xa0000000u + i && high == 0xb0000000u + i, "GPU fill of a large allocation differs");
+      }
+      for (uint64_t page = edge; page < size - edge; page += 1ull << 20) for (unsigned k = 0; k < 4096; k += 509) require(b.map[page + k] == 0x40 + i, "Large allocation sentinel overwritten");
+   }
+   vkDestroyFence(device, fence, nullptr); vkDestroyCommandPool(device, pool, nullptr);
+   /* State pools may have grown meanwhile, so compare just before and after the frees. */
+   require(!stats(device, &live_bytes, &live_count), "Cannot query WDDM allocation usage");
+   for (Block &b : blocks) { vkDestroyBuffer(device, b.buffer, nullptr); vkFreeMemory(device, b.memory, nullptr); }
+   uint64_t final_bytes{}; uint32_t final_count{};
+   require(!stats(device, &final_bytes, &final_count) && live_bytes - final_bytes == count * size && live_count - final_count == count, "Large allocations were not returned");
+   return {{"allocations", count}, {"bytesEach", size}, {"liveBytes", count * size}, {"gpuFilledBothEnds", true}, {"allReturned", true}};
+}
