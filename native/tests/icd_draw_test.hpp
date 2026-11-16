@@ -17,7 +17,7 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
    API(vkCreateFence); API(vkDestroyFence); API(vkQueueSubmit); API(vkWaitForFences);
    API(vkCreateBuffer); API(vkDestroyBuffer); API(vkGetBufferMemoryRequirements); API(vkBindBufferMemory);
    API(vkCmdBindVertexBuffers); API(vkCmdBindIndexBuffer); API(vkCmdDraw); API(vkCmdDrawIndexed);
-   API(vkCmdDrawIndirect); API(vkCmdDrawIndexedIndirect);
+   API(vkCmdDrawIndirect); API(vkCmdDrawIndexedIndirect); API(vkCmdExecuteCommands);
 #undef API
    using ReadImage = int (*)(VkImage, void *, uint64_t, uint32_t *);
    auto read_image = reinterpret_cast<ReadImage>(GetProcAddress(GetModuleHandleW(L"vulkan_hasvk_wddm.dll"), "hasvk_wddm_icd_read_image"));
@@ -88,8 +88,14 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
    for (int i = 0; i < 5; ++i) owner[i / 4][i % 4] = i;
    owner[2][0] = 0; owner[2][1] = 0;
    json results = json::array();
-   for (uint32_t size : {128u, 256u}) for (VkImageTiling tiling : {VK_IMAGE_TILING_LINEAR, VK_IMAGE_TILING_OPTIMAL}) {
-      std::cerr << "Draw case " << size << " tiling=" << tiling << '\n';
+   using QueryChunks = int (*)(VkCommandBuffer, uint32_t *);
+   auto query_chunks = reinterpret_cast<QueryChunks>(GetProcAddress(GetModuleHandleW(L"vulkan_hasvk_wddm.dll"), "hasvk_wddm_icd_query_command_chunks"));
+   require(query_chunks != nullptr, "Missing command chunk diagnostics");
+   struct Case { uint32_t size; VkImageTiling tiling; unsigned mode; };
+   for (const Case &test_case : {Case{128, VK_IMAGE_TILING_LINEAR, 0}, Case{128, VK_IMAGE_TILING_OPTIMAL, 0}, Case{256, VK_IMAGE_TILING_LINEAR, 0}, Case{256, VK_IMAGE_TILING_OPTIMAL, 0},
+                                 Case{128, VK_IMAGE_TILING_OPTIMAL, 1}, Case{128, VK_IMAGE_TILING_OPTIMAL, 2}, Case{128, VK_IMAGE_TILING_OPTIMAL, 3}}) {
+      const uint32_t size = test_case.size; const VkImageTiling tiling = test_case.tiling; const unsigned mode_index = test_case.mode;
+      std::cerr << "Draw case " << size << " tiling=" << tiling << " mode=" << mode_index << '\n';
       VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; ii.imageType = VK_IMAGE_TYPE_2D; ii.format = attachment.format;
       ii.extent = {size, size, 1}; ii.mipLevels = ii.arrayLayers = 1; ii.samples = VK_SAMPLE_COUNT_1_BIT;
       ii.tiling = tiling; ii.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
@@ -128,33 +134,67 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
       VkPipeline pipeline{}; check(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &pipeline), "Create vertex-input pipeline");
       VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; VkCommandPool pool{};
       check(vkCreateCommandPool(device, &pool_info, nullptr, &pool), "Create draw command pool");
+      /* Modes: 0 = inline; 1 = inline with enough repeated draws to chain several command BOs;
+       * 2 = two secondaries, one inheriting the framebuffer and one not; 3 = one chained secondary. */
+      const unsigned mode = mode_index;
       VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; ca.commandPool = pool; ca.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ca.commandBufferCount = 1;
       VkCommandBuffer command{}; check(vkAllocateCommandBuffers(device, &ca, &command), "Allocate draw command buffer");
+      VkCommandBuffer secondaries[2]{}; ca.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY; ca.commandBufferCount = 2;
+      check(vkAllocateCommandBuffers(device, &ca, secondaries), "Allocate secondary command buffers");
+      auto first_half = [&](VkCommandBuffer target, unsigned repeats) {
+         vkCmdBindPipeline(target, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+         const VkBuffer bound[2] = {vertex_buffer, instance_buffer}; const VkDeviceSize bound_offsets[2] = {32, 48};
+         vkCmdBindVertexBuffers(target, 0, 2, bound, bound_offsets);
+         for (unsigned i = 0; i < repeats; ++i) vkCmdDraw(target, 6, 2, 0, 0);    /* instances 0,1 */
+         vkCmdBindIndexBuffer(target, index16_buffer, 8, VK_INDEX_TYPE_UINT16);
+         vkCmdDrawIndexed(target, 6, 2, 0, 6, 2);                                 /* instances 2,3, base vertex 6 */
+      };
+      auto second_half = [&](VkCommandBuffer target, bool bind) {
+         if (bind) {
+            vkCmdBindPipeline(target, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            const VkBuffer bound[2] = {vertex_buffer, instance_buffer}; const VkDeviceSize bound_offsets[2] = {32, 48};
+            vkCmdBindVertexBuffers(target, 0, 2, bound, bound_offsets);
+         }
+         vkCmdBindIndexBuffer(target, index32_buffer, 16, VK_INDEX_TYPE_UINT32);
+         vkCmdDrawIndexed(target, 6, 1, 3, 6, 4);                                 /* instance 4, first index 3 */
+         vkCmdDrawIndirect(target, indirect_buffer, 16, 1, sizeof(VkDrawIndirectCommand));             /* set B, instance 0 */
+         vkCmdDrawIndexedIndirect(target, indirect_buffer, 64, 1, sizeof(VkDrawIndexedIndirectCommand)); /* set C, instance 0 */
+      };
+      const unsigned long_repeats = 6000;
+      if (mode >= 2) {
+         VkCommandBufferInheritanceInfo inherit{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO}; inherit.renderPass = render_pass; inherit.subpass = 0;
+         VkCommandBufferBeginInfo sbegin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; sbegin.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT; sbegin.pInheritanceInfo = &inherit;
+         inherit.framebuffer = framebuffer;
+         check(vkBeginCommandBuffer(secondaries[0], &sbegin), "Begin secondary with framebuffer");
+         first_half(secondaries[0], mode == 3 ? long_repeats : 1);
+         if (mode == 3) second_half(secondaries[0], false);
+         check(vkEndCommandBuffer(secondaries[0]), "End secondary with framebuffer");
+         inherit.framebuffer = VK_NULL_HANDLE;
+         check(vkBeginCommandBuffer(secondaries[1], &sbegin), "Begin secondary without framebuffer");
+         if (mode == 2) second_half(secondaries[1], true);
+         check(vkEndCommandBuffer(secondaries[1]), "End secondary without framebuffer");
+      }
       VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; check(vkBeginCommandBuffer(command, &begin), "Begin draw command buffer");
       VkClearValue clear{}; clear.color.float32[3] = 1;
       VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; rp.renderPass = render_pass; rp.framebuffer = framebuffer;
       rp.renderArea = scissor; rp.clearValueCount = 1; rp.pClearValues = &clear;
-      vkCmdBeginRenderPass(command, &rp, VK_SUBPASS_CONTENTS_INLINE);
-      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-      const VkBuffer bound[2] = {vertex_buffer, instance_buffer}; const VkDeviceSize bound_offsets[2] = {32, 48};
-      vkCmdBindVertexBuffers(command, 0, 2, bound, bound_offsets);
-      vkCmdDraw(command, 6, 2, 0, 0);                                  /* instances 0,1 */
-      vkCmdBindIndexBuffer(command, index16_buffer, 8, VK_INDEX_TYPE_UINT16);
-      vkCmdDrawIndexed(command, 6, 2, 0, 6, 2);                        /* instances 2,3, base vertex 6 */
-      vkCmdBindIndexBuffer(command, index32_buffer, 16, VK_INDEX_TYPE_UINT32);
-      vkCmdDrawIndexed(command, 6, 1, 3, 6, 4);                        /* instance 4, first index 3 */
-      vkCmdDrawIndirect(command, indirect_buffer, 16, 1, sizeof(VkDrawIndirectCommand));             /* set B, instance 0 */
-      vkCmdDrawIndexedIndirect(command, indirect_buffer, 64, 1, sizeof(VkDrawIndexedIndirectCommand)); /* set C, instance 0 */
+      vkCmdBeginRenderPass(command, &rp, mode >= 2 ? VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS : VK_SUBPASS_CONTENTS_INLINE);
+      if (mode >= 2) vkCmdExecuteCommands(command, mode == 2 ? 2 : 1, secondaries);
+      else { first_half(command, mode == 1 ? long_repeats : 1); second_half(command, false); }
       vkCmdEndRenderPass(command);
       VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
       vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
       check(vkEndCommandBuffer(command), "End draw command buffer");
+      uint32_t primary_chunks{}, secondary_chunks{};
+      require(!query_chunks(command, &primary_chunks) && !query_chunks(secondaries[0], &secondary_chunks), "Command chunk diagnostics failed");
+      if (mode_index == 1 || mode_index == 3) require(primary_chunks >= 3, "Long command buffer did not chain several BOs");
+      if (mode_index == 3) require(secondary_chunks >= 3, "Long secondary did not chain several BOs");
       VkFenceCreateInfo fc{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; VkFence fence{}; check(vkCreateFence(device, &fc, nullptr, &fence), "Create draw fence");
       VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &command;
       check(vkQueueSubmit(queue, 1, &submit, fence), "Submit draws"); check(vkWaitForFences(device, 1, &fence, VK_TRUE, 15000000000ull), "Wait draws");
       std::vector<uint32_t> pixels(size * size); uint32_t actual_tiling{};
       require(!read_image(image, pixels.data(), pixels.size() * 4, &actual_tiling), "Read draw render target");
-      const auto case_dir = fs::path("diagnostics") / ("draw-" + std::to_string(size) + "-" + std::to_string(tiling)); fs::create_directories(case_dir);
+      const auto case_dir = fs::path("diagnostics") / ("draw-" + std::to_string(size) + "-" + std::to_string(tiling) + "-mode" + std::to_string(mode_index)); fs::create_directories(case_dir);
       std::ofstream(case_dir / "pixels.rgba", std::ios::binary).write(reinterpret_cast<const char *>(pixels.data()), pixels.size() * 4);
       uint32_t coloured = 0, mismatches = 0;
       for (uint32_t y = 0; y < size; ++y) for (uint32_t x = 0; x < size; ++x) {
@@ -169,7 +209,9 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
       const auto guards = static_cast<const uint8_t *>(map);
       for (uint64_t i = 0; i < bytes; ++i) if (i < offset || i >= offset + mr.size) require(guards[i] == 0x4b, "Draw render target guard overwritten");
       for (const Guarded &g : buffers) require(!memcmp(g.map, g.expected.data(), g.expected.size()), "Draw input buffer or its guards changed");
-      results.push_back({{"size", size}, {"vkTiling", tiling}, {"comparedPixels", size * size}, {"colouredPixels", coloured}, {"quads", 7}, {"guardsIntact", true}});
+      results.push_back({{"size", size}, {"vkTiling", tiling}, {"comparedPixels", size * size}, {"colouredPixels", coloured}, {"quads", 7}, {"guardsIntact", true},
+         {"mode", mode_index == 0 ? "inline" : mode_index == 1 ? "inline, chained command BOs" : mode_index == 2 ? "two secondaries" : "chained secondary"},
+         {"primaryCommandBos", primary_chunks}, {"secondaryCommandBos", secondary_chunks}});
       vkDestroyFence(device, fence, nullptr); vkDestroyCommandPool(device, pool, nullptr); vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyFramebuffer(device, framebuffer, nullptr); vkDestroyImageView(device, view, nullptr);
       vkUnmapMemory(device, memory); vkDestroyImage(device, image, nullptr); vkFreeMemory(device, memory, nullptr);

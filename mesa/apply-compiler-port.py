@@ -47,7 +47,7 @@ names = {
     'src/intel/vulkan_hasvk/anv_blorp.c', 'src/intel/vulkan_hasvk/genX_blorp_exec.c',
     'src/intel/vulkan_hasvk/gfx8_cmd_buffer.c',
     'src/intel/vulkan_hasvk/anv_device.c',
-    'src/intel/vulkan_hasvk/genX_query.c',
+    'src/intel/vulkan_hasvk/genX_query.c', 'src/intel/vulkan_hasvk/genX_gpu_memcpy.c',
 }
 missing = {name for name in names if not (originals / name).exists()}
 if missing:
@@ -470,7 +470,7 @@ if get_option('hasvk-wddm-graphics')
   common_commands = ['anv_wddm_graphics_common.c', 'anv_wddm_graphics_blorp.c']
   gen8_commands = ['anv_wddm_graphics_gen8.c', 'anv_wddm_graphics_pipeline.c',
     'anv_wddm_graphics_dynamic.c', 'anv_wddm_graphics_state.c', 'anv_wddm_graphics_blorp_exec.c',
-    'anv_wddm_graphics_query.c']
+    'anv_wddm_graphics_query.c', 'anv_wddm_graphics_memcpy.c']
 endif
 libanv_wddm_objects = static_library('anv_wddm_objects',
   ['../vulkan_hasvk/anv_wddm_device.c', '../vulkan_hasvk/anv_wddm_memory.c', '../vulkan_hasvk/anv_wddm_pools.c', '../vulkan_hasvk/anv_allocator.c',

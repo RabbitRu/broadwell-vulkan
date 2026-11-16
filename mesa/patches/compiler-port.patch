@@ -1202,7 +1202,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,635 @@
+@@ -0,0 +1,633 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -1446,9 +1446,7 @@
 +   p->pointSizeGranularity = 1.0f / 8.0f; p->lineWidthGranularity = 1.0f / 128.0f;
 +   p->strictLines = false; p->standardSampleLocations = true;
 +   p->optimalBufferCopyOffsetAlignment = p->optimalBufferCopyRowPitchAlignment = 128;
-+   /* Vulkan 1.0 features of HasVK for Gen8, except inheritedQueries (no
-+    * secondary command buffers yet) and the shader storage-image ones HasVK
-+    * itself leaves off. */
++   /* Vulkan 1.0 features of HasVK for Gen8. */
 +   struct vk_features *f = &physical->vk.supported_features;
 +   f->robustBufferAccess = f->fullDrawIndexUint32 = f->imageCubeArray = f->independentBlend = true;
 +   f->geometryShader = f->tessellationShader = f->sampleRateShading = f->dualSrcBlend = f->logicOp = true;
@@ -1461,7 +1459,7 @@
 +   f->shaderStorageBufferArrayDynamicIndexing = f->shaderStorageImageArrayDynamicIndexing = true;
 +   f->shaderClipDistance = f->shaderCullDistance = true;
 +   f->shaderFloat64 = physical->info.has_64bit_float; f->shaderInt64 = f->shaderInt16 = true;
-+   f->variableMultisampleRate = true;
++   f->variableMultisampleRate = f->inheritedQueries = true;
 +   /* PS_DEPTH_COUNT gives exact sample counts (HasVK genX_query.c). */
 +   physical->vk.supported_features.occlusionQueryPrecise = true;
 +   physical->vk.supported_features.pipelineStatisticsQuery = true;
@@ -1840,7 +1838,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm.h
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,48 @@
 +/* Private Windows platform state for the HasVK port. */
 +#pragma once
 +#include "anv_private.h"
@@ -1867,8 +1865,16 @@
 +
 +VkResult anv_wddm_pools_init(struct anv_device *device);
 +void anv_wddm_pools_finish(struct anv_device *device);
++/* A command buffer is a chain of fixed-size BOs. chunks[0].bo == bo lives as
++ * long as the command buffer; further chunks are released on reset. */
++struct anv_wddm_cmd_chunk {
++   struct anv_bo *bo;
++   uint32_t length;
++};
 +struct anv_wddm_cmd_state {
 +   struct anv_bo *bo;
++   struct anv_wddm_cmd_chunk *chunks;
++   uint32_t chunk_count, chunk_capacity;
 +};
 +int anv_wddm_execute_command(struct anv_cmd_buffer *cmd);
 +#ifdef HASVK_WDDM_GRAPHICS
@@ -2490,15 +2496,53 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_command.c
-@@ -0,0 +1,167 @@
-+/* Windows lifetime and submission backing for HasVK compute command buffers.
-+ * Packet emission, descriptor binding and push packing use upstream HasVK. */
+@@ -0,0 +1,269 @@
++/* Windows lifetime and submission backing for HasVK command buffers.
++ * Packet emission, descriptor binding and push packing use upstream HasVK.
++ *
++ * A command buffer is a chain of 64 KiB BOs linked by MI_BATCH_BUFFER_START.
++ * Every BO ends in a 256-byte guard region; the first one also holds the GPU
++ * completion marker written by the last PIPE_CONTROL of a primary buffer.
++ * Secondary command buffers are copied into the primary at
++ * vkCmdExecuteCommands (HasVK's "emit" execution mode). */
 +#include "anv_wddm.h"
 +#include "genxml/gen_macros.h"
 +#include "genxml/genX_pack.h"
 +
-+enum { command_bytes = 65536, marker_offset = command_bytes - 64 };
++enum { command_bytes = 65536, guard_bytes = 256, chain_bytes = 16,
++       usable_bytes = command_bytes - guard_bytes - chain_bytes, marker_offset = command_bytes - 64 };
 +
++static void command_use_bo(struct anv_cmd_buffer *cmd, struct anv_bo *bo)
++{
++   memset((char *)bo->map + command_bytes - guard_bytes, 0x6d, guard_bytes);
++   anv_batch_set_storage(&cmd->batch, (struct anv_address){bo, 0}, bo->map, usable_bytes);
++}
++/* anv_batch_emit_dwords found no room: close this BO with a jump to a new one. */
++static VkResult command_extend(struct anv_batch *batch, void *data)
++{
++   struct anv_cmd_buffer *cmd = data;
++   struct anv_wddm_cmd_state *s = cmd->wddm;
++   if (s->chunk_count == s->chunk_capacity) {
++      const uint32_t capacity = MAX2(8, s->chunk_capacity * 2);
++      struct anv_wddm_cmd_chunk *chunks = vk_realloc(&cmd->vk.pool->alloc, s->chunks, capacity * sizeof(*chunks), 8,
++         VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++      if (!chunks) return VK_ERROR_OUT_OF_HOST_MEMORY;
++      s->chunks = chunks; s->chunk_capacity = capacity;
++   }
++   struct anv_bo *bo;
++   VkResult result = anv_device_alloc_bo(cmd->device, "command", command_bytes, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &bo);
++   if (result != VK_SUCCESS) return result;
++   s->chunks[s->chunk_count - 1].length = (uint32_t)((char *)batch->next - (char *)batch->start);
++   /* chain_bytes past batch->end are reserved for this jump. */
++   uint32_t *jump = batch->next;
++   struct GENX(MI_BATCH_BUFFER_START) start = { GENX(MI_BATCH_BUFFER_START_header),
++      .AddressSpaceIndicator = ASI_PPGTT, .BatchBufferStartAddress = (struct anv_address){bo, 0} };
++   GENX(MI_BATCH_BUFFER_START_pack)(batch, jump, &start);
++   jump[GENX(MI_BATCH_BUFFER_START_length)] = 0; /* MI_NOOP */
++   s->chunks[s->chunk_count++] = (struct anv_wddm_cmd_chunk){bo, 0};
++   command_use_bo(cmd, bo);
++   return batch->status;
++}
 +static void command_resources_finish(struct anv_cmd_buffer *cmd)
 +{
 +#ifdef HASVK_WDDM_GRAPHICS
@@ -2512,6 +2556,8 @@
 +   anv_state_stream_finish(&cmd->general_state_stream);
 +   anv_reloc_list_finish(&cmd->surface_relocs, &cmd->vk.pool->alloc);
 +   anv_reloc_list_finish(cmd->batch.relocs, &cmd->vk.pool->alloc);
++   for (uint32_t i = 1; i < cmd->wddm->chunk_count; ++i) anv_device_release_bo(cmd->device, cmd->wddm->chunks[i].bo);
++   cmd->wddm->chunk_count = 1; cmd->wddm->chunks[0].length = 0;
 +}
 +static void command_resources_init(struct anv_cmd_buffer *cmd)
 +{
@@ -2525,13 +2571,20 @@
 +   cmd->state.gfx.restart_index = UINT32_MAX;
 +   cmd->vk.dynamic_graphics_state.ms.sample_locations = &cmd->state.gfx.sample_locations;
 +   cmd->batch.status = VK_SUCCESS;
-+   memset((char *)cmd->wddm->bo->map + command_bytes - 256, 0x6d, 256);
-+   anv_batch_set_storage(&cmd->batch, (struct anv_address){cmd->wddm->bo, 0}, cmd->wddm->bo->map, command_bytes - 256);
++   cmd->batch.extend_cb = command_extend; cmd->batch.user_data = cmd;
++   command_use_bo(cmd, cmd->wddm->bo);
++#ifdef HASVK_WDDM_GRAPHICS
++   /* As anv_cmd_buffer_reset_batch_bo_chain: every recording starts with one binding table block. */
++   VkResult result = anv_cmd_buffer_new_binding_table_block(cmd);
++   if (result != VK_SUCCESS) anv_batch_set_error(&cmd->batch, result);
++#endif
 +}
 +static VkResult create_command(struct vk_command_pool *pool, VkCommandBufferLevel level, struct vk_command_buffer **out)
 +{
 +   *out = NULL;
++#ifndef HASVK_WDDM_GRAPHICS
 +   if (level != VK_COMMAND_BUFFER_LEVEL_PRIMARY) return VK_ERROR_FEATURE_NOT_PRESENT;
++#endif
 +   struct anv_device *device = container_of(pool->base.device, struct anv_device, vk);
 +   struct anv_cmd_buffer *cmd = vk_zalloc(&pool->alloc, sizeof(*cmd), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 +   if (!cmd) return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -2541,8 +2594,12 @@
 +   cmd->wddm = vk_zalloc(&pool->alloc, sizeof(*cmd->wddm), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 +   cmd->batch.relocs = vk_zalloc(&pool->alloc, sizeof(*cmd->batch.relocs), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 +   if (!cmd->wddm || !cmd->batch.relocs) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail; }
++   cmd->wddm->chunks = vk_zalloc(&pool->alloc, 8 * sizeof(*cmd->wddm->chunks), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++   if (!cmd->wddm->chunks) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail; }
++   cmd->wddm->chunk_capacity = 8;
 +   result = anv_device_alloc_bo(device, "command", command_bytes, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &cmd->wddm->bo);
 +   if (result != VK_SUCCESS) goto fail;
++   cmd->wddm->chunks[0] = (struct anv_wddm_cmd_chunk){cmd->wddm->bo, 0}; cmd->wddm->chunk_count = 1;
 +   if (!u_vector_init(&cmd->bt_block_states, 8, sizeof(struct anv_state))) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_bo; }
 +   cmd->batch.alloc = &pool->alloc;
 +   command_resources_init(cmd);
@@ -2551,6 +2608,7 @@
 +fail_bo:
 +   anv_device_release_bo(device, cmd->wddm->bo);
 +fail:
++   if (cmd->wddm) vk_free(&pool->alloc, cmd->wddm->chunks);
 +   vk_free(&pool->alloc, cmd->wddm); vk_free(&pool->alloc, cmd->batch.relocs);
 +   vk_command_buffer_finish(&cmd->vk); vk_free(&pool->alloc, cmd);
 +   return result;
@@ -2567,12 +2625,65 @@
 +   struct anv_cmd_buffer *cmd = container_of(base, struct anv_cmd_buffer, vk);
 +   command_resources_finish(cmd); u_vector_finish(&cmd->bt_block_states);
 +   anv_device_release_bo(cmd->device, cmd->wddm->bo);
++   vk_free(&base->pool->alloc, cmd->wddm->chunks);
 +   vk_free(&base->pool->alloc, cmd->batch.relocs); vk_free(&base->pool->alloc, cmd->wddm);
 +   vk_command_buffer_finish(base); vk_free(&base->pool->alloc, cmd);
 +}
 +const struct vk_command_buffer_ops anv_cmd_buffer_ops = {
 +   .create = create_command, .reset = anv_cmd_buffer_reset, .destroy = destroy_command,
 +};
++/* End of recording. A primary buffer flushes its caches and writes the
++ * completion marker that the submit path checks; a secondary just ends. */
++void anv_cmd_buffer_end_batch_buffer(struct anv_cmd_buffer *cmd)
++{
++   if (cmd->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
++#ifdef HASVK_WDDM_GRAPHICS
++      anv_add_pending_pipe_bits(cmd, ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT | ANV_PIPE_DEPTH_CACHE_FLUSH_BIT,
++         "graphics completion");
++#endif
++      anv_add_pending_pipe_bits(cmd, ANV_PIPE_DATA_CACHE_FLUSH_BIT | ANV_PIPE_CS_STALL_BIT | ANV_PIPE_END_OF_PIPE_SYNC_BIT,
++         "command buffer completion");
++      genX(cmd_buffer_apply_pipe_flushes)(cmd);
++      anv_batch_emit(&cmd->batch, GENX(PIPE_CONTROL), flush) {
++         flush.DCFlushEnable = true; flush.CommandStreamerStallEnable = true;
++         flush.PostSyncOperation = WriteImmediateData;
++         flush.Address = (struct anv_address){cmd->wddm->bo, marker_offset}; flush.ImmediateData = 1;
++      }
++      anv_batch_emit(&cmd->batch, GENX(MI_BATCH_BUFFER_END), end);
++   }
++   struct anv_wddm_cmd_state *s = cmd->wddm;
++   s->chunks[s->chunk_count - 1].length = (uint32_t)((char *)cmd->batch.next - (char *)cmd->batch.start);
++}
++#ifdef HASVK_WDDM_GRAPHICS
++/* vkCmdExecuteCommands: commands only reference pinned addresses, so the
++ * secondary's chunks are copied into the primary without their chain jumps. */
++void anv_cmd_buffer_add_secondary(struct anv_cmd_buffer *primary, struct anv_cmd_buffer *secondary)
++{
++   const struct anv_wddm_cmd_state *s = secondary->wddm;
++   for (uint32_t i = 0; i < s->chunk_count; ++i) {
++      struct anv_batch chunk = {.start = s->chunks[i].bo->map, .next = (char *)s->chunks[i].bo->map + s->chunks[i].length,
++         .relocs = secondary->batch.relocs};
++      anv_batch_emit_batch(&primary->batch, &chunk);
++   }
++   if (secondary->batch.status != VK_SUCCESS) anv_batch_set_error(&primary->batch, secondary->batch.status);
++}
++/* Upstream genX(BeginCommandBuffer)/(EndCommandBuffer) do the recording work;
++ * these wrappers add the Mesa runtime's command-buffer state tracking. */
++VKAPI_ATTR VkResult VKAPI_CALL anv_BeginCommandBuffer(VkCommandBuffer handle, const VkCommandBufferBeginInfo *info)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   VkResult result = genX(BeginCommandBuffer)(handle, info);
++   vk_command_buffer_begin(&cmd->vk, info);
++   return result != VK_SUCCESS ? result : cmd->batch.status;
++}
++VKAPI_ATTR VkResult VKAPI_CALL anv_EndCommandBuffer(VkCommandBuffer handle)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   genX(EndCommandBuffer)(handle);
++   if (cmd->batch.status != VK_SUCCESS) vk_command_buffer_set_error(&cmd->vk, cmd->batch.status);
++   return vk_command_buffer_end(&cmd->vk);
++}
++#else
 +VKAPI_ATTR VkResult VKAPI_CALL anv_BeginCommandBuffer(VkCommandBuffer handle, const VkCommandBufferBeginInfo *info)
 +{
 +   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
@@ -2584,32 +2695,16 @@
 +   genX(flush_pipeline_select_3d)(cmd);
 +   genX(cmd_buffer_emit_state_base_address)(cmd);
 +   cmd->usage_flags = info->flags & ~VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
-+#ifdef HASVK_WDDM_GRAPHICS
-+   cmd->state.push_constants_dirty |= VK_SHADER_STAGE_ALL_GRAPHICS;
-+   anv_add_pending_pipe_bits(cmd, ANV_PIPE_VF_CACHE_INVALIDATE_BIT, "new command buffer");
-+#endif
 +   return cmd->batch.status;
 +}
 +VKAPI_ATTR VkResult VKAPI_CALL anv_EndCommandBuffer(VkCommandBuffer handle)
 +{
 +   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
-+#ifdef HASVK_WDDM_GRAPHICS
-+   genX(cmd_buffer_enable_pma_fix)(cmd, false);
-+   anv_add_pending_pipe_bits(cmd, ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT | ANV_PIPE_DEPTH_CACHE_FLUSH_BIT,
-+      "graphics completion");
-+#endif
-+   anv_add_pending_pipe_bits(cmd, ANV_PIPE_DATA_CACHE_FLUSH_BIT | ANV_PIPE_CS_STALL_BIT | ANV_PIPE_END_OF_PIPE_SYNC_BIT,
-+      "command buffer completion");
-+   genX(cmd_buffer_apply_pipe_flushes)(cmd);
-+   anv_batch_emit(&cmd->batch, GENX(PIPE_CONTROL), flush) {
-+      flush.DCFlushEnable = true; flush.CommandStreamerStallEnable = true;
-+      flush.PostSyncOperation = WriteImmediateData;
-+      flush.Address = (struct anv_address){cmd->wddm->bo, marker_offset}; flush.ImmediateData = 1;
-+   }
-+   anv_batch_emit(&cmd->batch, GENX(MI_BATCH_BUFFER_END), end);
++   anv_cmd_buffer_end_batch_buffer(cmd);
 +   if (cmd->batch.status != VK_SUCCESS) vk_command_buffer_set_error(&cmd->vk, cmd->batch.status);
 +   return vk_command_buffer_end(&cmd->vk);
 +}
++#endif
 +VKAPI_ATTR void VKAPI_CALL anv_CmdPipelineBarrier2(VkCommandBuffer handle, const VkDependencyInfo *info)
 +{
 +   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
@@ -2631,7 +2726,8 @@
 +int anv_wddm_execute_command(struct anv_cmd_buffer *cmd)
 +{
 +   struct anv_wddm_device_state *w = cmd->device->wddm;
-+   if (cmd->vk.state != MESA_VK_COMMAND_BUFFER_STATE_PENDING || cmd->batch.status != VK_SUCCESS) {
++   if (cmd->vk.state != MESA_VK_COMMAND_BUFFER_STATE_PENDING || cmd->batch.status != VK_SUCCESS ||
++       cmd->vk.level != VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
 +      fprintf(stderr, "WDDM command rejected: runtime state=%u, batch status=%d\n", cmd->vk.state, cmd->batch.status);
 +      return -1;
 +   }
@@ -2646,8 +2742,10 @@
 +      fprintf(stderr, "WDDM command completion: marker=%llu; %s\n", (unsigned long long)*marker, hasvk_wddm_error());
 +      return -1;
 +   }
-+   const uint8_t *tail = (const uint8_t *)cmd->wddm->bo->map + command_bytes - 256;
-+   for (unsigned i = 0; i < 256; ++i) if ((i < 192 || i >= 200) && tail[i] != 0x6d) return -1;
++   for (uint32_t c = 0; c < cmd->wddm->chunk_count; ++c) {
++      const uint8_t *tail = (const uint8_t *)cmd->wddm->chunks[c].bo->map + command_bytes - guard_bytes;
++      for (unsigned i = 0; i < guard_bytes; ++i) if ((c || i < 192 || i >= 200) && tail[i] != 0x6d) return -1;
++   }
 +   ++w->command_batches_completed;
 +   return 0;
 +}
@@ -2655,12 +2753,22 @@
 +{
 +   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
 +   if (!cmd || !bytes || !length) return -1;
-+   *bytes = cmd->wddm->bo->map; *length = (char *)cmd->batch.next - (char *)cmd->batch.start;
++   /* First chunk only; a chained buffer continues in further BOs. */
++   *bytes = cmd->wddm->bo->map;
++   *length = cmd->wddm->chunk_count > 1 ? cmd->wddm->chunks[0].length : (uint32_t)((char *)cmd->batch.next - (char *)cmd->batch.start);
++   return 0;
++}
++/* Diagnostics: number of BOs in the command buffer's chain. */
++PUBLIC int hasvk_wddm_icd_query_command_chunks(VkCommandBuffer handle, uint32_t *chunks)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   if (!cmd || !chunks) return -1;
++   *chunks = cmd->wddm->chunk_count;
 +   return 0;
 +}
 --- /dev/null
 +++ b/src/intel/wddm_compiler/vulkan_hasvk_wddm.def
-@@ -0,0 +1,14 @@
+@@ -0,0 +1,15 @@
 +LIBRARY vulkan_hasvk_wddm
 +EXPORTS
 +    vk_icdGetInstanceProcAddr
@@ -2675,6 +2783,7 @@
 +    hasvk_wddm_icd_query_command_buffer
 +    hasvk_wddm_icd_read_image
 +    hasvk_wddm_icd_has_entrypoint
++    hasvk_wddm_icd_query_command_chunks
 --- /dev/null
 +++ b/src/intel/wddm_compiler/elk_compile_probe.c
 @@ -0,0 +1,137 @@
@@ -3513,7 +3622,7 @@
 +  common_commands = ['anv_wddm_graphics_common.c', 'anv_wddm_graphics_blorp.c']
 +  gen8_commands = ['anv_wddm_graphics_gen8.c', 'anv_wddm_graphics_pipeline.c',
 +    'anv_wddm_graphics_dynamic.c', 'anv_wddm_graphics_state.c', 'anv_wddm_graphics_blorp_exec.c',
-+    'anv_wddm_graphics_query.c']
++    'anv_wddm_graphics_query.c', 'anv_wddm_graphics_memcpy.c']
 +endif
 +libanv_wddm_objects = static_library('anv_wddm_objects',
 +  ['../vulkan_hasvk/anv_wddm_device.c', '../vulkan_hasvk/anv_wddm_memory.c', '../vulkan_hasvk/anv_wddm_pools.c', '../vulkan_hasvk/anv_allocator.c',
@@ -8630,6 +8739,310 @@
 +}
 +#endif
 --- /dev/null
++++ b/src/intel/wddm_compiler/anv_wddm_graphics_memcpy.c
+@@ -0,0 +1,301 @@
++/*
++ * Copyright © 2016 Intel Corporation
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a
++ * copy of this software and associated documentation files (the "Software"),
++ * to deal in the Software without restriction, including without limitation
++ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
++ * and/or sell copies of the Software, and to permit persons to whom the
++ * Software is furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice (including the next
++ * paragraph) shall be included in all copies or substantial portions of the
++ * Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
++ * IN THE SOFTWARE.
++ */
++
++#include "anv_private.h"
++
++#include "genxml/gen_macros.h"
++#include "genxml/genX_pack.h"
++
++#include "common/intel_l3_config.h"
++
++/**
++ * This file implements some lightweight memcpy/memset operations on the GPU
++ * using a vertex buffer and streamout.
++ */
++
++/**
++ * Returns the greatest common divisor of a and b that is a power of two.
++ */
++static uint64_t
++gcd_pow2_u64(uint64_t a, uint64_t b)
++{
++   assert(a > 0 || b > 0);
++
++   unsigned a_log2 = ffsll(a) - 1;
++   unsigned b_log2 = ffsll(b) - 1;
++
++   /* If either a or b is 0, then a_log2 or b_log2 will be UINT_MAX in which
++    * case, the MIN2() will take the other one.  If both are 0 then we will
++    * hit the assert above.
++    */
++   return 1 << MIN2(a_log2, b_log2);
++}
++
++static void
++emit_common_so_memcpy(struct anv_batch *batch, struct anv_device *device,
++                      const struct intel_l3_config *l3_config)
++{
++#if GFX_VER >= 8
++   anv_batch_emit(batch, GENX(3DSTATE_VF_INSTANCING), vfi) {
++      vfi.InstancingEnable = false;
++      vfi.VertexElementIndex = 0;
++   }
++   anv_batch_emit(batch, GENX(3DSTATE_VF_SGVS), sgvs);
++#endif
++
++   /* Disable all shader stages */
++   anv_batch_emit(batch, GENX(3DSTATE_VS), vs);
++   anv_batch_emit(batch, GENX(3DSTATE_HS), hs);
++   anv_batch_emit(batch, GENX(3DSTATE_TE), te);
++   anv_batch_emit(batch, GENX(3DSTATE_DS), DS);
++   anv_batch_emit(batch, GENX(3DSTATE_GS), gs);
++   anv_batch_emit(batch, GENX(3DSTATE_PS), gs);
++
++   anv_batch_emit(batch, GENX(3DSTATE_SBE), sbe) {
++      sbe.VertexURBEntryReadOffset = 1;
++      sbe.NumberofSFOutputAttributes = 1;
++      sbe.VertexURBEntryReadLength = 1;
++#if GFX_VER >= 8
++      sbe.ForceVertexURBEntryReadLength = true;
++      sbe.ForceVertexURBEntryReadOffset = true;
++#endif
++   }
++
++   /* Emit URB setup.  We tell it that the VS is active because we want it to
++    * allocate space for the VS.  Even though one isn't run, we need VUEs to
++    * store the data that VF is going to pass to SOL.
++    */
++   const unsigned entry_size[4] = { DIV_ROUND_UP(32, 64), 1, 1, 1 };
++
++   genX(emit_urb_setup)(device, batch, l3_config,
++                        VK_SHADER_STAGE_VERTEX_BIT, entry_size);
++
++#if GFX_VER >= 8
++   anv_batch_emit(batch, GENX(3DSTATE_VF_TOPOLOGY), topo) {
++      topo.PrimitiveTopologyType = _3DPRIM_POINTLIST;
++   }
++#endif
++
++   anv_batch_emit(batch, GENX(3DSTATE_VF_STATISTICS), vf) {
++      vf.StatisticsEnable = false;
++   }
++}
++
++static void
++emit_so_memcpy(struct anv_batch *batch, struct anv_device *device,
++               struct anv_address dst, struct anv_address src,
++               uint32_t size)
++{
++   /* The maximum copy block size is 4 32-bit components at a time. */
++   assert(size % 4 == 0);
++   unsigned bs = gcd_pow2_u64(16, size);
++
++   enum isl_format format;
++   switch (bs) {
++   case 4:  format = ISL_FORMAT_R32_UINT;          break;
++   case 8:  format = ISL_FORMAT_R32G32_UINT;       break;
++   case 16: format = ISL_FORMAT_R32G32B32A32_UINT; break;
++   default:
++      UNREACHABLE("Invalid size");
++   }
++
++   uint32_t *dw;
++   dw = anv_batch_emitn(batch, 5, GENX(3DSTATE_VERTEX_BUFFERS));
++   GENX(VERTEX_BUFFER_STATE_pack)(batch, dw + 1,
++      &(struct GENX(VERTEX_BUFFER_STATE)) {
++         .VertexBufferIndex = 32, /* Reserved for this */
++         .AddressModifyEnable = true,
++         .BufferStartingAddress = src,
++         .BufferPitch = bs,
++         .MOCS = anv_mocs(device, src.bo, 0),
++#if (GFX_VER >= 8)
++         .BufferSize = size,
++#else
++         .EndAddress = anv_address_add(src, size - 1),
++#endif
++      });
++
++   dw = anv_batch_emitn(batch, 3, GENX(3DSTATE_VERTEX_ELEMENTS));
++   GENX(VERTEX_ELEMENT_STATE_pack)(batch, dw + 1,
++      &(struct GENX(VERTEX_ELEMENT_STATE)) {
++         .VertexBufferIndex = 32,
++         .Valid = true,
++         .SourceElementFormat = format,
++         .SourceElementOffset = 0,
++         .Component0Control = (bs >= 4) ? VFCOMP_STORE_SRC : VFCOMP_STORE_0,
++         .Component1Control = (bs >= 8) ? VFCOMP_STORE_SRC : VFCOMP_STORE_0,
++         .Component2Control = (bs >= 12) ? VFCOMP_STORE_SRC : VFCOMP_STORE_0,
++         .Component3Control = (bs >= 16) ? VFCOMP_STORE_SRC : VFCOMP_STORE_0,
++      });
++
++
++   anv_batch_emit(batch, GENX(3DSTATE_SO_BUFFER), sob) {
++      sob.SOBufferIndex = 0;
++      sob.MOCS = anv_mocs(device, dst.bo, ISL_SURF_USAGE_STREAM_OUT_BIT),
++      sob.SurfaceBaseAddress = dst;
++
++#if GFX_VER >= 8
++      sob.SOBufferEnable = true;
++      sob.SurfaceSize = size / 4 - 1;
++#else
++      sob.SurfacePitch = bs;
++      sob.SurfaceEndAddress = anv_address_add(dst, size);
++#endif
++
++#if GFX_VER >= 8
++      /* As SOL writes out data, it updates the SO_WRITE_OFFSET registers with
++       * the end position of the stream.  We need to reset this value to 0 at
++       * the beginning of the run or else SOL will start at the offset from
++       * the previous draw.
++       */
++      sob.StreamOffsetWriteEnable = true;
++      sob.StreamOffset = 0;
++#endif
++   }
++
++#if GFX_VER <= 7
++   /* The hardware can do this for us on BDW+ (see above) */
++   anv_batch_emit(batch, GENX(MI_LOAD_REGISTER_IMM), load) {
++      load.RegisterOffset = GENX(SO_WRITE_OFFSET0_num);
++      load.DataDWord = 0;
++   }
++#endif
++
++   dw = anv_batch_emitn(batch, 5, GENX(3DSTATE_SO_DECL_LIST),
++                        .StreamtoBufferSelects0 = (1 << 0),
++                        .NumEntries0 = 1);
++   GENX(SO_DECL_ENTRY_pack)(batch, dw + 3,
++      &(struct GENX(SO_DECL_ENTRY)) {
++         .Stream0Decl = {
++            .OutputBufferSlot = 0,
++            .RegisterIndex = 0,
++            .ComponentMask = (1 << (bs / 4)) - 1,
++         },
++      });
++
++   anv_batch_emit(batch, GENX(3DSTATE_STREAMOUT), so) {
++      so.SOFunctionEnable = true;
++      so.RenderingDisable = true;
++      so.Stream0VertexReadOffset = 0;
++      so.Stream0VertexReadLength = DIV_ROUND_UP(32, 64);
++#if GFX_VER >= 8
++      so.Buffer0SurfacePitch = bs;
++#else
++      so.SOBufferEnable0 = true;
++#endif
++   }
++
++   anv_batch_emit(batch, GENX(3DPRIMITIVE), prim) {
++      prim.VertexAccessType         = SEQUENTIAL;
++      prim.PrimitiveTopologyType    = _3DPRIM_POINTLIST;
++      prim.VertexCountPerInstance   = size / bs;
++      prim.StartVertexLocation      = 0;
++      prim.InstanceCount            = 1;
++      prim.StartInstanceLocation    = 0;
++      prim.BaseVertexLocation       = 0;
++   }
++}
++
++void
++genX(emit_so_memcpy_init)(struct anv_memcpy_state *state,
++                          struct anv_device *device,
++                          struct anv_batch *batch)
++{
++   memset(state, 0, sizeof(*state));
++
++   state->batch = batch;
++   state->device = device;
++
++   const struct intel_l3_config *cfg = intel_get_default_l3_config(device->info);
++   genX(emit_l3_config)(batch, device, cfg);
++
++   anv_batch_emit(batch, GENX(PIPELINE_SELECT), ps) {
++      ps.PipelineSelection = _3D;
++   }
++
++   emit_common_so_memcpy(batch, device, cfg);
++}
++
++void
++genX(emit_so_memcpy_fini)(struct anv_memcpy_state *state)
++{
++   genX(emit_apply_pipe_flushes)(state->batch, state->device, _3D,
++                                 ANV_PIPE_END_OF_PIPE_SYNC_BIT);
++
++   anv_batch_emit(state->batch, GENX(MI_BATCH_BUFFER_END), end);
++
++   if ((state->batch->next - state->batch->start) & 4)
++      anv_batch_emit(state->batch, GENX(MI_NOOP), noop);
++}
++
++void
++genX(emit_so_memcpy)(struct anv_memcpy_state *state,
++                     struct anv_address dst, struct anv_address src,
++                     uint32_t size)
++{
++   if (GFX_VER >= 8 && !anv_use_relocations(state->device->physical) &&
++       anv_gfx8_9_vb_cache_range_needs_workaround(&state->vb_bound,
++                                                  &state->vb_dirty,
++                                                  src, size)) {
++      genX(emit_apply_pipe_flushes)(state->batch, state->device, _3D,
++                                    ANV_PIPE_CS_STALL_BIT |
++                                    ANV_PIPE_VF_CACHE_INVALIDATE_BIT);
++      memset(&state->vb_dirty, 0, sizeof(state->vb_dirty));
++   }
++
++   emit_so_memcpy(state->batch, state->device, dst, src, size);
++}
++
++void
++genX(cmd_buffer_so_memcpy)(struct anv_cmd_buffer *cmd_buffer,
++                           struct anv_address dst, struct anv_address src,
++                           uint32_t size)
++{
++   if (size == 0)
++      return;
++
++   if (!cmd_buffer->state.current_l3_config) {
++      const struct intel_l3_config *cfg =
++         intel_get_default_l3_config(cmd_buffer->device->info);
++      genX(cmd_buffer_config_l3)(cmd_buffer, cfg);
++   }
++
++   genX(cmd_buffer_set_binding_for_gfx8_vb_flush)(cmd_buffer, 32, src, size);
++   genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
++
++   genX(flush_pipeline_select_3d)(cmd_buffer);
++
++   emit_common_so_memcpy(&cmd_buffer->batch, cmd_buffer->device,
++                         cmd_buffer->state.current_l3_config);
++   emit_so_memcpy(&cmd_buffer->batch, cmd_buffer->device, dst, src, size);
++
++   genX(cmd_buffer_update_dirty_vbs_for_gfx8_vb_flush)(cmd_buffer, SEQUENTIAL,
++                                                       1ull << 32);
++
++   /* Invalidate pipeline & raster discard since we touch
++    * 3DSTATE_STREAMOUT.
++    */
++   cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_PIPELINE;
++   BITSET_SET(cmd_buffer->vk.dynamic_graphics_state.dirty,
++              MESA_VK_DYNAMIC_RS_RASTERIZER_DISCARD_ENABLE);
++}
+--- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_common.c
 @@ -0,0 +1,866 @@
 +/*
@@ -9500,7 +9913,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_gen8.c
-@@ -0,0 +1,5705 @@
+@@ -0,0 +1,5973 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -10806,7 +11219,145 @@
 +   gfx->null_surface_state = ANV_STATE_NULL;
 +}
 +
++VkResult
++genX(BeginCommandBuffer)(
++    VkCommandBuffer                             commandBuffer,
++    const VkCommandBufferBeginInfo*             pBeginInfo)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
++   VkResult result;
 +
++   /* If this is the first vkBeginCommandBuffer, we must *initialize* the
++    * command buffer's state. Otherwise, we must *reset* its state. In both
++    * cases we reset it.
++    *
++    * From the Vulkan 1.0 spec:
++    *
++    *    If a command buffer is in the executable state and the command buffer
++    *    was allocated from a command pool with the
++    *    VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT flag set, then
++    *    vkBeginCommandBuffer implicitly resets the command buffer, behaving
++    *    as if vkResetCommandBuffer had been called with
++    *    VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT not set. It then puts
++    *    the command buffer in the recording state.
++    */
++   anv_cmd_buffer_reset(&cmd_buffer->vk, 0);
++   anv_cmd_buffer_reset_rendering(cmd_buffer);
++
++   cmd_buffer->usage_flags = pBeginInfo->flags;
++
++   /* VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT must be ignored for
++    * primary level command buffers.
++    *
++    * From the Vulkan 1.0 spec:
++    *
++    *    VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT specifies that a
++    *    secondary command buffer is considered to be entirely inside a render
++    *    pass. If this is a primary command buffer, then this bit is ignored.
++    */
++   if (cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY)
++      cmd_buffer->usage_flags &= ~VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
++
++   (void)0;
++
++   genX(flush_pipeline_select_3d)(cmd_buffer);
++   genX(cmd_buffer_emit_state_base_address)(cmd_buffer);
++
++   /* We sometimes store vertex data in the dynamic state buffer for blorp
++    * operations and our dynamic state stream may re-use data from previous
++    * command buffers.  In order to prevent stale cache data, we flush the VF
++    * cache.  We could do this on every blorp call but that's not really
++    * needed as all of the data will get written by the CPU prior to the GPU
++    * executing anything.  The chances are fairly high that they will use
++    * blorp at least once per primary command buffer so it shouldn't be
++    * wasted.
++    *
++    * There is also a workaround on gfx8 which requires us to invalidate the
++    * VF cache occasionally.  It's easier if we can assume we start with a
++    * fresh cache (See also genX(cmd_buffer_set_binding_for_gfx8_vb_flush).)
++    */
++   anv_add_pending_pipe_bits(cmd_buffer,
++                             ANV_PIPE_VF_CACHE_INVALIDATE_BIT,
++                             "new cmd buffer");
++
++   /* We send an "Indirect State Pointers Disable" packet at
++    * EndCommandBuffer, so all push constant packets are ignored during a
++    * context restore. Documentation says after that command, we need to
++    * emit push constants again before any rendering operation. So we
++    * flag them dirty here to make sure they get emitted.
++    */
++   cmd_buffer->state.push_constants_dirty |= VK_SHADER_STAGE_ALL_GRAPHICS;
++
++   if (cmd_buffer->usage_flags &
++       VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT) {
++      struct anv_cmd_graphics_state *gfx = &cmd_buffer->state.gfx;
++
++      char gcbiar_data[VK_GCBIARR_DATA_SIZE(MAX_RTS)];
++      const VkRenderingInfo *resume_info =
++         vk_get_command_buffer_inheritance_as_rendering_resume(cmd_buffer->vk.level,
++                                                               pBeginInfo,
++                                                               gcbiar_data);
++      if (resume_info != NULL) {
++         genX(CmdBeginRendering)(commandBuffer, resume_info);
++      } else {
++         const VkCommandBufferInheritanceRenderingInfo *inheritance_info =
++            vk_get_command_buffer_inheritance_rendering_info(cmd_buffer->vk.level,
++                                                             pBeginInfo);
++         assert(inheritance_info);
++
++         gfx->rendering_flags = inheritance_info->flags;
++         gfx->render_area = (VkRect2D) { };
++         gfx->layer_count = 0;
++         gfx->samples = inheritance_info->rasterizationSamples;
++         gfx->view_mask = inheritance_info->viewMask;
++
++         uint32_t color_att_count = inheritance_info->colorAttachmentCount;
++         result = anv_cmd_buffer_init_attachments(cmd_buffer, color_att_count);
++         if (result != VK_SUCCESS)
++            return result;
++
++         for (uint32_t i = 0; i < color_att_count; i++) {
++            gfx->color_att[i].vk_format =
++               inheritance_info->pColorAttachmentFormats[i];
++         }
++         gfx->depth_att.vk_format =
++            inheritance_info->depthAttachmentFormat;
++         gfx->stencil_att.vk_format =
++            inheritance_info->stencilAttachmentFormat;
++
++         cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_RENDER_TARGETS;
++
++         anv_cmd_graphic_state_update_has_uint_rt(gfx);
++      }
++   }
++
++#if GFX_VER >= 8
++   /* Emit the sample pattern at the beginning of the batch because the
++    * default locations emitted at the device initialization might have been
++    * changed by a previous command buffer.
++    *
++    * Do not change that when we're continuing a previous renderpass.
++    */
++   if (cmd_buffer->device->vk.enabled_extensions.EXT_sample_locations &&
++       !(cmd_buffer->usage_flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT))
++      genX(emit_sample_pattern)(&cmd_buffer->batch, NULL);
++#endif
++
++#if GFX_VERx10 >= 75
++   if (cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_SECONDARY) {
++      const VkCommandBufferInheritanceConditionalRenderingInfoEXT *conditional_rendering_info =
++         vk_find_struct_const(pBeginInfo->pInheritanceInfo->pNext, COMMAND_BUFFER_INHERITANCE_CONDITIONAL_RENDERING_INFO_EXT);
++
++      /* If secondary buffer supports conditional rendering
++       * we should emit commands as if conditional rendering is enabled.
++       */
++      cmd_buffer->state.conditional_render_enabled =
++         conditional_rendering_info && conditional_rendering_info->conditionalRenderingEnable;
++   }
++#endif
++
++   return VK_SUCCESS;
++}
 +
 +/* From the PRM, Volume 2a:
 + *
@@ -10859,9 +11410,139 @@
 +   }
 +}
 +
++VkResult
++genX(EndCommandBuffer)(
++    VkCommandBuffer                             commandBuffer)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
 +
++   if (anv_batch_has_error(&cmd_buffer->batch))
++      return cmd_buffer->batch.status;
 +
++   (void)0;
 +
++   /* We want every command buffer to start with the PMA fix in a known state,
++    * so we disable it at the end of the command buffer.
++    */
++   genX(cmd_buffer_enable_pma_fix)(cmd_buffer, false);
++
++   genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
++
++   emit_isp_disable(cmd_buffer);
++
++   (void)0;
++
++   anv_cmd_buffer_end_batch_buffer(cmd_buffer);
++
++   return VK_SUCCESS;
++}
++
++void
++genX(CmdExecuteCommands)(
++    VkCommandBuffer                             commandBuffer,
++    uint32_t                                    commandBufferCount,
++    const VkCommandBuffer*                      pCmdBuffers)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, primary, commandBuffer);
++
++   assert(primary->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY);
++
++   if (anv_batch_has_error(&primary->batch))
++      return;
++
++   /* The secondary command buffers will assume that the PMA fix is disabled
++    * when they begin executing.  Make sure this is true.
++    */
++   genX(cmd_buffer_enable_pma_fix)(primary, false);
++
++   /* The secondary command buffer doesn't know which textures etc. have been
++    * flushed prior to their execution.  Apply those flushes now.
++    */
++   genX(cmd_buffer_apply_pipe_flushes)(primary);
++
++   for (uint32_t i = 0; i < commandBufferCount; i++) {
++      ANV_FROM_HANDLE(anv_cmd_buffer, secondary, pCmdBuffers[i]);
++
++      assert(secondary->vk.level == VK_COMMAND_BUFFER_LEVEL_SECONDARY);
++      assert(!anv_batch_has_error(&secondary->batch));
++
++#if GFX_VERx10 >= 75
++      if (secondary->state.conditional_render_enabled) {
++         if (!primary->state.conditional_render_enabled) {
++            /* Secondary buffer is constructed as if it will be executed
++             * with conditional rendering, we should satisfy this dependency
++             * regardless of conditional rendering being enabled in primary.
++             */
++            struct mi_builder b;
++            mi_builder_init(&b, primary->device->info, &primary->batch);
++            mi_store(&b, mi_reg64(ANV_PREDICATE_RESULT_REG),
++                         mi_imm(UINT64_MAX));
++         }
++      }
++#endif
++
++      if (secondary->usage_flags &
++          VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT) {
++         /* If we're continuing a render pass from the primary, we need to
++          * copy the surface states for the current subpass into the storage
++          * we allocated for them in BeginCommandBuffer.
++          */
++         struct anv_bo *ss_bo =
++            primary->device->surface_state_pool.block_pool.bo;
++         struct anv_state src_state = primary->state.gfx.att_states;
++         struct anv_state dst_state = secondary->state.gfx.att_states;
++         assert(src_state.alloc_size == dst_state.alloc_size);
++
++         genX(cmd_buffer_so_memcpy)(primary,
++                                    (struct anv_address) {
++                                       .bo = ss_bo,
++                                       .offset = dst_state.offset,
++                                    },
++                                    (struct anv_address) {
++                                       .bo = ss_bo,
++                                       .offset = src_state.offset,
++                                    },
++                                    src_state.alloc_size);
++      }
++
++      anv_cmd_buffer_add_secondary(primary, secondary);
++
++      assert(secondary->perf_query_pool == NULL || primary->perf_query_pool == NULL ||
++             secondary->perf_query_pool == primary->perf_query_pool);
++      if (secondary->perf_query_pool)
++         primary->perf_query_pool = secondary->perf_query_pool;
++   }
++
++   /* The secondary isn't counted in our VF cache tracking so we need to
++    * invalidate the whole thing.
++    */
++   if (GFX_VER == 8) {
++      anv_add_pending_pipe_bits(primary,
++                                ANV_PIPE_CS_STALL_BIT | ANV_PIPE_VF_CACHE_INVALIDATE_BIT,
++                                "Secondary cmd buffer not tracked in VF cache");
++   }
++
++   /* The secondary may have selected a different pipeline (3D or compute) and
++    * may have changed the current L3$ configuration.  Reset our tracking
++    * variables to invalid values to ensure that we re-emit these in the case
++    * where we do any draws or compute dispatches from the primary after the
++    * secondary has returned.
++    */
++   primary->state.current_pipeline = UINT32_MAX;
++   primary->state.current_l3_config = NULL;
++   primary->state.current_hash_scale = 0;
++   primary->state.gfx.push_constant_stages = 0;
++   vk_dynamic_graphics_state_dirty_all(&primary->vk.dynamic_graphics_state);
++
++   /* Each of the secondary command buffers will use its own state base
++    * address.  We need to re-emit state base address for the primary after
++    * all of the secondaries are done.
++    *
++    * TODO: Maybe we want to make this a dirty bit to avoid extra state base
++    * address calls?
++    */
++   genX(cmd_buffer_emit_state_base_address)(primary);
++}
 +
 +/**
 + * Program the hardware to use the specified L3 configuration.

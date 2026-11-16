@@ -48,9 +48,13 @@ def generate_graphics_sources(originals):
     common += function(device, 'void anv_DestroySampler(')
 
     hardware = read('genX_cmd_buffer.c').replace('#include "anv_private.h"', '#include "anv_wddm.h"')
-    for signature in ['VkResult\ngenX(BeginCommandBuffer)(', 'VkResult\ngenX(EndCommandBuffer)(',
-                      'void\ngenX(CmdExecuteCommands)(']:
-        hardware = remove_function(hardware, signature)
+    # Begin/End/ExecuteCommands stay upstream; the Windows command-buffer file
+    # wraps them for runtime state tracking and supplies the batch-chain hooks.
+    # Each command buffer selects its pipeline before STATE_BASE_ADDRESS because
+    # the WDDM context is shared with whatever ran before.
+    old = '   genX(cmd_buffer_emit_state_base_address)(cmd_buffer);\n\n   /* We sometimes store vertex data'
+    assert hardware.count(old) == 1
+    hardware = hardware.replace(old, '   genX(flush_pipeline_select_3d)(cmd_buffer);\n' + old)
     hardware = hardware.replace('ALWAYS_INLINE enum anv_pipe_bits\ngenX(emit_apply_pipe_flushes)',
                                 'enum anv_pipe_bits\ngenX(emit_apply_pipe_flushes)')
     hardware = hardware.replace('ALWAYS_INLINE void\ngenX(cmd_buffer_apply_pipe_flushes)',
@@ -96,6 +100,7 @@ def generate_graphics_sources(originals):
 ''')
     return {
         'src/intel/wddm_compiler/anv_wddm_graphics_query.c': query,
+        'src/intel/wddm_compiler/anv_wddm_graphics_memcpy.c': read('genX_gpu_memcpy.c'),
         'src/intel/wddm_compiler/anv_wddm_graphics_common.c': instrumentation(common),
         'src/intel/wddm_compiler/anv_wddm_graphics_gen8.c': instrumentation(hardware),
         'src/intel/wddm_compiler/anv_wddm_graphics_state.c': state,

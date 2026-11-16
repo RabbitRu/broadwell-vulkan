@@ -1,11 +1,49 @@
-/* Windows lifetime and submission backing for HasVK compute command buffers.
- * Packet emission, descriptor binding and push packing use upstream HasVK. */
+/* Windows lifetime and submission backing for HasVK command buffers.
+ * Packet emission, descriptor binding and push packing use upstream HasVK.
+ *
+ * A command buffer is a chain of 64 KiB BOs linked by MI_BATCH_BUFFER_START.
+ * Every BO ends in a 256-byte guard region; the first one also holds the GPU
+ * completion marker written by the last PIPE_CONTROL of a primary buffer.
+ * Secondary command buffers are copied into the primary at
+ * vkCmdExecuteCommands (HasVK's "emit" execution mode). */
 #include "anv_wddm.h"
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
 
-enum { command_bytes = 65536, marker_offset = command_bytes - 64 };
+enum { command_bytes = 65536, guard_bytes = 256, chain_bytes = 16,
+       usable_bytes = command_bytes - guard_bytes - chain_bytes, marker_offset = command_bytes - 64 };
 
+static void command_use_bo(struct anv_cmd_buffer *cmd, struct anv_bo *bo)
+{
+   memset((char *)bo->map + command_bytes - guard_bytes, 0x6d, guard_bytes);
+   anv_batch_set_storage(&cmd->batch, (struct anv_address){bo, 0}, bo->map, usable_bytes);
+}
+/* anv_batch_emit_dwords found no room: close this BO with a jump to a new one. */
+static VkResult command_extend(struct anv_batch *batch, void *data)
+{
+   struct anv_cmd_buffer *cmd = data;
+   struct anv_wddm_cmd_state *s = cmd->wddm;
+   if (s->chunk_count == s->chunk_capacity) {
+      const uint32_t capacity = MAX2(8, s->chunk_capacity * 2);
+      struct anv_wddm_cmd_chunk *chunks = vk_realloc(&cmd->vk.pool->alloc, s->chunks, capacity * sizeof(*chunks), 8,
+         VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (!chunks) return VK_ERROR_OUT_OF_HOST_MEMORY;
+      s->chunks = chunks; s->chunk_capacity = capacity;
+   }
+   struct anv_bo *bo;
+   VkResult result = anv_device_alloc_bo(cmd->device, "command", command_bytes, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &bo);
+   if (result != VK_SUCCESS) return result;
+   s->chunks[s->chunk_count - 1].length = (uint32_t)((char *)batch->next - (char *)batch->start);
+   /* chain_bytes past batch->end are reserved for this jump. */
+   uint32_t *jump = batch->next;
+   struct GENX(MI_BATCH_BUFFER_START) start = { GENX(MI_BATCH_BUFFER_START_header),
+      .AddressSpaceIndicator = ASI_PPGTT, .BatchBufferStartAddress = (struct anv_address){bo, 0} };
+   GENX(MI_BATCH_BUFFER_START_pack)(batch, jump, &start);
+   jump[GENX(MI_BATCH_BUFFER_START_length)] = 0; /* MI_NOOP */
+   s->chunks[s->chunk_count++] = (struct anv_wddm_cmd_chunk){bo, 0};
+   command_use_bo(cmd, bo);
+   return batch->status;
+}
 static void command_resources_finish(struct anv_cmd_buffer *cmd)
 {
 #ifdef HASVK_WDDM_GRAPHICS
@@ -19,6 +57,8 @@ static void command_resources_finish(struct anv_cmd_buffer *cmd)
    anv_state_stream_finish(&cmd->general_state_stream);
    anv_reloc_list_finish(&cmd->surface_relocs, &cmd->vk.pool->alloc);
    anv_reloc_list_finish(cmd->batch.relocs, &cmd->vk.pool->alloc);
+   for (uint32_t i = 1; i < cmd->wddm->chunk_count; ++i) anv_device_release_bo(cmd->device, cmd->wddm->chunks[i].bo);
+   cmd->wddm->chunk_count = 1; cmd->wddm->chunks[0].length = 0;
 }
 static void command_resources_init(struct anv_cmd_buffer *cmd)
 {
@@ -32,13 +72,20 @@ static void command_resources_init(struct anv_cmd_buffer *cmd)
    cmd->state.gfx.restart_index = UINT32_MAX;
    cmd->vk.dynamic_graphics_state.ms.sample_locations = &cmd->state.gfx.sample_locations;
    cmd->batch.status = VK_SUCCESS;
-   memset((char *)cmd->wddm->bo->map + command_bytes - 256, 0x6d, 256);
-   anv_batch_set_storage(&cmd->batch, (struct anv_address){cmd->wddm->bo, 0}, cmd->wddm->bo->map, command_bytes - 256);
+   cmd->batch.extend_cb = command_extend; cmd->batch.user_data = cmd;
+   command_use_bo(cmd, cmd->wddm->bo);
+#ifdef HASVK_WDDM_GRAPHICS
+   /* As anv_cmd_buffer_reset_batch_bo_chain: every recording starts with one binding table block. */
+   VkResult result = anv_cmd_buffer_new_binding_table_block(cmd);
+   if (result != VK_SUCCESS) anv_batch_set_error(&cmd->batch, result);
+#endif
 }
 static VkResult create_command(struct vk_command_pool *pool, VkCommandBufferLevel level, struct vk_command_buffer **out)
 {
    *out = NULL;
+#ifndef HASVK_WDDM_GRAPHICS
    if (level != VK_COMMAND_BUFFER_LEVEL_PRIMARY) return VK_ERROR_FEATURE_NOT_PRESENT;
+#endif
    struct anv_device *device = container_of(pool->base.device, struct anv_device, vk);
    struct anv_cmd_buffer *cmd = vk_zalloc(&pool->alloc, sizeof(*cmd), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!cmd) return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -48,8 +95,12 @@ static VkResult create_command(struct vk_command_pool *pool, VkCommandBufferLeve
    cmd->wddm = vk_zalloc(&pool->alloc, sizeof(*cmd->wddm), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    cmd->batch.relocs = vk_zalloc(&pool->alloc, sizeof(*cmd->batch.relocs), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!cmd->wddm || !cmd->batch.relocs) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail; }
+   cmd->wddm->chunks = vk_zalloc(&pool->alloc, 8 * sizeof(*cmd->wddm->chunks), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!cmd->wddm->chunks) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail; }
+   cmd->wddm->chunk_capacity = 8;
    result = anv_device_alloc_bo(device, "command", command_bytes, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &cmd->wddm->bo);
    if (result != VK_SUCCESS) goto fail;
+   cmd->wddm->chunks[0] = (struct anv_wddm_cmd_chunk){cmd->wddm->bo, 0}; cmd->wddm->chunk_count = 1;
    if (!u_vector_init(&cmd->bt_block_states, 8, sizeof(struct anv_state))) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_bo; }
    cmd->batch.alloc = &pool->alloc;
    command_resources_init(cmd);
@@ -58,6 +109,7 @@ static VkResult create_command(struct vk_command_pool *pool, VkCommandBufferLeve
 fail_bo:
    anv_device_release_bo(device, cmd->wddm->bo);
 fail:
+   if (cmd->wddm) vk_free(&pool->alloc, cmd->wddm->chunks);
    vk_free(&pool->alloc, cmd->wddm); vk_free(&pool->alloc, cmd->batch.relocs);
    vk_command_buffer_finish(&cmd->vk); vk_free(&pool->alloc, cmd);
    return result;
@@ -74,12 +126,65 @@ static void destroy_command(struct vk_command_buffer *base)
    struct anv_cmd_buffer *cmd = container_of(base, struct anv_cmd_buffer, vk);
    command_resources_finish(cmd); u_vector_finish(&cmd->bt_block_states);
    anv_device_release_bo(cmd->device, cmd->wddm->bo);
+   vk_free(&base->pool->alloc, cmd->wddm->chunks);
    vk_free(&base->pool->alloc, cmd->batch.relocs); vk_free(&base->pool->alloc, cmd->wddm);
    vk_command_buffer_finish(base); vk_free(&base->pool->alloc, cmd);
 }
 const struct vk_command_buffer_ops anv_cmd_buffer_ops = {
    .create = create_command, .reset = anv_cmd_buffer_reset, .destroy = destroy_command,
 };
+/* End of recording. A primary buffer flushes its caches and writes the
+ * completion marker that the submit path checks; a secondary just ends. */
+void anv_cmd_buffer_end_batch_buffer(struct anv_cmd_buffer *cmd)
+{
+   if (cmd->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
+#ifdef HASVK_WDDM_GRAPHICS
+      anv_add_pending_pipe_bits(cmd, ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT | ANV_PIPE_DEPTH_CACHE_FLUSH_BIT,
+         "graphics completion");
+#endif
+      anv_add_pending_pipe_bits(cmd, ANV_PIPE_DATA_CACHE_FLUSH_BIT | ANV_PIPE_CS_STALL_BIT | ANV_PIPE_END_OF_PIPE_SYNC_BIT,
+         "command buffer completion");
+      genX(cmd_buffer_apply_pipe_flushes)(cmd);
+      anv_batch_emit(&cmd->batch, GENX(PIPE_CONTROL), flush) {
+         flush.DCFlushEnable = true; flush.CommandStreamerStallEnable = true;
+         flush.PostSyncOperation = WriteImmediateData;
+         flush.Address = (struct anv_address){cmd->wddm->bo, marker_offset}; flush.ImmediateData = 1;
+      }
+      anv_batch_emit(&cmd->batch, GENX(MI_BATCH_BUFFER_END), end);
+   }
+   struct anv_wddm_cmd_state *s = cmd->wddm;
+   s->chunks[s->chunk_count - 1].length = (uint32_t)((char *)cmd->batch.next - (char *)cmd->batch.start);
+}
+#ifdef HASVK_WDDM_GRAPHICS
+/* vkCmdExecuteCommands: commands only reference pinned addresses, so the
+ * secondary's chunks are copied into the primary without their chain jumps. */
+void anv_cmd_buffer_add_secondary(struct anv_cmd_buffer *primary, struct anv_cmd_buffer *secondary)
+{
+   const struct anv_wddm_cmd_state *s = secondary->wddm;
+   for (uint32_t i = 0; i < s->chunk_count; ++i) {
+      struct anv_batch chunk = {.start = s->chunks[i].bo->map, .next = (char *)s->chunks[i].bo->map + s->chunks[i].length,
+         .relocs = secondary->batch.relocs};
+      anv_batch_emit_batch(&primary->batch, &chunk);
+   }
+   if (secondary->batch.status != VK_SUCCESS) anv_batch_set_error(&primary->batch, secondary->batch.status);
+}
+/* Upstream genX(BeginCommandBuffer)/(EndCommandBuffer) do the recording work;
+ * these wrappers add the Mesa runtime's command-buffer state tracking. */
+VKAPI_ATTR VkResult VKAPI_CALL anv_BeginCommandBuffer(VkCommandBuffer handle, const VkCommandBufferBeginInfo *info)
+{
+   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
+   VkResult result = genX(BeginCommandBuffer)(handle, info);
+   vk_command_buffer_begin(&cmd->vk, info);
+   return result != VK_SUCCESS ? result : cmd->batch.status;
+}
+VKAPI_ATTR VkResult VKAPI_CALL anv_EndCommandBuffer(VkCommandBuffer handle)
+{
+   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
+   genX(EndCommandBuffer)(handle);
+   if (cmd->batch.status != VK_SUCCESS) vk_command_buffer_set_error(&cmd->vk, cmd->batch.status);
+   return vk_command_buffer_end(&cmd->vk);
+}
+#else
 VKAPI_ATTR VkResult VKAPI_CALL anv_BeginCommandBuffer(VkCommandBuffer handle, const VkCommandBufferBeginInfo *info)
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
@@ -91,32 +196,16 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_BeginCommandBuffer(VkCommandBuffer handle, co
    genX(flush_pipeline_select_3d)(cmd);
    genX(cmd_buffer_emit_state_base_address)(cmd);
    cmd->usage_flags = info->flags & ~VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
-#ifdef HASVK_WDDM_GRAPHICS
-   cmd->state.push_constants_dirty |= VK_SHADER_STAGE_ALL_GRAPHICS;
-   anv_add_pending_pipe_bits(cmd, ANV_PIPE_VF_CACHE_INVALIDATE_BIT, "new command buffer");
-#endif
    return cmd->batch.status;
 }
 VKAPI_ATTR VkResult VKAPI_CALL anv_EndCommandBuffer(VkCommandBuffer handle)
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
-#ifdef HASVK_WDDM_GRAPHICS
-   genX(cmd_buffer_enable_pma_fix)(cmd, false);
-   anv_add_pending_pipe_bits(cmd, ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT | ANV_PIPE_DEPTH_CACHE_FLUSH_BIT,
-      "graphics completion");
-#endif
-   anv_add_pending_pipe_bits(cmd, ANV_PIPE_DATA_CACHE_FLUSH_BIT | ANV_PIPE_CS_STALL_BIT | ANV_PIPE_END_OF_PIPE_SYNC_BIT,
-      "command buffer completion");
-   genX(cmd_buffer_apply_pipe_flushes)(cmd);
-   anv_batch_emit(&cmd->batch, GENX(PIPE_CONTROL), flush) {
-      flush.DCFlushEnable = true; flush.CommandStreamerStallEnable = true;
-      flush.PostSyncOperation = WriteImmediateData;
-      flush.Address = (struct anv_address){cmd->wddm->bo, marker_offset}; flush.ImmediateData = 1;
-   }
-   anv_batch_emit(&cmd->batch, GENX(MI_BATCH_BUFFER_END), end);
+   anv_cmd_buffer_end_batch_buffer(cmd);
    if (cmd->batch.status != VK_SUCCESS) vk_command_buffer_set_error(&cmd->vk, cmd->batch.status);
    return vk_command_buffer_end(&cmd->vk);
 }
+#endif
 VKAPI_ATTR void VKAPI_CALL anv_CmdPipelineBarrier2(VkCommandBuffer handle, const VkDependencyInfo *info)
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
@@ -138,7 +227,8 @@ VKAPI_ATTR void VKAPI_CALL anv_CmdPipelineBarrier2(VkCommandBuffer handle, const
 int anv_wddm_execute_command(struct anv_cmd_buffer *cmd)
 {
    struct anv_wddm_device_state *w = cmd->device->wddm;
-   if (cmd->vk.state != MESA_VK_COMMAND_BUFFER_STATE_PENDING || cmd->batch.status != VK_SUCCESS) {
+   if (cmd->vk.state != MESA_VK_COMMAND_BUFFER_STATE_PENDING || cmd->batch.status != VK_SUCCESS ||
+       cmd->vk.level != VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
       fprintf(stderr, "WDDM command rejected: runtime state=%u, batch status=%d\n", cmd->vk.state, cmd->batch.status);
       return -1;
    }
@@ -153,8 +243,10 @@ int anv_wddm_execute_command(struct anv_cmd_buffer *cmd)
       fprintf(stderr, "WDDM command completion: marker=%llu; %s\n", (unsigned long long)*marker, hasvk_wddm_error());
       return -1;
    }
-   const uint8_t *tail = (const uint8_t *)cmd->wddm->bo->map + command_bytes - 256;
-   for (unsigned i = 0; i < 256; ++i) if ((i < 192 || i >= 200) && tail[i] != 0x6d) return -1;
+   for (uint32_t c = 0; c < cmd->wddm->chunk_count; ++c) {
+      const uint8_t *tail = (const uint8_t *)cmd->wddm->chunks[c].bo->map + command_bytes - guard_bytes;
+      for (unsigned i = 0; i < guard_bytes; ++i) if ((c || i < 192 || i >= 200) && tail[i] != 0x6d) return -1;
+   }
    ++w->command_batches_completed;
    return 0;
 }
@@ -162,6 +254,16 @@ PUBLIC int hasvk_wddm_icd_query_command_buffer(VkCommandBuffer handle, const voi
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
    if (!cmd || !bytes || !length) return -1;
-   *bytes = cmd->wddm->bo->map; *length = (char *)cmd->batch.next - (char *)cmd->batch.start;
+   /* First chunk only; a chained buffer continues in further BOs. */
+   *bytes = cmd->wddm->bo->map;
+   *length = cmd->wddm->chunk_count > 1 ? cmd->wddm->chunks[0].length : (uint32_t)((char *)cmd->batch.next - (char *)cmd->batch.start);
+   return 0;
+}
+/* Diagnostics: number of BOs in the command buffer's chain. */
+PUBLIC int hasvk_wddm_icd_query_command_chunks(VkCommandBuffer handle, uint32_t *chunks)
+{
+   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
+   if (!cmd || !chunks) return -1;
+   *chunks = cmd->wddm->chunk_count;
    return 0;
 }

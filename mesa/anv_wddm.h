@@ -24,8 +24,16 @@ struct anv_wddm_device_state {
 
 VkResult anv_wddm_pools_init(struct anv_device *device);
 void anv_wddm_pools_finish(struct anv_device *device);
+/* A command buffer is a chain of fixed-size BOs. chunks[0].bo == bo lives as
+ * long as the command buffer; further chunks are released on reset. */
+struct anv_wddm_cmd_chunk {
+   struct anv_bo *bo;
+   uint32_t length;
+};
 struct anv_wddm_cmd_state {
    struct anv_bo *bo;
+   struct anv_wddm_cmd_chunk *chunks;
+   uint32_t chunk_count, chunk_capacity;
 };
 int anv_wddm_execute_command(struct anv_cmd_buffer *cmd);
 #ifdef HASVK_WDDM_GRAPHICS

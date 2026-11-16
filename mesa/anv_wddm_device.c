@@ -241,9 +241,7 @@ static VkResult enumerate(struct vk_instance *base)
    p->pointSizeGranularity = 1.0f / 8.0f; p->lineWidthGranularity = 1.0f / 128.0f;
    p->strictLines = false; p->standardSampleLocations = true;
    p->optimalBufferCopyOffsetAlignment = p->optimalBufferCopyRowPitchAlignment = 128;
-   /* Vulkan 1.0 features of HasVK for Gen8, except inheritedQueries (no
-    * secondary command buffers yet) and the shader storage-image ones HasVK
-    * itself leaves off. */
+   /* Vulkan 1.0 features of HasVK for Gen8. */
    struct vk_features *f = &physical->vk.supported_features;
    f->robustBufferAccess = f->fullDrawIndexUint32 = f->imageCubeArray = f->independentBlend = true;
    f->geometryShader = f->tessellationShader = f->sampleRateShading = f->dualSrcBlend = f->logicOp = true;
@@ -256,7 +254,7 @@ static VkResult enumerate(struct vk_instance *base)
    f->shaderStorageBufferArrayDynamicIndexing = f->shaderStorageImageArrayDynamicIndexing = true;
    f->shaderClipDistance = f->shaderCullDistance = true;
    f->shaderFloat64 = physical->info.has_64bit_float; f->shaderInt64 = f->shaderInt16 = true;
-   f->variableMultisampleRate = true;
+   f->variableMultisampleRate = f->inheritedQueries = true;
    /* PS_DEPTH_COUNT gives exact sample counts (HasVK genX_query.c). */
    physical->vk.supported_features.occlusionQueryPrecise = true;
    physical->vk.supported_features.pipelineStatisticsQuery = true;
