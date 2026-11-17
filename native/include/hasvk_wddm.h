@@ -23,6 +23,9 @@ int hasvk_wddm_reserve(struct hasvk_wddm_device *device, uint64_t bytes, uint64_
 int hasvk_wddm_release(struct hasvk_wddm_device *device, uint64_t address);
 int hasvk_wddm_bo_create(struct hasvk_wddm_device *device, uint64_t bytes,
                         uint64_t requested, int writable, struct hasvk_wddm_bo **out);
+/* GPU-only memory: no CPU mapping (hasvk_wddm_bo_map returns NULL). */
+int hasvk_wddm_bo_create_unmapped(struct hasvk_wddm_device *device, uint64_t bytes,
+                                 uint64_t requested, struct hasvk_wddm_bo **out);
 int hasvk_wddm_bo_destroy(struct hasvk_wddm_bo *bo);
 void *hasvk_wddm_bo_map(struct hasvk_wddm_bo *bo);
 uint64_t hasvk_wddm_bo_address(const struct hasvk_wddm_bo *bo);

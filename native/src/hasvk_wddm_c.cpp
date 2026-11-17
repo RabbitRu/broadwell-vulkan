@@ -131,8 +131,17 @@ extern "C" int hasvk_wddm_release(hasvk_wddm_device *device, uint64_t address)
       device->ranges.erase(address);
    });
 }
+static int bo_create(hasvk_wddm_device *device, uint64_t bytes, uint64_t requested, int writable, bool cpu_map, hasvk_wddm_bo **out);
 extern "C" int hasvk_wddm_bo_create(hasvk_wddm_device *device, uint64_t bytes,
                                      uint64_t requested, int writable, hasvk_wddm_bo **out)
+{
+   return bo_create(device, bytes, requested, writable, true, out);
+}
+extern "C" int hasvk_wddm_bo_create_unmapped(hasvk_wddm_device *device, uint64_t bytes, uint64_t requested, hasvk_wddm_bo **out)
+{
+   return bo_create(device, bytes, requested, 1, false, out);
+}
+static int bo_create(hasvk_wddm_device *device, uint64_t bytes, uint64_t requested, int writable, bool cpu_map, hasvk_wddm_bo **out)
 {
    if (!device || !out) return failure("Missing allocation arguments");
    *out = nullptr;
@@ -153,7 +162,7 @@ extern "C" int hasvk_wddm_bo_create(hasvk_wddm_device *device, uint64_t bytes,
             if (requested < pool->address + pool->bytes && pool->address < requested + bytes)
                throw std::runtime_error("Allocation overlaps a state pool");
       }
-      bo->native = std::make_unique<Buffer>(device->native, linear_metadata(bytes), bytes, writable ? 1 : 0, requested);
+      bo->native = std::make_unique<Buffer>(device->native, linear_metadata(bytes), bytes, writable ? 1 : 0, requested, cpu_map);
       device->buffers.insert(bo.get());
       *out = bo.release();
    });

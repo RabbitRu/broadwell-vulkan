@@ -12,7 +12,7 @@ $taskReportPath=Join-Path $taskPackage 'diagnostics\graphics-report.json'
 $taskReport=Get-Content -LiteralPath $taskReportPath -Raw | ConvertFrom-Json
 if (-not $taskReport.passed -or -not $taskReport.forbiddenModulesAbsent -or $taskReport.cases.Count -ne 6 -or
     $taskReport.texturedDepthCases.Count -ne 12 -or $taskReport.queryCases.Count -ne 6 -or
-    $taskReport.drawCases.Count -ne 11 -or $taskReport.computeCases.Count -ne 3 -or $taskReport.eventCases.Count -ne 5 -or $taskReport.timelineCases.Count -ne 5 -or -not $taskReport.submitOrder.passed -or -not $taskReport.threads.passed -or -not $taskReport.largeMemory.allReturned -or @($taskReport.drawCases | Where-Object {-not $_.guardsIntact -or $_.quads -ne 7}).Count -or
+    $taskReport.drawCases.Count -ne 11 -or $taskReport.computeCases.Count -ne 3 -or $taskReport.eventCases.Count -ne 5 -or $taskReport.timelineCases.Count -ne 5 -or -not $taskReport.submitOrder.passed -or -not $taskReport.threads.passed -or -not $taskReport.deviceLocalMemory.gpuWriteThenCopyVerified -or -not $taskReport.largeMemory.allReturned -or @($taskReport.drawCases | Where-Object {-not $_.guardsIntact -or $_.quads -ne 7}).Count -or
     $taskReport.transfer.imageCases.Count -ne 2 -or -not $taskReport.transfer.bufferCommands.copyRegions -or
     $taskReport.formatCoverage.formats.Count -lt 42 -or $taskReport.formatCoverage.shapes.Count -ne 6 -or
     $taskReport.missingCoreCommands.Count -gt 1 -or

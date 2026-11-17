@@ -60,7 +60,7 @@ static json test_storage_images(VkDevice device, VkQueue queue, PFN_vkGetDeviceP
          image_info.samples = VK_SAMPLE_COUNT_1_BIT; image_info.tiling = tiling; image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT;
          VkImage image{}; check(vkCreateImage(device, &image_info, nullptr, &image), "Create real HasVK RGBA8 image");
          VkMemoryRequirements image_requirements{}; vkGetImageMemoryRequirements(device, image, &image_requirements);
-         require(image_requirements.size && image_requirements.memoryTypeBits == 1, "Invalid image requirements");
+         require(image_requirements.size && image_requirements.memoryTypeBits == 3, "Invalid image requirements");
          const uint64_t image_offset = (std::max)(4096ull, image_requirements.alignment);
          const uint64_t image_bytes = image_offset + image_requirements.size + 4096;
          VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; ai.allocationSize = image_bytes;

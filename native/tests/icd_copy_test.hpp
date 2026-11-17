@@ -263,6 +263,52 @@ static json test_large_memory(VkDevice device, VkQueue queue, PFN_vkGetDevicePro
    require(!stats(device, &final_bytes, &final_count) && live_bytes - final_bytes == count * size && live_count - final_count == count, "Large allocations were not returned");
    return {{"allocations", count}, {"bytesEach", size}, {"liveBytes", count * size}, {"gpuFilledBothEnds", true}, {"allReturned", true}};
 }
+/* Memory type 1 (device local, not host visible, no CPU mapping): the GPU
+ * fills a 16 MiB buffer in it and copies 64 KiB from two places into
+ * host-visible memory (type 0), which the CPU checks. */
+static json test_device_local_memory(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr get)
+{
+#define API(name) auto name = reinterpret_cast<PFN_##name>(get(device, #name)); require(name != nullptr, "Missing " #name)
+   API(vkAllocateMemory); API(vkFreeMemory); API(vkMapMemory); API(vkCreateBuffer); API(vkDestroyBuffer); API(vkBindBufferMemory);
+   API(vkCreateCommandPool); API(vkDestroyCommandPool); API(vkAllocateCommandBuffers); API(vkBeginCommandBuffer); API(vkEndCommandBuffer);
+   API(vkCmdFillBuffer); API(vkCmdCopyBuffer); API(vkCmdPipelineBarrier); API(vkQueueSubmit); API(vkQueueWaitIdle);
+#undef API
+   const uint64_t size = 16ull << 20, chunk = 65536;
+   auto make = [&](uint32_t type, VkBufferUsageFlags usage, uint64_t bytes, VkBuffer &buffer, VkDeviceMemory &memory) {
+      VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bi.size = bytes; bi.usage = usage;
+      check(vkCreateBuffer(device, &bi, nullptr, &buffer), "Buffer");
+      VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; ai.allocationSize = bytes; ai.memoryTypeIndex = type;
+      check(vkAllocateMemory(device, &ai, nullptr, &memory), "Memory"); check(vkBindBufferMemory(device, buffer, memory, 0), "Bind");
+   };
+   VkBuffer gpu{}, host{}; VkDeviceMemory gpu_memory{}, host_memory{};
+   make(1, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, size, gpu, gpu_memory);
+   make(0, VK_BUFFER_USAGE_TRANSFER_DST_BIT, 2 * chunk, host, host_memory);
+   /* Mapping type 1 would be invalid usage (VUID-vkMapMemory-memory-00682); the
+    * driver refuses it anyway, but a test under validation layers must not try. */
+   void *map{};
+   check(vkMapMemory(device, host_memory, 0, VK_WHOLE_SIZE, 0, &map), "Map host memory");
+   VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; VkCommandPool pool{}; check(vkCreateCommandPool(device, &pi, nullptr, &pool), "Pool");
+   VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; ca.commandPool = pool; ca.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ca.commandBufferCount = 1;
+   VkCommandBuffer cmd{}; check(vkAllocateCommandBuffers(device, &ca, &cmd), "Command buffer");
+   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; check(vkBeginCommandBuffer(cmd, &begin), "Begin");
+   vkCmdFillBuffer(cmd, gpu, 0, size / 2, 0x0de71ce0u); vkCmdFillBuffer(cmd, gpu, size / 2, size / 2, 0x0de71ce1u);
+   VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+   vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+   const VkBufferCopy regions[2] = {{0, 0, chunk}, {size - chunk, chunk, chunk}};
+   vkCmdCopyBuffer(cmd, gpu, host, 2, regions);
+   barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+   vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+   check(vkEndCommandBuffer(cmd), "End");
+   VkSubmitInfo s{VK_STRUCTURE_TYPE_SUBMIT_INFO}; s.commandBufferCount = 1; s.pCommandBuffers = &cmd;
+   check(vkQueueSubmit(queue, 1, &s, VK_NULL_HANDLE), "Submit"); check(vkQueueWaitIdle(queue), "Wait");
+   const uint32_t *words = static_cast<const uint32_t *>(map);
+   for (uint64_t i = 0; i < chunk / 4; ++i)
+      require(words[i] == 0x0de71ce0u && words[chunk / 4 + i] == 0x0de71ce1u, "Copy from device-local memory differs");
+   vkDestroyCommandPool(device, pool, nullptr);
+   vkDestroyBuffer(device, gpu, nullptr); vkFreeMemory(device, gpu_memory, nullptr);
+   vkDestroyBuffer(device, host, nullptr); vkFreeMemory(device, host_memory, nullptr);
+   return {{"bytes", size}, {"gpuWriteThenCopyVerified", true}};
+}
 /* One allocation of exactly maxMemoryAllocationSize (1 GiB, the Vulkan 1.1
  * minimum): the GPU fills 64 KiB at the start, the middle and the end, the
  * CPU checks them and untouched sentinels in between. */

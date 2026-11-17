@@ -1295,7 +1295,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,815 @@
+@@ -0,0 +1,835 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -1500,8 +1500,20 @@
 +   e->KHR_swapchain = true;
 +}
 +#endif
++/* HASVK_WDDM_ASSERTS_TO_STDERR=1 (set by the test scripts): a failed assert or
++ * abort writes to stderr and ends the process without a message box or a
++ * Windows Error Reporting dialog, so unattended runs never wait for a click. */
++static void unattended_asserts(void)
++{
++   static bool done;
++   if (done || !getenv("HASVK_WDDM_ASSERTS_TO_STDERR")) return;
++   done = true;
++   _set_error_mode(_OUT_TO_STDERR);
++   _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
++}
 +static VkResult enumerate(struct vk_instance *base)
 +{
++   unattended_asserts();
 +   struct anv_instance *instance = container_of(base, struct anv_instance, vk);
 +   struct hasvk_wddm_device *check = NULL;
 +   if (hasvk_wddm_device_create(&check)) {
@@ -1545,12 +1557,18 @@
 +   physical->has_a64_buffer_access = true;
 +#endif
 +   physical->gtt_size = 16ull << 30;
-+   physical->memory.heap_count = physical->memory.type_count = 1;
++   /* As upstream HasVK on LLC parts, in the other order: type 0 is host
++    * visible (cacheable mapping; coherence by flushing around submissions),
++    * type 1 is GPU-only memory without a CPU mapping. */
++   physical->memory.heap_count = 1;
++   physical->memory.type_count = 2;
 +   physical->memory.heaps[0] = (struct anv_memory_heap){.size = ANV_WDDM_HEAP_BYTES, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
 +   physical->memory.types[0] = (struct anv_memory_type){
-+      .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
++      .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
++                       VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
 +      .heapIndex = 0,
 +   };
++   physical->memory.types[1] = (struct anv_memory_type){.propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, .heapIndex = 0};
 +   physical->queue.family_count = 1;
 +   physical->queue.families[0] = (struct anv_queue_family){queue_flags(), 1, INTEL_ENGINE_CLASS_RENDER};
 +#ifdef HASVK_WDDM_GRAPHICS
@@ -1660,9 +1678,11 @@
 +{
 +   ANV_FROM_HANDLE(anv_physical_device, physical, handle);
 +   memset(properties, 0, sizeof(*properties));
-+   properties->memoryHeapCount = properties->memoryTypeCount = 1;
++   properties->memoryHeapCount = physical->memory.heap_count;
++   properties->memoryTypeCount = physical->memory.type_count;
 +   properties->memoryHeaps[0] = (VkMemoryHeap){ANV_WDDM_HEAP_BYTES, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
-+   properties->memoryTypes[0] = (VkMemoryType){physical->memory.types[0].propertyFlags, 0};
++   for (uint32_t i = 0; i < physical->memory.type_count; ++i)
++      properties->memoryTypes[i] = (VkMemoryType){physical->memory.types[i].propertyFlags, physical->memory.types[i].heapIndex};
 +}
 +/* With graphics enabled, format and image-format queries are upstream HasVK
 + * (anv_formats.c); this short list serves the compute-only build. */
@@ -2248,7 +2268,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_memory.c
-@@ -0,0 +1,479 @@
+@@ -0,0 +1,494 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -2306,10 +2326,20 @@
 +      .size_B = range, .format = format, .swizzle = swizzle, .stride_B = stride);
 +}
 +
++static VkResult
++alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo_alloc_flags flags,
++         uint64_t explicit_address, bool cpu_map, struct anv_bo **out);
 +VkResult
 +anv_device_alloc_bo(struct anv_device *device, const char *name, uint64_t size,
 +                    enum anv_bo_alloc_flags flags, uint64_t explicit_address,
 +                    struct anv_bo **out)
++{
++   return alloc_bo(device, name, size, flags, explicit_address, true, out);
++}
++/* cpu_map = false: GPU-only application memory (memory type 1), no CPU mapping. */
++static VkResult
++alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo_alloc_flags flags,
++         uint64_t explicit_address, bool cpu_map, struct anv_bo **out)
 +{
 +   *out = NULL;
 +   const unsigned allowed = ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_SNOOPED |
@@ -2332,7 +2362,8 @@
 +   struct util_vma_heap *heap = fixed ? &w->state_heap : &w->client_heap;
 +   uint64_t address = fixed ? (util_vma_heap_alloc_addr(heap, explicit_address, size) ? explicit_address : 0) :
 +      util_vma_heap_alloc(heap, size, 4096);
-+   if (!address || hasvk_wddm_bo_create(w->transport, size, address, 1, &bo->wddm_bo)) {
++   if (!address || (cpu_map ? hasvk_wddm_bo_create(w->transport, size, address, 1, &bo->wddm_bo)
++                            : hasvk_wddm_bo_create_unmapped(w->transport, size, address, &bo->wddm_bo))) {
 +      if (address) util_vma_heap_free(heap, address, size);
 +      mtx_unlock(&w->mutex); vk_free(&device->vk.alloc, bo);
 +      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
@@ -2441,8 +2472,11 @@
 +{
 +   ANV_FROM_HANDLE(anv_device, device, handle);
 +   *out = VK_NULL_HANDLE;
-+   if (info->memoryTypeIndex != 0 || !info->allocationSize || info->allocationSize > ANV_WDDM_MAX_BO_BYTES)
++   if (info->memoryTypeIndex >= device->physical->memory.type_count || !info->allocationSize ||
++       info->allocationSize > ANV_WDDM_MAX_BO_BYTES)
 +      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++   const struct anv_memory_type *type = &device->physical->memory.types[info->memoryTypeIndex];
++   const bool host_visible = (type->propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
 +   /* Unsupported allocation controls must not be silently accepted. */
 +   vk_foreach_struct_const(ext, info->pNext) {
 +      if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO) {
@@ -2466,8 +2500,8 @@
 +   }
 +   struct anv_device_memory *mem = vk_object_zalloc(&device->vk, allocator, sizeof(*mem), VK_OBJECT_TYPE_DEVICE_MEMORY);
 +   if (!mem) return VK_ERROR_OUT_OF_HOST_MEMORY;
-+   VkResult result = anv_device_alloc_bo(device, "user", info->allocationSize,
-+      ANV_BO_ALLOC_MAPPED, 0, &mem->bo);
++   VkResult result = alloc_bo(device, "user", info->allocationSize, host_visible ? ANV_BO_ALLOC_MAPPED : 0, 0,
++                              host_visible, &mem->bo);
 +   if (result != VK_SUCCESS) { vk_object_free(&device->vk, allocator, mem); return result; }
 +   /* The CPU reaches application memory only through vkMapMemory: while it is
 +    * not mapped, submissions do not need to flush its cache lines. */
@@ -2475,7 +2509,7 @@
 +      anv_device_release_bo(device, mem->bo); vk_object_free(&device->vk, allocator, mem);
 +      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 +   }
-+   mem->type = &device->physical->memory.types[0];
++   mem->type = type;
 +   mem->wddm_allocation_size = info->allocationSize;
 +   const VkMemoryDedicatedAllocateInfo *dedicated = vk_find_struct_const(info->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
 +   if (dedicated && dedicated->image) mem->dedicated_image = anv_image_from_handle(dedicated->image);
@@ -2500,7 +2534,8 @@
 +   ANV_FROM_HANDLE(anv_device, device, handle);
 +   ANV_FROM_HANDLE(anv_device_memory, mem, memory);
 +   *out = NULL;
-+   if (!mem || mem->map || flags || offset >= mem->wddm_allocation_size)
++   if (!mem || mem->map || flags || offset >= mem->wddm_allocation_size || !mem->bo->map ||
++       !(mem->type->propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
 +      return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
 +   if (size == VK_WHOLE_SIZE) size = mem->wddm_allocation_size - offset;
 +   if (!size || size > mem->wddm_allocation_size - offset)
@@ -2580,10 +2615,10 @@
 +anv_GetBufferMemoryRequirements2(VkDevice handle, const VkBufferMemoryRequirementsInfo2 *info,
 +                                 VkMemoryRequirements2 *requirements)
 +{
-+   (void)handle; ANV_FROM_HANDLE(anv_buffer, buffer, info->buffer);
++   ANV_FROM_HANDLE(anv_device, device, handle); ANV_FROM_HANDLE(anv_buffer, buffer, info->buffer);
 +   requirements->memoryRequirements = (VkMemoryRequirements){
 +      .size = buffer->vk.size, .alignment = (buffer->vk.usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ? ANV_UBO_ALIGNMENT : 16,
-+      .memoryTypeBits = 1,
++      .memoryTypeBits = (1u << device->physical->memory.type_count) - 1,
 +   };
 +   vk_foreach_struct(ext, requirements->pNext) {
 +      if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
@@ -2644,7 +2679,7 @@
 +   const struct anv_address address = anv_image_address(image, &surface->memory_range);
 +   const uint32_t width = image->vk.extent.width, height = image->vk.extent.height;
 +   const uint32_t pixel_bytes = image->vk.format == VK_FORMAT_D16_UNORM ? 2 : 4;
-+   if (!address.bo || bytes != (uint64_t)width * height * pixel_bytes || address.offset > address.bo->size ||
++   if (!address.bo || !address.bo->map || bytes != (uint64_t)width * height * pixel_bytes || address.offset > address.bo->size ||
 +       surf->size_B > address.bo->size - address.offset) return -1;
 +   hasvk_wddm_bo_flush(address.bo->wddm_bo);   /* CPU read without vkMapMemory */
 +   const char *source = (const char *)address.bo->map + address.offset;
@@ -2668,7 +2703,7 @@
 +   if (layout->bw != 1 || layout->bh != 1 || level >= surf->levels || layer >= surf->logical_level0_px.array_len) return -1;
 +   const uint32_t texel = layout->bpb / 8, width = u_minify(surf->logical_level0_px.width, level), height = u_minify(surf->logical_level0_px.height, level);
 +   const struct anv_address address = anv_image_address(image, &surface->memory_range);
-+   if (!address.bo || bytes != (uint64_t)width * height * texel) return -1;
++   if (!address.bo || !address.bo->map || bytes != (uint64_t)width * height * texel) return -1;
 +   uint32_t x, y, z, array;
 +   isl_surf_get_image_offset_el(surf, level, layer, 0, &x, &y, &z, &array);
 +   if (z || array) return -1;
@@ -2690,11 +2725,11 @@
 +anv_GetDeviceBufferMemoryRequirements(VkDevice handle, const VkDeviceBufferMemoryRequirements *info,
 +                                      VkMemoryRequirements2 *requirements)
 +{
-+   (void)handle;
++   ANV_FROM_HANDLE(anv_device, device, handle);
 +   const VkBufferCreateInfo *create = info->pCreateInfo;
 +   requirements->memoryRequirements = (VkMemoryRequirements){
 +      .size = create->size, .alignment = (create->usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ? ANV_UBO_ALIGNMENT : 16,
-+      .memoryTypeBits = 1,
++      .memoryTypeBits = (1u << device->physical->memory.type_count) - 1,
 +   };
 +   vk_foreach_struct(ext, requirements->pNext) {
 +      if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
@@ -23301,7 +23336,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.h
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,73 @@
 +#pragma once
 +#include <stdint.h>
 +#ifdef __cplusplus
@@ -23327,6 +23362,9 @@
 +int hasvk_wddm_release(struct hasvk_wddm_device *device, uint64_t address);
 +int hasvk_wddm_bo_create(struct hasvk_wddm_device *device, uint64_t bytes,
 +                        uint64_t requested, int writable, struct hasvk_wddm_bo **out);
++/* GPU-only memory: no CPU mapping (hasvk_wddm_bo_map returns NULL). */
++int hasvk_wddm_bo_create_unmapped(struct hasvk_wddm_device *device, uint64_t bytes,
++                                 uint64_t requested, struct hasvk_wddm_bo **out);
 +int hasvk_wddm_bo_destroy(struct hasvk_wddm_bo *bo);
 +void *hasvk_wddm_bo_map(struct hasvk_wddm_bo *bo);
 +uint64_t hasvk_wddm_bo_address(const struct hasvk_wddm_bo *bo);
@@ -23374,7 +23412,7 @@
 +#endif
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.hpp
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,149 @@
 +#pragma once
 +#define NOMINMAX
 +#include <windows.h>
@@ -23488,8 +23526,9 @@
 +
 +class Buffer {
 +public:
++   /* cpu_map = false: no Lock2 mapping (GPU-only memory, cpu() is null, never flushed). */
 +   Buffer(Device &device, const std::vector<uint8_t> &metadata, uint64_t bytes,
-+          uint64_t protection = 1, uint64_t requested_va = 0);
++          uint64_t protection = 1, uint64_t requested_va = 0, bool cpu_map = true);
 +   /* Shared window surface for redirected present (not CPU-mapped). share()
 +    * is its global handle, pitch() the row pitch the kernel driver chose. */
 +   Buffer(Device &device, WindowSurfaceTag, uint32_t width, uint32_t height);
@@ -23525,7 +23564,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.cpp
-@@ -0,0 +1,408 @@
+@@ -0,0 +1,415 @@
 +#include "hasvk_wddm.hpp"
 +#include <dxgi1_2.h>
 +#include <wrl/client.h>
@@ -23699,7 +23738,11 @@
 +      // cache policy. Publish CPU writes explicitly instead of assuming KMT
 +      // Lock2 mappings and every GPU access path are mutually snooped.
 +      LARGE_INTEGER t1, t2;
-+      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 1) buffer->flush();
++      /* HASVK_WDDM_TEST_SKIP_FLUSH=1 (experiments only): do not write back CPU
++       * caches before submitting, to show what the flush protects against. */
++      static const bool skip_flush = GetEnvironmentVariableA("HASVK_WDDM_TEST_SKIP_FLUSH", nullptr, 0) > 0;
++      if (!skip_flush)
++         for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 1) buffer->flush();
 +      _mm_mfence();
 +      QueryPerformanceCounter(&t1);
 +      const LONG submitted = D3DKMTSubmitCommand(&submit);
@@ -23816,9 +23859,10 @@
 +}
 +
 +Buffer::Buffer(Device &device, const std::vector<uint8_t> &metadata, uint64_t bytes,
-+               uint64_t protection, uint64_t requested_va)
++               uint64_t protection, uint64_t requested_va, bool cpu_map)
 +   : device_(device), bytes_(bytes), owns_va_(requested_va == 0)
 +{
++   if (!cpu_map) cpu_tracking_ = 0;
 +   if (device.lost() || metadata.size() != 1096 || !bytes || bytes > kMaxLinearAllocationBytes || (bytes & 4095))
 +      throw std::runtime_error("Invalid Intel allocation metadata/size");
 +   uint64_t described_bytes;
@@ -23836,10 +23880,12 @@
 +      create.pAllocationInfo2 = &info;
 +      check(D3DKMTCreateAllocation2(&create), "CreateAllocation2");
 +      allocation_ = info.hAllocation;
-+      D3DKMT_LOCK2 lock{};
-+      lock.hDevice = device_.handle(); lock.hAllocation = allocation_;
-+      check(D3DKMTLock2(&lock), "Lock2");
-+      cpu_ = lock.pData;
++      if (cpu_map) {
++         D3DKMT_LOCK2 lock{};
++         lock.hDevice = device_.handle(); lock.hAllocation = allocation_;
++         check(D3DKMTLock2(&lock), "Lock2");
++         cpu_ = lock.pData;
++      }
 +      D3DDDI_MAPGPUVIRTUALADDRESS map{};
 +      map.hPagingQueue = device_.queue();
 +      map.hAllocation = allocation_;
@@ -23936,7 +23982,7 @@
 +} // namespace hasvk::wddm
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm_c.cpp
-@@ -0,0 +1,341 @@
+@@ -0,0 +1,350 @@
 +#include "hasvk_wddm.h"
 +#include "hasvk_wddm.hpp"
 +#include <cstdio>
@@ -24070,8 +24116,17 @@
 +      device->ranges.erase(address);
 +   });
 +}
++static int bo_create(hasvk_wddm_device *device, uint64_t bytes, uint64_t requested, int writable, bool cpu_map, hasvk_wddm_bo **out);
 +extern "C" int hasvk_wddm_bo_create(hasvk_wddm_device *device, uint64_t bytes,
 +                                     uint64_t requested, int writable, hasvk_wddm_bo **out)
++{
++   return bo_create(device, bytes, requested, writable, true, out);
++}
++extern "C" int hasvk_wddm_bo_create_unmapped(hasvk_wddm_device *device, uint64_t bytes, uint64_t requested, hasvk_wddm_bo **out)
++{
++   return bo_create(device, bytes, requested, 1, false, out);
++}
++static int bo_create(hasvk_wddm_device *device, uint64_t bytes, uint64_t requested, int writable, bool cpu_map, hasvk_wddm_bo **out)
 +{
 +   if (!device || !out) return failure("Missing allocation arguments");
 +   *out = nullptr;
@@ -24092,7 +24147,7 @@
 +            if (requested < pool->address + pool->bytes && pool->address < requested + bytes)
 +               throw std::runtime_error("Allocation overlaps a state pool");
 +      }
-+      bo->native = std::make_unique<Buffer>(device->native, linear_metadata(bytes), bytes, writable ? 1 : 0, requested);
++      bo->native = std::make_unique<Buffer>(device->native, linear_metadata(bytes), bytes, writable ? 1 : 0, requested, cpu_map);
 +      device->buffers.insert(bo.get());
 +      *out = bo.release();
 +   });

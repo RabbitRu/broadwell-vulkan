@@ -73,6 +73,7 @@ $taskStart.EnvironmentVariables['VK_LOADER_LAYERS_DISABLE']='~implicit~'
 $taskStart.EnvironmentVariables['PATH']=$taskPackage+';'+$env:PATH
 if ($Present -eq 'gdi') { $taskStart.EnvironmentVariables['HASVK_WDDM_PRESENT']='gdi' } else { $taskStart.EnvironmentVariables.Remove('HASVK_WDDM_PRESENT') }
 $taskStart.EnvironmentVariables['HASVK_WDDM_PRESENT_STATS']='1'
+$taskStart.EnvironmentVariables['HASVK_WDDM_ASSERTS_TO_STDERR']='1'   # no assert message boxes from the ICD
 [CubeWindow]::KeepDisplayOn($true); Start-Sleep -Milliseconds 1000
 if ($Validate) {
     if (-not (Test-Path -LiteralPath (Join-Path $LayerPath 'VkLayer_khronos_validation.json'))) { throw "Validation layer not found in $LayerPath" }

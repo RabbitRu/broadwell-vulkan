@@ -35,6 +35,7 @@ function Start-Deqp([string[]]$Arguments, [int]$Seconds, [string]$LogName) {
     [IO.File]::WriteAllText((Join-Path $taskOut ($LogName+'.cmdline.txt')), $start.Arguments, [Text.UTF8Encoding]::new($false))
     $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true
     $start.EnvironmentVariables['VK_DRIVER_FILES']=Join-Path $taskPackage 'intel_hasvk_wddm_icd.json'
+    $start.EnvironmentVariables['HASVK_WDDM_ASSERTS_TO_STDERR']='1'   # no assert message boxes from the ICD
     $start.EnvironmentVariables.Remove('VK_ICD_FILENAMES'); $start.EnvironmentVariables.Remove('VK_ADD_DRIVER_FILES')
     $start.EnvironmentVariables['VK_LOADER_LAYERS_DISABLE']='~implicit~'
     $start.EnvironmentVariables['PATH']=$taskPackage+';'+$env:PATH

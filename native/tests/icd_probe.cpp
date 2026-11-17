@@ -57,7 +57,7 @@ static unsigned test_memory(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcA
          bi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
          for (auto &buffer : allocation.buffers) check(vkCreateBuffer(device, &bi, nullptr, &buffer), "Create Vulkan buffer");
          VkMemoryRequirements requirements{}; vkGetBufferMemoryRequirements(device, allocation.buffers[0], &requirements);
-         require(requirements.size >= size && requirements.alignment >= 16 && requirements.memoryTypeBits == 1, "Invalid buffer requirements");
+         require(requirements.size >= size && requirements.alignment >= 16 && requirements.memoryTypeBits == 3, "Invalid buffer requirements");
          const uint64_t stride = (requirements.size + requirements.alignment - 1) & ~(requirements.alignment - 1);
          allocation.size = 3 * stride + requirements.alignment;
          VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; ai.allocationSize = allocation.size;
@@ -362,7 +362,11 @@ int wmain(int argc, wchar_t **argv)
       VkQueueFamilyProperties family{}; vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, &family);
       require(family.queueCount == 1 && (family.queueFlags & VK_QUEUE_COMPUTE_BIT), "Unexpected queue capabilities");
       VkPhysicalDeviceMemoryProperties memory{}; vkGetPhysicalDeviceMemoryProperties(physical, &memory);
-      require(memory.memoryTypeCount == 1 && memory.memoryHeapCount == 1, "Invalid memory configuration");
+      /* Type 0: host visible, coherent, cached; type 1: device local only. */
+      require(memory.memoryTypeCount == 2 && memory.memoryHeapCount == 1 &&
+         memory.memoryTypes[0].propertyFlags == (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT) &&
+         memory.memoryTypes[1].propertyFlags == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, "Invalid memory configuration");
       uint32_t extension_count = 0; check(vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, nullptr), "Device extensions");
       {  /* Exactly the extensions this port has verified (anv_wddm_device.c verified_device_extensions). */
          static const char *const expected[] = {"VK_EXT_4444_formats", "VK_EXT_extended_dynamic_state",

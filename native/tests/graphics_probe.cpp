@@ -128,6 +128,7 @@ int wmain(int argc, wchar_t **argv)
       report["formatCoverage"] = test_formats(physical, vkGetPhysicalDeviceFormatProperties, device, queue, vkGetDeviceProcAddr);
       report["largestAllocation"] = test_largest_allocation(device, queue, vkGetDeviceProcAddr);
       report["largeMemory"] = test_large_memory(device, queue, vkGetDeviceProcAddr);
+      report["deviceLocalMemory"] = test_device_local_memory(device, queue, vkGetDeviceProcAddr);
       report["transfer"] = test_copies(device, queue, vkGetDeviceProcAddr);
       report["drawCases"] = test_draws(device, queue, vkGetDeviceProcAddr);
       report["queryCases"] = test_queries(device, queue, vkGetDeviceProcAddr, properties.limits.timestampPeriod, family.timestampValidBits);

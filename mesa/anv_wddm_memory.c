@@ -55,10 +55,20 @@ anv_fill_buffer_surface_state(struct anv_device *device, struct anv_state state,
       .size_B = range, .format = format, .swizzle = swizzle, .stride_B = stride);
 }
 
+static VkResult
+alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo_alloc_flags flags,
+         uint64_t explicit_address, bool cpu_map, struct anv_bo **out);
 VkResult
 anv_device_alloc_bo(struct anv_device *device, const char *name, uint64_t size,
                     enum anv_bo_alloc_flags flags, uint64_t explicit_address,
                     struct anv_bo **out)
+{
+   return alloc_bo(device, name, size, flags, explicit_address, true, out);
+}
+/* cpu_map = false: GPU-only application memory (memory type 1), no CPU mapping. */
+static VkResult
+alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo_alloc_flags flags,
+         uint64_t explicit_address, bool cpu_map, struct anv_bo **out)
 {
    *out = NULL;
    const unsigned allowed = ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_SNOOPED |
@@ -81,7 +91,8 @@ anv_device_alloc_bo(struct anv_device *device, const char *name, uint64_t size,
    struct util_vma_heap *heap = fixed ? &w->state_heap : &w->client_heap;
    uint64_t address = fixed ? (util_vma_heap_alloc_addr(heap, explicit_address, size) ? explicit_address : 0) :
       util_vma_heap_alloc(heap, size, 4096);
-   if (!address || hasvk_wddm_bo_create(w->transport, size, address, 1, &bo->wddm_bo)) {
+   if (!address || (cpu_map ? hasvk_wddm_bo_create(w->transport, size, address, 1, &bo->wddm_bo)
+                            : hasvk_wddm_bo_create_unmapped(w->transport, size, address, &bo->wddm_bo))) {
       if (address) util_vma_heap_free(heap, address, size);
       mtx_unlock(&w->mutex); vk_free(&device->vk.alloc, bo);
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
@@ -190,8 +201,11 @@ anv_AllocateMemory(VkDevice handle, const VkMemoryAllocateInfo *info,
 {
    ANV_FROM_HANDLE(anv_device, device, handle);
    *out = VK_NULL_HANDLE;
-   if (info->memoryTypeIndex != 0 || !info->allocationSize || info->allocationSize > ANV_WDDM_MAX_BO_BYTES)
+   if (info->memoryTypeIndex >= device->physical->memory.type_count || !info->allocationSize ||
+       info->allocationSize > ANV_WDDM_MAX_BO_BYTES)
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+   const struct anv_memory_type *type = &device->physical->memory.types[info->memoryTypeIndex];
+   const bool host_visible = (type->propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
    /* Unsupported allocation controls must not be silently accepted. */
    vk_foreach_struct_const(ext, info->pNext) {
       if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO) {
@@ -215,8 +229,8 @@ anv_AllocateMemory(VkDevice handle, const VkMemoryAllocateInfo *info,
    }
    struct anv_device_memory *mem = vk_object_zalloc(&device->vk, allocator, sizeof(*mem), VK_OBJECT_TYPE_DEVICE_MEMORY);
    if (!mem) return VK_ERROR_OUT_OF_HOST_MEMORY;
-   VkResult result = anv_device_alloc_bo(device, "user", info->allocationSize,
-      ANV_BO_ALLOC_MAPPED, 0, &mem->bo);
+   VkResult result = alloc_bo(device, "user", info->allocationSize, host_visible ? ANV_BO_ALLOC_MAPPED : 0, 0,
+                              host_visible, &mem->bo);
    if (result != VK_SUCCESS) { vk_object_free(&device->vk, allocator, mem); return result; }
    /* The CPU reaches application memory only through vkMapMemory: while it is
     * not mapped, submissions do not need to flush its cache lines. */
@@ -224,7 +238,7 @@ anv_AllocateMemory(VkDevice handle, const VkMemoryAllocateInfo *info,
       anv_device_release_bo(device, mem->bo); vk_object_free(&device->vk, allocator, mem);
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    }
-   mem->type = &device->physical->memory.types[0];
+   mem->type = type;
    mem->wddm_allocation_size = info->allocationSize;
    const VkMemoryDedicatedAllocateInfo *dedicated = vk_find_struct_const(info->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
    if (dedicated && dedicated->image) mem->dedicated_image = anv_image_from_handle(dedicated->image);
@@ -249,7 +263,8 @@ anv_MapMemory(VkDevice handle, VkDeviceMemory memory, VkDeviceSize offset,
    ANV_FROM_HANDLE(anv_device, device, handle);
    ANV_FROM_HANDLE(anv_device_memory, mem, memory);
    *out = NULL;
-   if (!mem || mem->map || flags || offset >= mem->wddm_allocation_size)
+   if (!mem || mem->map || flags || offset >= mem->wddm_allocation_size || !mem->bo->map ||
+       !(mem->type->propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
       return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
    if (size == VK_WHOLE_SIZE) size = mem->wddm_allocation_size - offset;
    if (!size || size > mem->wddm_allocation_size - offset)
@@ -329,10 +344,10 @@ VKAPI_ATTR void VKAPI_CALL
 anv_GetBufferMemoryRequirements2(VkDevice handle, const VkBufferMemoryRequirementsInfo2 *info,
                                  VkMemoryRequirements2 *requirements)
 {
-   (void)handle; ANV_FROM_HANDLE(anv_buffer, buffer, info->buffer);
+   ANV_FROM_HANDLE(anv_device, device, handle); ANV_FROM_HANDLE(anv_buffer, buffer, info->buffer);
    requirements->memoryRequirements = (VkMemoryRequirements){
       .size = buffer->vk.size, .alignment = (buffer->vk.usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ? ANV_UBO_ALIGNMENT : 16,
-      .memoryTypeBits = 1,
+      .memoryTypeBits = (1u << device->physical->memory.type_count) - 1,
    };
    vk_foreach_struct(ext, requirements->pNext) {
       if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
@@ -393,7 +408,7 @@ PUBLIC int hasvk_wddm_icd_read_image(VkImage handle, void *rgba, uint64_t bytes,
    const struct anv_address address = anv_image_address(image, &surface->memory_range);
    const uint32_t width = image->vk.extent.width, height = image->vk.extent.height;
    const uint32_t pixel_bytes = image->vk.format == VK_FORMAT_D16_UNORM ? 2 : 4;
-   if (!address.bo || bytes != (uint64_t)width * height * pixel_bytes || address.offset > address.bo->size ||
+   if (!address.bo || !address.bo->map || bytes != (uint64_t)width * height * pixel_bytes || address.offset > address.bo->size ||
        surf->size_B > address.bo->size - address.offset) return -1;
    hasvk_wddm_bo_flush(address.bo->wddm_bo);   /* CPU read without vkMapMemory */
    const char *source = (const char *)address.bo->map + address.offset;
@@ -417,7 +432,7 @@ PUBLIC int hasvk_wddm_icd_read_image_level(VkImage handle, uint32_t level, uint3
    if (layout->bw != 1 || layout->bh != 1 || level >= surf->levels || layer >= surf->logical_level0_px.array_len) return -1;
    const uint32_t texel = layout->bpb / 8, width = u_minify(surf->logical_level0_px.width, level), height = u_minify(surf->logical_level0_px.height, level);
    const struct anv_address address = anv_image_address(image, &surface->memory_range);
-   if (!address.bo || bytes != (uint64_t)width * height * texel) return -1;
+   if (!address.bo || !address.bo->map || bytes != (uint64_t)width * height * texel) return -1;
    uint32_t x, y, z, array;
    isl_surf_get_image_offset_el(surf, level, layer, 0, &x, &y, &z, &array);
    if (z || array) return -1;
@@ -439,11 +454,11 @@ VKAPI_ATTR void VKAPI_CALL
 anv_GetDeviceBufferMemoryRequirements(VkDevice handle, const VkDeviceBufferMemoryRequirements *info,
                                       VkMemoryRequirements2 *requirements)
 {
-   (void)handle;
+   ANV_FROM_HANDLE(anv_device, device, handle);
    const VkBufferCreateInfo *create = info->pCreateInfo;
    requirements->memoryRequirements = (VkMemoryRequirements){
       .size = create->size, .alignment = (create->usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ? ANV_UBO_ALIGNMENT : 16,
-      .memoryTypeBits = 1,
+      .memoryTypeBits = (1u << device->physical->memory.type_count) - 1,
    };
    vk_foreach_struct(ext, requirements->pNext) {
       if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {

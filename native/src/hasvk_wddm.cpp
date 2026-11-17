@@ -171,7 +171,11 @@ uint64_t Device::submit(uint64_t commands, uint32_t bytes, const std::vector<uin
       // cache policy. Publish CPU writes explicitly instead of assuming KMT
       // Lock2 mappings and every GPU access path are mutually snooped.
       LARGE_INTEGER t1, t2;
-      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 1) buffer->flush();
+      /* HASVK_WDDM_TEST_SKIP_FLUSH=1 (experiments only): do not write back CPU
+       * caches before submitting, to show what the flush protects against. */
+      static const bool skip_flush = GetEnvironmentVariableA("HASVK_WDDM_TEST_SKIP_FLUSH", nullptr, 0) > 0;
+      if (!skip_flush)
+         for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 1) buffer->flush();
       _mm_mfence();
       QueryPerformanceCounter(&t1);
       const LONG submitted = D3DKMTSubmitCommand(&submit);
@@ -288,9 +292,10 @@ void Device::shutdown()
 }
 
 Buffer::Buffer(Device &device, const std::vector<uint8_t> &metadata, uint64_t bytes,
-               uint64_t protection, uint64_t requested_va)
+               uint64_t protection, uint64_t requested_va, bool cpu_map)
    : device_(device), bytes_(bytes), owns_va_(requested_va == 0)
 {
+   if (!cpu_map) cpu_tracking_ = 0;
    if (device.lost() || metadata.size() != 1096 || !bytes || bytes > kMaxLinearAllocationBytes || (bytes & 4095))
       throw std::runtime_error("Invalid Intel allocation metadata/size");
    uint64_t described_bytes;
@@ -308,10 +313,12 @@ Buffer::Buffer(Device &device, const std::vector<uint8_t> &metadata, uint64_t by
       create.pAllocationInfo2 = &info;
       check(D3DKMTCreateAllocation2(&create), "CreateAllocation2");
       allocation_ = info.hAllocation;
-      D3DKMT_LOCK2 lock{};
-      lock.hDevice = device_.handle(); lock.hAllocation = allocation_;
-      check(D3DKMTLock2(&lock), "Lock2");
-      cpu_ = lock.pData;
+      if (cpu_map) {
+         D3DKMT_LOCK2 lock{};
+         lock.hDevice = device_.handle(); lock.hAllocation = allocation_;
+         check(D3DKMTLock2(&lock), "Lock2");
+         cpu_ = lock.pData;
+      }
       D3DDDI_MAPGPUVIRTUALADDRESS map{};
       map.hPagingQueue = device_.queue();
       map.hAllocation = allocation_;

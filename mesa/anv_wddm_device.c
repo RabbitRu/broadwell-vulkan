@@ -202,8 +202,20 @@ static void apply_upstream_capabilities(struct anv_physical_device *physical)
    e->KHR_swapchain = true;
 }
 #endif
+/* HASVK_WDDM_ASSERTS_TO_STDERR=1 (set by the test scripts): a failed assert or
+ * abort writes to stderr and ends the process without a message box or a
+ * Windows Error Reporting dialog, so unattended runs never wait for a click. */
+static void unattended_asserts(void)
+{
+   static bool done;
+   if (done || !getenv("HASVK_WDDM_ASSERTS_TO_STDERR")) return;
+   done = true;
+   _set_error_mode(_OUT_TO_STDERR);
+   _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+}
 static VkResult enumerate(struct vk_instance *base)
 {
+   unattended_asserts();
    struct anv_instance *instance = container_of(base, struct anv_instance, vk);
    struct hasvk_wddm_device *check = NULL;
    if (hasvk_wddm_device_create(&check)) {
@@ -247,12 +259,18 @@ static VkResult enumerate(struct vk_instance *base)
    physical->has_a64_buffer_access = true;
 #endif
    physical->gtt_size = 16ull << 30;
-   physical->memory.heap_count = physical->memory.type_count = 1;
+   /* As upstream HasVK on LLC parts, in the other order: type 0 is host
+    * visible (cacheable mapping; coherence by flushing around submissions),
+    * type 1 is GPU-only memory without a CPU mapping. */
+   physical->memory.heap_count = 1;
+   physical->memory.type_count = 2;
    physical->memory.heaps[0] = (struct anv_memory_heap){.size = ANV_WDDM_HEAP_BYTES, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
    physical->memory.types[0] = (struct anv_memory_type){
-      .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+      .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                       VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
       .heapIndex = 0,
    };
+   physical->memory.types[1] = (struct anv_memory_type){.propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, .heapIndex = 0};
    physical->queue.family_count = 1;
    physical->queue.families[0] = (struct anv_queue_family){queue_flags(), 1, INTEL_ENGINE_CLASS_RENDER};
 #ifdef HASVK_WDDM_GRAPHICS
@@ -362,9 +380,11 @@ VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceMemoryProperties(VkPhysicalDevic
 {
    ANV_FROM_HANDLE(anv_physical_device, physical, handle);
    memset(properties, 0, sizeof(*properties));
-   properties->memoryHeapCount = properties->memoryTypeCount = 1;
+   properties->memoryHeapCount = physical->memory.heap_count;
+   properties->memoryTypeCount = physical->memory.type_count;
    properties->memoryHeaps[0] = (VkMemoryHeap){ANV_WDDM_HEAP_BYTES, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
-   properties->memoryTypes[0] = (VkMemoryType){physical->memory.types[0].propertyFlags, 0};
+   for (uint32_t i = 0; i < physical->memory.type_count; ++i)
+      properties->memoryTypes[i] = (VkMemoryType){physical->memory.types[i].propertyFlags, physical->memory.types[i].heapIndex};
 }
 /* With graphics enabled, format and image-format queries are upstream HasVK
  * (anv_formats.c); this short list serves the compute-only build. */

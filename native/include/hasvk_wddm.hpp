@@ -111,8 +111,9 @@ private:
 
 class Buffer {
 public:
+   /* cpu_map = false: no Lock2 mapping (GPU-only memory, cpu() is null, never flushed). */
    Buffer(Device &device, const std::vector<uint8_t> &metadata, uint64_t bytes,
-          uint64_t protection = 1, uint64_t requested_va = 0);
+          uint64_t protection = 1, uint64_t requested_va = 0, bool cpu_map = true);
    /* Shared window surface for redirected present (not CPU-mapped). share()
     * is its global handle, pitch() the row pitch the kernel driver chose. */
    Buffer(Device &device, WindowSurfaceTag, uint32_t width, uint32_t height);
