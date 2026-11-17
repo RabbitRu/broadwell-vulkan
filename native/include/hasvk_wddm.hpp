@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <winternl.h>
 #include <d3dkmthk.h>
+#include <atomic>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -49,7 +50,7 @@ public:
    LUID adapter_luid() const { return luid_; }
    std::wstring adapter_name;
    /* Profiling counters (QueryPerformanceCounter ticks, bytes). */
-   uint64_t flush_ticks = 0, kernel_ticks = 0, flushed_bytes = 0;
+   std::atomic<uint64_t> flush_ticks{0}, kernel_ticks{0}, flushed_bytes{0};
 private:
    friend class Buffer;
    friend class VaRange;

@@ -496,7 +496,7 @@ VkResult anv_queue_submit_simple_batch(struct anv_queue *queue, struct anv_batch
    size_t aligned = align(bytes, 8);
    memcpy(hasvk_wddm_bo_map(w->entry), batch->start, bytes);
    if (aligned > bytes) memset((char *)hasvk_wddm_bo_map(w->entry) + bytes, 0, aligned - bytes);
-   if (hasvk_wddm_submit_wait(w->transport, w->entry, 0, aligned))
+   if (anv_wddm_flush_state_pools(queue->device) || hasvk_wddm_submit_wait(w->transport, w->entry, 0, aligned))
       return vk_errorf(queue->device, VK_ERROR_DEVICE_LOST, "WDDM initialization batch: %s", hasvk_wddm_error());
    return VK_SUCCESS;
 }

@@ -45,6 +45,28 @@ void anv_wddm_pools_finish(struct anv_device *device)
    if (w->device_mutex_initialized) { pthread_mutex_destroy(&device->mutex); w->device_mutex_initialized = false; }
 }
 
+/* Write back CPU cache lines of every state pool before a submission. Only the
+ * front of each block pool up to its high-water mark was ever handed out (the
+ * port never allocates from the back), so nothing beyond it can be dirty.
+ * Below the mark everything is flushed: states are rewritten after allocation
+ * (descriptor updates, reused free-list entries). */
+int anv_wddm_flush_state_pools(struct anv_device *device)
+{
+   struct anv_state_pool *pools[5]; pool_list(device, pools);
+   for (unsigned p = 0; p < device->wddm->initialized_pools; ++p) {
+      struct anv_block_pool *block_pool = &pools[p]->block_pool;
+      struct anv_block_state state; state.u64 = p_atomic_read(&block_pool->state.u64);
+      uint64_t start = 0;
+      anv_block_pool_foreach_bo(bo, block_pool) {
+         if (start >= state.next) break;
+         const uint64_t bytes = MIN2(bo->size, state.next - start);
+         if (hasvk_wddm_bo_flush_range(bo->wddm_bo, 0, bytes)) return -1;
+         start += bo->size;
+      }
+   }
+   return 0;
+}
+
 /* Diagnostic only: call on a fresh device before any queue submissions.
  * Reads Mesa suballocations through the GPU after growing both block pools
  * and CPU state tables. This is not a Vulkan command-buffer entry point. */
@@ -97,7 +119,8 @@ PUBLIC int hasvk_wddm_icd_test_state_pools(VkDevice handle, uint32_t *reads)
    struct GFX8_MI_BATCH_BUFFER_END end = {GFX8_MI_BATCH_BUFFER_END_header};
    GFX8_MI_BATCH_BUFFER_END_pack(NULL, next++, &end);
    if ((next - batch) & 1) *next++ = 0;
-   status = hasvk_wddm_submit_wait(w->transport, w->entry, 0, (next - batch) * 4);
+   status = anv_wddm_flush_state_pools(device);
+   if (!status) status = hasvk_wddm_submit_wait(w->transport, w->entry, 0, (next - batch) * 4);
    if (!status) {
       for (unsigned i = 0; i < 1024; ++i) {
          uint32_t wanted = i >= 16 && i < 16 + read_count ? expected[i - 16] : 0x39393939;

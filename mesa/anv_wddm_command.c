@@ -332,6 +332,7 @@ int anv_wddm_execute_command(struct anv_cmd_buffer *cmd)
     * command buffer's chunks now, and re-read the marker line after each segment. */
    for (uint32_t c = 0; c < cmd->wddm->chunk_count; ++c)
       if (hasvk_wddm_bo_flush(cmd->wddm->chunks[c].bo->wddm_bo)) return -1;
+   if (anv_wddm_flush_state_pools(cmd->device)) return -1;
    struct anv_address start = {cmd->wddm->bo, 0};
    for (uint32_t segment = 0;; ++segment) {
       struct anv_batch entry = {.start = hasvk_wddm_bo_map(w->entry), .next = hasvk_wddm_bo_map(w->entry),

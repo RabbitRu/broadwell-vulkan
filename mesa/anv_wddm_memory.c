@@ -95,13 +95,13 @@ anv_device_alloc_bo(struct anv_device *device, const char *name, uint64_t size,
    bo->has_fixed_address = fixed;
    bo->map = hasvk_wddm_bo_map(bo->wddm_bo);
    bo->has_client_visible_address = (flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0;
-   /* CPU cache flushing around submissions, by how the BO is used:
-    * state pools are written by the CPU and only read by the GPU; command BOs
-    * are flushed by anv_wddm_execute_command for the buffers it submits. */
+   /* CPU cache flushing around submissions, by how the BO is used: state pool
+    * BOs are written by the CPU and only read by the GPU, and only up to the
+    * pool's high-water mark (anv_wddm_flush_state_pools); command BOs are
+    * flushed by anv_wddm_execute_command for the buffers it submits. */
    const size_t name_length = strlen(name);
    int tracking = HASVK_WDDM_FLUSH_BEFORE | HASVK_WDDM_FLUSH_AFTER;
-   if (name_length > 5 && !strcmp(name + name_length - 5, " pool")) tracking = HASVK_WDDM_FLUSH_BEFORE;
-   else if (!strcmp(name, "command")) tracking = 0;
+   if ((name_length > 5 && !strcmp(name + name_length - 5, " pool")) || !strcmp(name, "command")) tracking = 0;
    if (tracking != (HASVK_WDDM_FLUSH_BEFORE | HASVK_WDDM_FLUSH_AFTER) && hasvk_wddm_bo_set_cpu_tracking(bo->wddm_bo, tracking)) {
       mtx_lock(&w->mutex); hasvk_wddm_bo_destroy(bo->wddm_bo); util_vma_heap_free(heap, address, size); mtx_unlock(&w->mutex);
       vk_free(&device->vk.alloc, bo); return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);

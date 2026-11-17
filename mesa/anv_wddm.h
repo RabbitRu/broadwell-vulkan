@@ -62,6 +62,7 @@ void anv_wddm_cmd_state_finish(struct anv_cmd_buffer *cmd);
 void anv_wddm_init_border_colors(struct anv_device *device);
 struct anv_address anv_wddm_event_address(struct anv_device *device, const struct anv_event *event);
 void anv_wddm_cmd_wait_events(struct anv_cmd_buffer *cmd, uint32_t count, const VkEvent *events);
+int anv_wddm_flush_state_pools(struct anv_device *device);
 void anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct vk_device_extension_table *ext,
                                     struct vk_features *features, struct vk_properties *props);
 #endif

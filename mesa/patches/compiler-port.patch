@@ -1715,7 +1715,7 @@
 +   size_t aligned = align(bytes, 8);
 +   memcpy(hasvk_wddm_bo_map(w->entry), batch->start, bytes);
 +   if (aligned > bytes) memset((char *)hasvk_wddm_bo_map(w->entry) + bytes, 0, aligned - bytes);
-+   if (hasvk_wddm_submit_wait(w->transport, w->entry, 0, aligned))
++   if (anv_wddm_flush_state_pools(queue->device) || hasvk_wddm_submit_wait(w->transport, w->entry, 0, aligned))
 +      return vk_errorf(queue->device, VK_ERROR_DEVICE_LOST, "WDDM initialization batch: %s", hasvk_wddm_error());
 +   return VK_SUCCESS;
 +}
@@ -1948,7 +1948,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm.h
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,74 @@
 +/* Private Windows platform state for the HasVK port. */
 +#pragma once
 +#include "anv_private.h"
@@ -2013,6 +2013,7 @@
 +void anv_wddm_init_border_colors(struct anv_device *device);
 +struct anv_address anv_wddm_event_address(struct anv_device *device, const struct anv_event *event);
 +void anv_wddm_cmd_wait_events(struct anv_cmd_buffer *cmd, uint32_t count, const VkEvent *events);
++int anv_wddm_flush_state_pools(struct anv_device *device);
 +void anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct vk_device_extension_table *ext,
 +                                    struct vk_features *features, struct vk_properties *props);
 +#endif
@@ -2122,13 +2123,13 @@
 +   bo->has_fixed_address = fixed;
 +   bo->map = hasvk_wddm_bo_map(bo->wddm_bo);
 +   bo->has_client_visible_address = (flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0;
-+   /* CPU cache flushing around submissions, by how the BO is used:
-+    * state pools are written by the CPU and only read by the GPU; command BOs
-+    * are flushed by anv_wddm_execute_command for the buffers it submits. */
++   /* CPU cache flushing around submissions, by how the BO is used: state pool
++    * BOs are written by the CPU and only read by the GPU, and only up to the
++    * pool's high-water mark (anv_wddm_flush_state_pools); command BOs are
++    * flushed by anv_wddm_execute_command for the buffers it submits. */
 +   const size_t name_length = strlen(name);
 +   int tracking = HASVK_WDDM_FLUSH_BEFORE | HASVK_WDDM_FLUSH_AFTER;
-+   if (name_length > 5 && !strcmp(name + name_length - 5, " pool")) tracking = HASVK_WDDM_FLUSH_BEFORE;
-+   else if (!strcmp(name, "command")) tracking = 0;
++   if ((name_length > 5 && !strcmp(name + name_length - 5, " pool")) || !strcmp(name, "command")) tracking = 0;
 +   if (tracking != (HASVK_WDDM_FLUSH_BEFORE | HASVK_WDDM_FLUSH_AFTER) && hasvk_wddm_bo_set_cpu_tracking(bo->wddm_bo, tracking)) {
 +      mtx_lock(&w->mutex); hasvk_wddm_bo_destroy(bo->wddm_bo); util_vma_heap_free(heap, address, size); mtx_unlock(&w->mutex);
 +      vk_free(&device->vk.alloc, bo); return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
@@ -2548,7 +2549,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_pools.c
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,151 @@
 +/* Initialization and hardware diagnostics for the real HasVK state pools. */
 +#include "anv_wddm.h"
 +#undef __gen_address_type
@@ -2594,6 +2595,28 @@
 +   struct anv_state_pool *pools[5]; pool_list(device, pools);
 +   while (w->initialized_pools) anv_state_pool_finish(pools[--w->initialized_pools]);
 +   if (w->device_mutex_initialized) { pthread_mutex_destroy(&device->mutex); w->device_mutex_initialized = false; }
++}
++
++/* Write back CPU cache lines of every state pool before a submission. Only the
++ * front of each block pool up to its high-water mark was ever handed out (the
++ * port never allocates from the back), so nothing beyond it can be dirty.
++ * Below the mark everything is flushed: states are rewritten after allocation
++ * (descriptor updates, reused free-list entries). */
++int anv_wddm_flush_state_pools(struct anv_device *device)
++{
++   struct anv_state_pool *pools[5]; pool_list(device, pools);
++   for (unsigned p = 0; p < device->wddm->initialized_pools; ++p) {
++      struct anv_block_pool *block_pool = &pools[p]->block_pool;
++      struct anv_block_state state; state.u64 = p_atomic_read(&block_pool->state.u64);
++      uint64_t start = 0;
++      anv_block_pool_foreach_bo(bo, block_pool) {
++         if (start >= state.next) break;
++         const uint64_t bytes = MIN2(bo->size, state.next - start);
++         if (hasvk_wddm_bo_flush_range(bo->wddm_bo, 0, bytes)) return -1;
++         start += bo->size;
++      }
++   }
++   return 0;
 +}
 +
 +/* Diagnostic only: call on a fresh device before any queue submissions.
@@ -2648,7 +2671,8 @@
 +   struct GFX8_MI_BATCH_BUFFER_END end = {GFX8_MI_BATCH_BUFFER_END_header};
 +   GFX8_MI_BATCH_BUFFER_END_pack(NULL, next++, &end);
 +   if ((next - batch) & 1) *next++ = 0;
-+   status = hasvk_wddm_submit_wait(w->transport, w->entry, 0, (next - batch) * 4);
++   status = anv_wddm_flush_state_pools(device);
++   if (!status) status = hasvk_wddm_submit_wait(w->transport, w->entry, 0, (next - batch) * 4);
 +   if (!status) {
 +      for (unsigned i = 0; i < 1024; ++i) {
 +         uint32_t wanted = i >= 16 && i < 16 + read_count ? expected[i - 16] : 0x39393939;
@@ -2748,7 +2772,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_command.c
-@@ -0,0 +1,390 @@
+@@ -0,0 +1,391 @@
 +/* Windows lifetime and submission backing for HasVK command buffers.
 + * Packet emission, descriptor binding and push packing use upstream HasVK.
 + *
@@ -3083,6 +3107,7 @@
 +    * command buffer's chunks now, and re-read the marker line after each segment. */
 +   for (uint32_t c = 0; c < cmd->wddm->chunk_count; ++c)
 +      if (hasvk_wddm_bo_flush(cmd->wddm->chunks[c].bo->wddm_bo)) return -1;
++   if (anv_wddm_flush_state_pools(cmd->device)) return -1;
 +   struct anv_address start = {cmd->wddm->bo, 0};
 +   for (uint32_t segment = 0;; ++segment) {
 +      struct anv_batch entry = {.start = hasvk_wddm_bo_map(w->entry), .next = hasvk_wddm_bo_map(w->entry),
@@ -22794,12 +22819,13 @@
 +#endif
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.hpp
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,111 @@
 +#pragma once
 +#define NOMINMAX
 +#include <windows.h>
 +#include <winternl.h>
 +#include <d3dkmthk.h>
++#include <atomic>
 +#include <cstdint>
 +#include <stdexcept>
 +#include <string>
@@ -22846,7 +22872,7 @@
 +   LUID adapter_luid() const { return luid_; }
 +   std::wstring adapter_name;
 +   /* Profiling counters (QueryPerformanceCounter ticks, bytes). */
-+   uint64_t flush_ticks = 0, kernel_ticks = 0, flushed_bytes = 0;
++   std::atomic<uint64_t> flush_ticks{0}, kernel_ticks{0}, flushed_bytes{0};
 +private:
 +   friend class Buffer;
 +   friend class VaRange;
@@ -22907,7 +22933,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.cpp
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,292 @@
 +#include "hasvk_wddm.hpp"
 +#include <dxgi1_2.h>
 +#include <wrl/client.h>
@@ -23023,8 +23049,8 @@
 +      // The private allocation profile does not establish a documented CPU
 +      // cache policy. Publish CPU writes explicitly instead of assuming KMT
 +      // Lock2 mappings and every GPU access path are mutually snooped.
-+      LARGE_INTEGER t0, t1, t2, t3; QueryPerformanceCounter(&t0);
-+      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 1) { buffer->flush(); flushed_bytes += buffer->size(); }
++      LARGE_INTEGER t1, t2;
++      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 1) buffer->flush();
 +      _mm_mfence();
 +      QueryPerformanceCounter(&t1);
 +      check(D3DKMTSubmitCommand(&submit), "SubmitCommand");
@@ -23040,17 +23066,21 @@
 +      if (state != D3DKMT_DEVICEEXECUTION_ACTIVE)
 +         throw std::runtime_error("WDDM device is not active after submission (execution state " + std::to_string(state) + ")");
 +      QueryPerformanceCounter(&t2);
-+      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 2) { buffer->flush(); flushed_bytes += buffer->size(); }
++      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 2) buffer->flush();
 +      _mm_mfence();
-+      QueryPerformanceCounter(&t3);
-+      flush_ticks += (t1.QuadPart - t0.QuadPart) + (t3.QuadPart - t2.QuadPart); kernel_ticks += t2.QuadPart - t1.QuadPart;
++      kernel_ticks += t2.QuadPart - t1.QuadPart;
 +   } catch (...) { abort_context(); throw; }
 +}
 +void Buffer::flush(uint64_t offset, uint64_t bytes) const
 +{
 +   if (offset > bytes_ || bytes > bytes_ - offset) throw std::runtime_error("Flush range outside the buffer");
++   /* Every flush, implicit (around submissions) or explicit, is counted in
++    * the device profile. */
++   LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
 +   for (uint64_t line = offset & ~63ull; line < offset + bytes; line += 64) _mm_clflush(static_cast<const char *>(cpu_) + line);
 +   _mm_mfence();
++   QueryPerformanceCounter(&t1);
++   device_.flush_ticks += t1.QuadPart - t0.QuadPart; device_.flushed_bytes += bytes;
 +}
 +uint32_t Device::execution_state()
 +{
