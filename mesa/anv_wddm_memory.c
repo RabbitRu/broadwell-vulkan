@@ -149,6 +149,14 @@ anv_AllocateMemory(VkDevice handle, const VkMemoryAllocateInfo *info,
       if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO) {
          const VkMemoryDedicatedAllocateInfo *dedicated = (const void *)ext;
          if (dedicated->image && dedicated->buffer) return VK_ERROR_FEATURE_NOT_PRESENT;
+      } else if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO) {
+         /* Vulkan 1.1 device groups: one device, mask 1. No device addresses yet. */
+         const VkMemoryAllocateFlagsInfo *flags = (const void *)ext;
+         if ((flags->flags & ~VK_MEMORY_ALLOCATE_DEVICE_MASK_BIT) ||
+             ((flags->flags & VK_MEMORY_ALLOCATE_DEVICE_MASK_BIT) && flags->deviceMask != 1))
+            return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
+      } else if (ext->sType == VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO) {
+         if (((const VkExportMemoryAllocateInfo *)ext)->handleTypes) return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
       } else if (ext->sType == VK_STRUCTURE_TYPE_WSI_MEMORY_ALLOCATE_INFO_MESA) {
          const struct wsi_memory_allocate_info *wsi = (const void *)ext;
          if (wsi->implicit_sync || wsi->dma_buf_sync_file) return VK_ERROR_FEATURE_NOT_PRESENT;

@@ -18,7 +18,8 @@ with output.open('w', encoding='utf-8') as header:
 # Core Vulkan 1.0 command names for the ICD entry-point coverage report.
 import xml.etree.ElementTree as ET
 registry = ET.parse(root / 'third_party/Vulkan-Headers-1.3.301/registry/vk.xml').getroot()
-feature = next(f for f in registry.iter('feature') if f.get('name') == 'VK_VERSION_1_0')
-commands = sorted({c.get('name') for c in feature.iter('command')})
-assert len(commands) > 130
-(root / 'build/native/vk10_commands.inc').write_text(''.join(f'"{name}",\n' for name in commands), encoding='utf-8')
+for version in ['1_0', '1_1', '1_2', '1_3']:
+    feature = next(f for f in registry.iter('feature') if f.get('name') == 'VK_VERSION_' + version)
+    commands = sorted({c.get('name') for c in feature.iter('command')})
+    assert commands
+    (root / f'build/native/vk{version.replace("_", "")}_commands.inc').write_text(''.join(f'"{name}",\n' for name in commands), encoding='utf-8')

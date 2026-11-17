@@ -364,12 +364,21 @@ int wmain(int argc, wchar_t **argv)
       VkPhysicalDeviceMemoryProperties memory{}; vkGetPhysicalDeviceMemoryProperties(physical, &memory);
       require(memory.memoryTypeCount == 1 && memory.memoryHeapCount == 1, "Invalid memory configuration");
       uint32_t extension_count = 0; check(vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, nullptr), "Device extensions");
-      require(extension_count <= 1, "Unexpected device extensions in bring-up ICD");
-      if (extension_count) {
-         VkExtensionProperties extension{};
-         check(vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, &extension), "Query device extension");
-         require(std::string(extension.extensionName) == VK_KHR_SWAPCHAIN_EXTENSION_NAME, "Unexpected exposed device extension");
+      {  /* Exactly the extensions this port has verified (anv_wddm_device.c verified_device_extensions). */
+         static const char *const expected[] = {"VK_EXT_host_query_reset", "VK_KHR_16bit_storage", "VK_KHR_bind_memory2",
+            "VK_KHR_dedicated_allocation", "VK_KHR_descriptor_update_template", "VK_KHR_device_group", "VK_KHR_driver_properties",
+            "VK_KHR_external_memory", "VK_KHR_external_semaphore", "VK_KHR_get_memory_requirements2", "VK_KHR_maintenance1",
+            "VK_KHR_maintenance2", "VK_KHR_maintenance3", "VK_KHR_multiview", "VK_KHR_relaxed_block_layout",
+            "VK_KHR_sampler_mirror_clamp_to_edge", "VK_KHR_shader_draw_parameters", "VK_KHR_storage_buffer_storage_class",
+            "VK_KHR_swapchain", "VK_KHR_variable_pointers"};
+         std::vector<VkExtensionProperties> extensions(extension_count);
+         check(vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, extensions.data()), "Query device extensions");
+         std::vector<std::string> names; for (const auto &extension : extensions) names.push_back(extension.extensionName);
+         std::sort(names.begin(), names.end());
+         require(names == std::vector<std::string>(std::begin(expected), std::end(expected)), "Device extensions differ from the verified list");
+         report["deviceExtensions"] = names;
       }
+      require(VK_API_VERSION_MAJOR(properties.apiVersion) == 1 && VK_API_VERSION_MINOR(properties.apiVersion) == 1, "ICD must report Vulkan 1.1");
       float priority = 1;
       VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}; qi.queueCount = 1; qi.pQueuePriorities = &priority;
       VkDeviceCreateInfo di{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO}; di.queueCreateInfoCount = 1; di.pQueueCreateInfos = &qi;

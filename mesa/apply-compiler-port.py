@@ -436,8 +436,16 @@ formats = (originals / 'src/intel/vulkan_hasvk/anv_formats.c').read_text(encodin
 format_split = formats.index('// Format capabilities')
 # The capability queries (format features, image format properties) are the
 # upstream ones whenever graphics is built.
+format_caps = formats[format_split:]
+# No external memory handle type exists on this port (no fd, dma-buf, AHB).
+old = '   switch (pExternalBufferInfo->handleType) {'
+assert format_caps.count(old) == 1
+format_caps = format_caps.replace(old, '#ifdef _WIN32\n   (void)physical_device;\n   goto unsupported;\n#endif\n' + old)
+old = '      switch (external_info->handleType) {\n      case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:'
+assert format_caps.count(old) == 1
+format_caps = format_caps.replace(old, '#ifdef _WIN32\n      result = vk_errorf(physical_device, VK_ERROR_FORMAT_NOT_SUPPORTED,\n                         "no external memory handle types on Windows");\n      goto fail;\n#endif\n' + old)
 owned_sources['src/intel/wddm_compiler/anv_wddm_format_table.c'] = (
-    formats[:format_split] + '#ifdef HASVK_WDDM_GRAPHICS\n' + formats[format_split:] + '\n#endif\n')
+    formats[:format_split] + '#ifdef HASVK_WDDM_GRAPHICS\n' + format_caps + '\n#endif\n')
 owned_sources.update(generate_compute_sources(originals))
 owned_sources.update(generate_graphics_sources(originals))
 for name in ['hasvk_wddm.h', 'hasvk_wddm.hpp']:
@@ -477,7 +485,7 @@ common_commands = ['anv_wddm_command_common.c']
 gen8_commands = ['anv_wddm_compute_emit.c', 'anv_wddm_command_gen8.c']
 if get_option('hasvk-wddm-graphics')
   graphics_args = ['-DHASVK_WDDM_GRAPHICS']
-  common_commands = ['anv_wddm_graphics_common.c', 'anv_wddm_graphics_blorp.c']
+  common_commands = ['anv_wddm_graphics_common.c', 'anv_wddm_graphics_blorp.c', 'anv_wddm_capabilities.c']
   gen8_commands = ['anv_wddm_graphics_gen8.c', 'anv_wddm_graphics_pipeline.c',
     'anv_wddm_graphics_dynamic.c', 'anv_wddm_graphics_state.c', 'anv_wddm_graphics_blorp_exec.c',
     'anv_wddm_graphics_query.c', 'anv_wddm_graphics_memcpy.c']

@@ -75,6 +75,25 @@ int wmain(int argc, wchar_t **argv)
             if (!present) missing.push_back(name);
          }
          report["coreCommands"] = sizeof(core) / sizeof(core[0]); report["missingCoreCommands"] = missing;
+         /* Later core versions: which commands already resolve (the ICD still reports 1.0). */
+         static const char *const v11[] = {
+#include "vk11_commands.inc"
+         };
+         static const char *const v12[] = {
+#include "vk12_commands.inc"
+         };
+         static const char *const v13[] = {
+#include "vk13_commands.inc"
+         };
+         json later = json::object();
+         for (const auto &version : {std::make_pair("1.1", std::vector<const char *>(std::begin(v11), std::end(v11))),
+                                     std::make_pair("1.2", std::vector<const char *>(std::begin(v12), std::end(v12))),
+                                     std::make_pair("1.3", std::vector<const char *>(std::begin(v13), std::end(v13)))}) {
+            json absent = json::array();
+            for (const char *name : version.second) if (has_entry(device, name) <= 0) absent.push_back(name);
+            later[version.first] = {{"commands", version.second.size()}, {"missing", absent}};
+         }
+         report["laterCoreCommands"] = later;
       }
       report["texturedDepthCases"] = test_graphics(device, queue, vkGetDeviceProcAddr, true);
       report["eventCases"] = test_events(device, queue, vkGetDeviceProcAddr);

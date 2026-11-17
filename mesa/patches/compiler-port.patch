@@ -1216,7 +1216,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,705 @@
+@@ -0,0 +1,694 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -1304,6 +1304,8 @@
 +   .EXT_debug_utils = true,
 +#ifdef HASVK_WDDM_GRAPHICS
 +   .KHR_surface = true, .KHR_win32_surface = true,
++   .KHR_device_group_creation = true, .KHR_external_fence_capabilities = true,
++   .KHR_external_memory_capabilities = true, .KHR_external_semaphore_capabilities = true,
 +#endif
 +};
 +#ifdef HASVK_WDDM_GRAPHICS
@@ -1341,6 +1343,61 @@
 +   vk_physical_device_finish(base);
 +   vk_free(&physical->instance->vk.alloc, physical);
 +}
++#ifdef HASVK_WDDM_GRAPHICS
++/* Device extensions taken from upstream HasVK only after they were checked on
++ * this port. Everything else upstream reports stays off. */
++static const char *const verified_device_extensions[] = {
++   /* promoted to Vulkan 1.1 */
++   "VK_KHR_16bit_storage", "VK_KHR_bind_memory2", "VK_KHR_dedicated_allocation",
++   "VK_KHR_descriptor_update_template", "VK_KHR_device_group", "VK_KHR_external_memory",
++   "VK_KHR_external_semaphore", "VK_KHR_get_memory_requirements2", "VK_KHR_maintenance1",
++   "VK_KHR_maintenance2", "VK_KHR_maintenance3", "VK_KHR_multiview", "VK_KHR_relaxed_block_layout",
++   "VK_KHR_shader_draw_parameters", "VK_KHR_storage_buffer_storage_class", "VK_KHR_variable_pointers",
++   /* small, self-contained */
++   "VK_KHR_driver_properties", "VK_EXT_host_query_reset", "VK_KHR_sampler_mirror_clamp_to_edge",
++};
++/* Limits, features and extensions as upstream HasVK reports them for Gen8
++ * (anv_device.c, built as anv_wddm_capabilities.c), then the limits of this
++ * port: Vulkan 1.1, one WDDM allocation of at most 128 MiB, no external
++ * handles, not a conformant implementation. */
++static void apply_upstream_capabilities(struct anv_physical_device *physical)
++{
++   struct vk_device_extension_table upstream_extensions; struct vk_features upstream_features; struct vk_properties upstream;
++   memset(&upstream_extensions, 0, sizeof(upstream_extensions)); memset(&upstream_features, 0, sizeof(upstream_features));
++   memset(&upstream, 0, sizeof(upstream));
++   anv_wddm_upstream_capabilities(physical, &upstream_extensions, &upstream_features, &upstream);
++   struct vk_properties *p = &physical->vk.properties;
++   const struct vk_properties ours = *p;
++   *p = upstream;
++   p->apiVersion = VK_API_VERSION_1_1;
++   memcpy(p->deviceName, ours.deviceName, sizeof(p->deviceName));
++   memcpy(p->pipelineCacheUUID, ours.pipelineCacheUUID, VK_UUID_SIZE);
++   memcpy(p->deviceLUID, ours.deviceLUID, VK_LUID_SIZE); p->deviceLUIDValid = true; p->deviceNodeMask = 1;
++   memcpy(p->driverUUID, "HASVK-WDDM-DRV01", VK_UUID_SIZE);
++   memset(p->deviceUUID, 0, VK_UUID_SIZE);
++   const uint16_t ids[2] = {0x8086, 0x162b}; memcpy(p->deviceUUID, ids, sizeof(ids)); memcpy(p->deviceUUID + 8, ours.deviceLUID, VK_LUID_SIZE);
++   memset(&p->conformanceVersion, 0, sizeof(p->conformanceVersion));
++   p->maxMemoryAllocationCount = ANV_WDDM_MAX_BOS;
++   p->maxMemoryAllocationSize = ANV_WDDM_MAX_BO_BYTES;
++   p->maxStorageBufferRange = MIN2(p->maxStorageBufferRange, (uint32_t)ANV_WDDM_MAX_BO_BYTES);
++   p->maxUniformBufferRange = MIN2(p->maxUniformBufferRange, (uint32_t)ANV_WDDM_MAX_BO_BYTES);
++   p->maxBufferSize = MIN2(p->maxBufferSize, ANV_WDDM_MAX_BO_BYTES);
++   p->maxTexelBufferElements = MIN2(p->maxTexelBufferElements, (uint32_t)(ANV_WDDM_MAX_BO_BYTES / 16));
++   p->sparseAddressSpaceSize = 0;
++   physical->vk.supported_features = upstream_features;
++   struct vk_features *f = &physical->vk.supported_features;
++   f->samplerYcbcrConversion = false;   /* multi-planar images not verified on this port yet */
++   f->protectedMemory = false;
++   f->sparseBinding = f->sparseResidencyBuffer = f->sparseResidencyImage2D = f->sparseResidencyImage3D = false;
++   f->sparseResidencyAliased = false;
++   struct vk_device_extension_table *e = &physical->vk.supported_extensions;
++   memset(e, 0, sizeof(*e));
++   for (unsigned i = 0; i < ARRAY_SIZE(verified_device_extensions); ++i)
++      for (unsigned x = 0; x < VK_DEVICE_EXTENSION_COUNT; ++x)
++         if (!strcmp(vk_device_extensions[x].extensionName, verified_device_extensions[i])) e->extensions[x] = upstream_extensions.extensions[x];
++   e->KHR_swapchain = true;
++}
++#endif
 +static VkResult enumerate(struct vk_instance *base)
 +{
 +   struct anv_instance *instance = container_of(base, struct anv_instance, vk);
@@ -1416,83 +1473,7 @@
 +   p->maxImageDimension2D = 4096; p->maxImageArrayLayers = 1;
 +   p->maxPerStageDescriptorStorageImages = p->maxDescriptorSetStorageImages = 1;
 +#ifdef HASVK_WDDM_GRAPHICS
-+   /* Vulkan 1.0 limits of HasVK for Gen8 (anv_device.c get_properties). Compute
-+    * and memory limits above stay at what the Windows path has verified. */
-+   enum { MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BUFFERS = 64, MAX_PER_STAGE_DESCRIPTOR_INPUT_ATTACHMENTS = 64,
-+      MAX_DESCRIPTOR_SET_INPUT_ATTACHMENTS = 256 }; /* as in anv_device.c */
-+   const VkSampleCountFlags sample_counts = isl_device_get_sample_counts(&physical->isl_dev);
-+   p->maxImageDimension1D = p->maxImageDimension2D = p->maxImageDimensionCube = 1 << 14;
-+   p->maxImageDimension3D = 1 << 11; p->maxImageArrayLayers = 1 << 11;
-+   p->maxTexelBufferElements = 128 * 1024 * 1024; p->maxUniformBufferRange = 1u << 27;
-+   p->maxPushConstantsSize = MAX_PUSH_CONSTANTS_SIZE; p->maxSamplerAllocationCount = 64 * 1024;
-+   p->maxPerStageDescriptorSamplers = 128; p->maxDescriptorSetSamplers = 6 * 128;
-+   p->maxPerStageDescriptorUniformBuffers = MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BUFFERS;
-+   p->maxDescriptorSetUniformBuffers = 6 * MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BUFFERS;
-+   p->maxDescriptorSetStorageBuffers = 6 * 64;
-+   p->maxPerStageDescriptorSampledImages = 128; p->maxDescriptorSetSampledImages = 6 * 128;
-+   p->maxPerStageDescriptorStorageImages = MAX_IMAGES; p->maxDescriptorSetStorageImages = 6 * MAX_IMAGES;
-+   p->maxPerStageDescriptorInputAttachments = MAX_PER_STAGE_DESCRIPTOR_INPUT_ATTACHMENTS;
-+   p->maxDescriptorSetInputAttachments = MAX_DESCRIPTOR_SET_INPUT_ATTACHMENTS;
-+   p->maxPerStageResources = MAX_BINDING_TABLE_SIZE - MAX_RTS - 1;
-+   p->maxDescriptorSetUniformBuffersDynamic = p->maxDescriptorSetStorageBuffersDynamic = MAX_DYNAMIC_BUFFERS / 2;
-+   p->maxVertexInputAttributes = MAX_VES; p->maxVertexInputBindings = MAX_VBS;
-+   p->maxVertexInputAttributeOffset = 2047; p->maxVertexInputBindingStride = 2048;
-+   p->maxVertexOutputComponents = 128;
-+   p->maxTessellationGenerationLevel = 64; p->maxTessellationPatchSize = 32;
-+   p->maxTessellationControlPerVertexInputComponents = p->maxTessellationControlPerVertexOutputComponents = 128;
-+   p->maxTessellationControlPerPatchOutputComponents = 128; p->maxTessellationControlTotalOutputComponents = 2048;
-+   p->maxTessellationEvaluationInputComponents = p->maxTessellationEvaluationOutputComponents = 128;
-+   p->maxGeometryShaderInvocations = 32; p->maxGeometryInputComponents = p->maxGeometryOutputComponents = 128;
-+   p->maxGeometryOutputVertices = 256; p->maxGeometryTotalOutputComponents = 1024;
-+   p->maxFragmentInputComponents = 116; p->maxFragmentOutputAttachments = 8; p->maxFragmentDualSrcAttachments = 1;
-+   p->maxFragmentCombinedOutputResources = MAX_RTS + 64 + MAX_IMAGES;
-+   p->subPixelPrecisionBits = p->subTexelPrecisionBits = p->mipmapPrecisionBits = 8;
-+   p->maxDrawIndexedIndexValue = UINT32_MAX; p->maxDrawIndirectCount = UINT32_MAX;
-+   p->maxSamplerLodBias = 16; p->maxSamplerAnisotropy = 16;
-+   p->maxViewports = MAX_VIEWPORTS; p->maxViewportDimensions[0] = p->maxViewportDimensions[1] = 1 << 14;
-+   p->viewportBoundsRange[0] = INT16_MIN; p->viewportBoundsRange[1] = INT16_MAX; p->viewportSubPixelBits = 13;
-+   p->minTexelBufferOffsetAlignment = 16;
-+   p->minTexelOffset = -8; p->maxTexelOffset = 7; p->minTexelGatherOffset = -32; p->maxTexelGatherOffset = 31;
-+   p->minInterpolationOffset = -0.5f; p->maxInterpolationOffset = 0.4375f; p->subPixelInterpolationOffsetBits = 4;
-+   p->maxFramebufferWidth = p->maxFramebufferHeight = 1 << 14; p->maxFramebufferLayers = 1 << 11;
-+   p->framebufferColorSampleCounts = p->framebufferDepthSampleCounts = p->framebufferStencilSampleCounts = sample_counts;
-+   p->framebufferNoAttachmentsSampleCounts = sample_counts; p->maxColorAttachments = MAX_RTS;
-+   p->sampledImageColorSampleCounts = p->sampledImageIntegerSampleCounts = sample_counts;
-+   p->sampledImageDepthSampleCounts = p->sampledImageStencilSampleCounts = sample_counts;
-+   p->storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT; p->maxSampleMaskWords = 1;
-+   p->maxClipDistances = p->maxCullDistances = p->maxCombinedClipAndCullDistances = 8;
-+   p->discreteQueuePriorities = 2;
-+   p->pointSizeRange[0] = 0.125f; p->pointSizeRange[1] = 255.875f;
-+   p->lineWidthRange[0] = 0; p->lineWidthRange[1] = 7.9921875f;
-+   p->pointSizeGranularity = 1.0f / 8.0f; p->lineWidthGranularity = 1.0f / 128.0f;
-+   p->strictLines = false; p->standardSampleLocations = true;
-+   p->optimalBufferCopyOffsetAlignment = p->optimalBufferCopyRowPitchAlignment = 128;
-+   const uint32_t max_workgroup_size = MIN2(1024, 32 * physical->info.max_cs_workgroup_threads);
-+   p->maxComputeSharedMemorySize = 64 * 1024; p->maxComputeWorkGroupInvocations = max_workgroup_size;
-+   for (unsigned i = 0; i < 3; ++i) { p->maxComputeWorkGroupSize[i] = max_workgroup_size; p->maxComputeWorkGroupCount[i] = 65535; }
-+   /* Vulkan 1.0 features of HasVK for Gen8. */
-+   struct vk_features *f = &physical->vk.supported_features;
-+   f->robustBufferAccess = f->fullDrawIndexUint32 = f->imageCubeArray = f->independentBlend = true;
-+   f->geometryShader = f->tessellationShader = f->sampleRateShading = f->dualSrcBlend = f->logicOp = true;
-+   f->multiDrawIndirect = f->drawIndirectFirstInstance = f->depthClamp = f->depthBiasClamp = true;
-+   f->fillModeNonSolid = f->wideLines = f->largePoints = f->alphaToOne = f->multiViewport = true;
-+   f->samplerAnisotropy = f->textureCompressionETC2 = f->textureCompressionBC = true;
-+   f->fragmentStoresAndAtomics = f->shaderTessellationAndGeometryPointSize = f->shaderImageGatherExtended = true;
-+   f->shaderStorageImageExtendedFormats = f->shaderStorageImageWriteWithoutFormat = true;
-+   f->shaderUniformBufferArrayDynamicIndexing = f->shaderSampledImageArrayDynamicIndexing = true;
-+   f->shaderStorageBufferArrayDynamicIndexing = f->shaderStorageImageArrayDynamicIndexing = true;
-+   f->shaderClipDistance = f->shaderCullDistance = true;
-+   f->shaderFloat64 = physical->info.has_64bit_float; f->shaderInt64 = f->shaderInt16 = true;
-+   f->variableMultisampleRate = f->inheritedQueries = true;
-+   /* As upstream: image stores need scalar VS and GS (not vec4). */
-+   f->vertexPipelineStoresAndAtomics = physical->compiler->scalar_stage[MESA_SHADER_VERTEX] &&
-+      physical->compiler->scalar_stage[MESA_SHADER_GEOMETRY];
-+   /* PS_DEPTH_COUNT gives exact sample counts (HasVK genX_query.c). */
-+   physical->vk.supported_features.occlusionQueryPrecise = true;
-+   physical->vk.supported_features.pipelineStatisticsQuery = true;
-+   p->timestampComputeAndGraphics = true;
-+   p->timestampPeriod = 1000000000.0f / physical->info.timestamp_frequency;
-+   physical->vk.supported_extensions.KHR_swapchain = true;
++   apply_upstream_capabilities(physical);
 +   result = wsi_device_init(&physical->wsi_device, anv_physical_device_to_handle(physical), wddm_wsi_proc_addr,
 +      &base->alloc, -1, NULL, &(struct wsi_device_options){.sw_device = false});
 +   if (result != VK_SUCCESS) { physical_destroy(&physical->vk); return result; }
@@ -1504,7 +1485,14 @@
 +   return VK_SUCCESS;
 +}
 +VKAPI_ATTR VkResult VKAPI_CALL anv_EnumerateInstanceVersion(uint32_t *version)
-+{ *version = VK_API_VERSION_1_0; return VK_SUCCESS; }
++{
++#ifdef HASVK_WDDM_GRAPHICS
++   *version = VK_API_VERSION_1_1;
++#else
++   *version = VK_API_VERSION_1_0;
++#endif
++   return VK_SUCCESS;
++}
 +VKAPI_ATTR VkResult VKAPI_CALL anv_EnumerateInstanceExtensionProperties(const char *layer, uint32_t *count, VkExtensionProperties *properties)
 +{
 +   if (layer) return VK_ERROR_LAYER_NOT_PRESENT;
@@ -1890,8 +1878,9 @@
 +{
 +   ANV_FROM_HANDLE(anv_device, device, handle);
 +   if (!device || !name) return -1;
-+   if (vk_device_get_proc_addr(&device->vk, name)) return 1;
-+   /* Not the generic instance lookup: it hands out trampolines for device commands. */
++   /* Dispatch tables directly: the proc-addr lookups also hide commands whose
++    * version or extension is not enabled, even when they are implemented. */
++   if (vk_device_dispatch_table_get(&device->vk.dispatch_table, name)) return 1;
 +   struct anv_physical_device *physical = device->physical;
 +   return vk_instance_dispatch_table_get(&physical->instance->vk.dispatch_table, name) != NULL ||
 +          vk_physical_device_dispatch_table_get(&physical->vk.dispatch_table, name) != NULL;
@@ -1924,7 +1913,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm.h
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,73 @@
 +/* Private Windows platform state for the HasVK port. */
 +#pragma once
 +#include "anv_private.h"
@@ -1989,6 +1978,8 @@
 +void anv_wddm_init_border_colors(struct anv_device *device);
 +struct anv_address anv_wddm_event_address(struct anv_device *device, const struct anv_event *event);
 +void anv_wddm_cmd_wait_events(struct anv_cmd_buffer *cmd, uint32_t count, const VkEvent *events);
++void anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct vk_device_extension_table *ext,
++                                    struct vk_features *features, struct vk_properties *props);
 +#endif
 +
 +static inline struct anv_wddm_device_state *
@@ -1998,7 +1989,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_memory.c
-@@ -0,0 +1,359 @@
+@@ -0,0 +1,367 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -2150,6 +2141,14 @@
 +      if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO) {
 +         const VkMemoryDedicatedAllocateInfo *dedicated = (const void *)ext;
 +         if (dedicated->image && dedicated->buffer) return VK_ERROR_FEATURE_NOT_PRESENT;
++      } else if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO) {
++         /* Vulkan 1.1 device groups: one device, mask 1. No device addresses yet. */
++         const VkMemoryAllocateFlagsInfo *flags = (const void *)ext;
++         if ((flags->flags & ~VK_MEMORY_ALLOCATE_DEVICE_MASK_BIT) ||
++             ((flags->flags & VK_MEMORY_ALLOCATE_DEVICE_MASK_BIT) && flags->deviceMask != 1))
++            return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
++      } else if (ext->sType == VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO) {
++         if (((const VkExportMemoryAllocateInfo *)ext)->handleTypes) return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
 +      } else if (ext->sType == VK_STRUCTURE_TYPE_WSI_MEMORY_ALLOCATE_INFO_MESA) {
 +         const struct wsi_memory_allocate_info *wsi = (const void *)ext;
 +         if (wsi->implicit_sync || wsi->dma_buf_sync_file) return VK_ERROR_FEATURE_NOT_PRESENT;
@@ -3874,7 +3873,7 @@
 +gen8_commands = ['anv_wddm_compute_emit.c', 'anv_wddm_command_gen8.c']
 +if get_option('hasvk-wddm-graphics')
 +  graphics_args = ['-DHASVK_WDDM_GRAPHICS']
-+  common_commands = ['anv_wddm_graphics_common.c', 'anv_wddm_graphics_blorp.c']
++  common_commands = ['anv_wddm_graphics_common.c', 'anv_wddm_graphics_blorp.c', 'anv_wddm_capabilities.c']
 +  gen8_commands = ['anv_wddm_graphics_gen8.c', 'anv_wddm_graphics_pipeline.c',
 +    'anv_wddm_graphics_dynamic.c', 'anv_wddm_graphics_state.c', 'anv_wddm_graphics_blorp_exec.c',
 +    'anv_wddm_graphics_query.c', 'anv_wddm_graphics_memcpy.c']
@@ -4068,7 +4067,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_format_table.c
-@@ -0,0 +1,1637 @@
+@@ -0,0 +1,1646 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -5531,6 +5530,11 @@
 +       * (For restrictions on driverUUID and deviceUUID, see the Vulkan 1.2.149
 +       * spec, Table 73 "External memory handle types").
 +       */
++#ifdef _WIN32
++      result = vk_errorf(physical_device, VK_ERROR_FORMAT_NOT_SUPPORTED,
++                         "no external memory handle types on Windows");
++      goto fail;
++#endif
 +      switch (external_info->handleType) {
 +      case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
 +         if (external_props) {
@@ -5676,6 +5680,10 @@
 +
 +   ANV_FROM_HANDLE(anv_physical_device, physical_device, physicalDevice);
 +
++#ifdef _WIN32
++   (void)physical_device;
++   goto unsupported;
++#endif
 +   switch (pExternalBufferInfo->handleType) {
 +   case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
 +   case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
@@ -8993,6 +9001,1147 @@
 +   anv_finishme("Queries not yet supported on Ivy Bridge");
 +}
 +#endif
+--- /dev/null
++++ b/src/intel/wddm_compiler/anv_wddm_capabilities.c
+@@ -0,0 +1,1138 @@
++#include "anv_wddm.h"
++#include "util/os_misc.h"
++#include "vk_util.h"
++/* No intel_perf on Windows: no performance-query extensions. */
++#define intel_perf_has_hold_preemption(perf) false
++#include "git_sha1.h"
++/* Context priorities cannot be set through WDDM here: compare as unsupported. */
++#define INTEL_CONTEXT_MEDIUM_PRIORITY 0x7fffffff
++#define ANV_API_VERSION_1_3 VK_MAKE_VERSION(1, 3, VK_HEADER_VERSION)
++#define ANV_API_VERSION_1_2 VK_MAKE_VERSION(1, 2, VK_HEADER_VERSION)
++#define MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BUFFERS   64
++#define MAX_PER_STAGE_DESCRIPTOR_INPUT_ATTACHMENTS 64
++#define MAX_DESCRIPTOR_SET_INPUT_ATTACHMENTS       256
++#define MAX_CUSTOM_BORDER_COLORS                   4096
++static void
++get_device_extensions(const struct anv_physical_device *device,
++                      struct vk_device_extension_table *ext)
++{
++#ifdef ANV_USE_WSI_PLATFORM
++   const struct anv_instance *instance = device->instance;
++#endif
++   const bool has_syncobj_wait =
++      (device->sync_syncobj_type.features & VK_SYNC_FEATURE_CPU_WAIT) != 0;
++
++   *ext = (struct vk_device_extension_table) {
++      .KHR_8bit_storage                      = device->info.ver >= 8,
++      .KHR_16bit_storage                     = device->info.ver >= 8 && !device->instance->drirc.performance.no_16bit,
++      .KHR_bind_memory2                      = true,
++      .KHR_buffer_device_address             = device->has_a64_buffer_access,
++      .KHR_calibrated_timestamps             = device->has_reg_timestamp,
++      .KHR_copy_commands2                    = true,
++      .KHR_create_renderpass2                = true,
++      .KHR_dedicated_allocation              = true,
++      .KHR_deferred_host_operations          = true,
++      .KHR_depth_stencil_resolve             = true,
++      .KHR_descriptor_update_template        = true,
++      .KHR_device_group                      = true,
++      .KHR_draw_indirect_count               = true,
++      .KHR_driver_properties                 = true,
++      .KHR_dynamic_rendering                 = true,
++      .KHR_external_fence                    = has_syncobj_wait,
++      .KHR_external_fence_fd                 = has_syncobj_wait,
++      .KHR_external_memory                   = true,
++      .KHR_external_memory_fd                = true,
++      .KHR_external_semaphore                = true,
++      .KHR_external_semaphore_fd             = true,
++      .KHR_format_feature_flags2             = true,
++      .KHR_get_memory_requirements2          = true,
++      .KHR_image_format_list                 = true,
++      .KHR_imageless_framebuffer             = true,
++#ifdef ANV_USE_WSI_PLATFORM
++      .KHR_incremental_present               = true,
++#endif
++      .KHR_maintenance1                      = true,
++      .KHR_maintenance2                      = true,
++      .KHR_maintenance3                      = true,
++      .KHR_maintenance4                      = true,
++      .KHR_maintenance5                      = true,
++      .KHR_maintenance6                      = true,
++      .KHR_multiview                         = true,
++      .KHR_performance_query =
++         !anv_use_relocations(device) && device->perf &&
++         (intel_perf_has_hold_preemption(device->perf) ||
++          INTEL_DEBUG(DEBUG_NO_OACONFIG)) &&
++         device->use_call_secondary,
++      .KHR_pipeline_executable_properties    = true,
++#ifdef ANV_USE_WSI_PLATFORM
++      .KHR_present_id                        = true,
++      .KHR_present_id2                       = true,
++      .KHR_present_wait                      = true,
++      .KHR_present_wait2                     = true,
++#endif
++      .KHR_push_descriptor                   = true,
++      .KHR_relaxed_block_layout              = true,
++      .KHR_robustness2                       = true,
++      .KHR_sampler_mirror_clamp_to_edge      = true,
++      .KHR_sampler_ycbcr_conversion          = true,
++      .KHR_separate_depth_stencil_layouts    = true,
++      .KHR_shader_clock                      = true,
++      .KHR_shader_draw_parameters            = true,
++      .KHR_shader_expect_assume              = true,
++      .KHR_shader_float16_int8               = device->info.ver >= 8 && !device->instance->drirc.performance.no_16bit,
++      .KHR_shader_float_controls             = true,
++      .KHR_shader_integer_dot_product        = true,
++      .KHR_shader_non_semantic_info          = true,
++      .KHR_shader_relaxed_extended_instruction = true,
++      .KHR_shader_subgroup_extended_types    = device->info.ver >= 8,
++      .KHR_shader_subgroup_uniform_control_flow = true,
++      .KHR_shader_terminate_invocation       = true,
++      .KHR_spirv_1_4                         = true,
++      .KHR_storage_buffer_storage_class      = true,
++#ifdef ANV_USE_WSI_PLATFORM
++      .KHR_swapchain                         = true,
++      .KHR_swapchain_mutable_format          = true,
++#endif
++      .KHR_synchronization2                  = true,
++      .KHR_timeline_semaphore                = true,
++      .KHR_uniform_buffer_standard_layout    = true,
++      .KHR_variable_pointers                 = true,
++      .KHR_vulkan_memory_model               = true,
++      .KHR_workgroup_memory_explicit_layout  = true,
++      .KHR_zero_initialize_workgroup_memory  = true,
++      .EXT_4444_formats                      = true,
++      .EXT_border_color_swizzle              = device->info.ver >= 8,
++      .EXT_buffer_device_address             = device->has_a64_buffer_access,
++      .EXT_calibrated_timestamps             = device->has_reg_timestamp,
++      .EXT_color_write_enable                = true,
++      .EXT_conditional_rendering             = device->info.verx10 >= 75,
++      .EXT_custom_border_color               = device->info.ver >= 8,
++      .EXT_debug_marker                      = true,
++      .EXT_depth_clamp_zero_one              = true,
++      .EXT_depth_clamp_control               = true,
++      .EXT_depth_clip_control                = true,
++      .EXT_depth_clip_enable                 = true,
++#ifdef VK_USE_PLATFORM_DISPLAY_KHR
++      .EXT_display_control                   = true,
++#endif
++      .EXT_extended_dynamic_state            = true,
++      .EXT_extended_dynamic_state2           = true,
++      .EXT_external_memory_dma_buf           = true,
++      .EXT_external_memory_host              = device->info.has_userptr_uapi,
++      .EXT_global_priority                   = device->max_context_priority >=
++                                               INTEL_CONTEXT_MEDIUM_PRIORITY,
++      .EXT_global_priority_query             = device->max_context_priority >=
++                                               INTEL_CONTEXT_MEDIUM_PRIORITY,
++      .EXT_host_query_reset                  = true,
++      .EXT_image_2d_view_of_3d               = true,
++      .EXT_image_robustness                  = true,
++      .EXT_image_drm_format_modifier         = true,
++      .EXT_image_view_min_lod                = true,
++      .EXT_index_type_uint8                  = true,
++      .EXT_inline_uniform_block              = true,
++      .EXT_line_rasterization                = true,
++      /* Enable the extension only if we have support on both the local &
++       * system memory
++       */
++      .EXT_memory_budget                     = device->sys.available,
++      .EXT_non_seamless_cube_map             = true,
++      .EXT_pci_bus_info                      = true,
++      .EXT_physical_device_drm               = true,
++      .EXT_pipeline_creation_cache_control   = true,
++      .EXT_pipeline_creation_feedback        = true,
++#ifdef ANV_USE_WSI_PLATFORM
++      .EXT_present_timing                    = device->has_reg_timestamp,
++#endif
++      .EXT_primitives_generated_query        = true,
++      .EXT_primitive_topology_list_restart   = true,
++      .EXT_private_data                      = true,
++      .EXT_provoking_vertex                  = true,
++      .EXT_queue_family_foreign              = true,
++      .EXT_robustness2                       = true,
++      .EXT_sample_locations                  = true,
++      .EXT_scalar_block_layout               = true,
++      .EXT_separate_stencil_usage            = true,
++      .EXT_shader_atomic_float               = true,
++      .EXT_shader_demote_to_helper_invocation = true,
++      .EXT_shader_module_identifier          = true,
++      .EXT_shader_replicated_composites      = true,
++      .EXT_shader_subgroup_ballot            = true,
++      .EXT_shader_subgroup_vote              = true,
++      .EXT_shader_viewport_index_layer       = true,
++      .EXT_subgroup_size_control             = true,
++      .EXT_texel_buffer_alignment            = true,
++      .EXT_tooling_info                      = true,
++      .EXT_transform_feedback                = true,
++      .EXT_vertex_attribute_divisor          = true,
++      .EXT_ycbcr_image_arrays                = true,
++#if DETECT_OS_ANDROID
++      .ANDROID_external_memory_android_hardware_buffer = true,
++      .ANDROID_native_buffer                 = true,
++#endif
++      .GOOGLE_decorate_string                = true,
++#ifdef ANV_USE_WSI_PLATFORM
++      .GOOGLE_display_timing                 = false,
++#endif
++      .GOOGLE_hlsl_functionality1            = true,
++      .GOOGLE_user_type                      = true,
++      .INTEL_performance_query               = device->perf &&
++                                               intel_perf_has_hold_preemption(device->perf),
++      .INTEL_shader_integer_functions2       = device->info.ver >= 8,
++      .EXT_multi_draw                        = true,
++      .NV_compute_shader_derivatives         = true,
++      .VALVE_mutable_descriptor_type         = true,
++   };
++}
++
++
++static void
++get_features(const struct anv_physical_device *pdevice,
++             struct vk_features *features)
++{
++   /* Just pick one; they're all the same */
++   const bool has_astc_ldr =
++      isl_format_supports_sampling(&pdevice->info,
++                                   ISL_FORMAT_ASTC_LDR_2D_4X4_FLT16);
++
++   *features = (struct vk_features) {
++      /* Vulkan 1.0 */
++      .robustBufferAccess                       = true,
++      .fullDrawIndexUint32                      = true,
++      .imageCubeArray                           = true,
++      .independentBlend                         = true,
++      .geometryShader                           = true,
++      .tessellationShader                       = true,
++      .sampleRateShading                        = true,
++      .dualSrcBlend                             = true,
++      .logicOp                                  = true,
++      .multiDrawIndirect                        = true,
++      .drawIndirectFirstInstance                = true,
++      .depthClamp                               = true,
++      .depthBiasClamp                           = true,
++      .fillModeNonSolid                         = true,
++      .depthBounds                              = pdevice->info.ver >= 12,
++      .wideLines                                = true,
++      .largePoints                              = true,
++      .alphaToOne                               = true,
++      .multiViewport                            = true,
++      .samplerAnisotropy                        = true,
++      .textureCompressionETC2                   = pdevice->info.ver >= 8 ||
++                                                  pdevice->info.platform == INTEL_PLATFORM_BYT,
++      .textureCompressionASTC_LDR               = has_astc_ldr,
++      .textureCompressionBC                     = true,
++      .occlusionQueryPrecise                    = true,
++      .pipelineStatisticsQuery                  = true,
++      .fragmentStoresAndAtomics                 = true,
++      .shaderTessellationAndGeometryPointSize   = true,
++      .shaderImageGatherExtended                = true,
++      .shaderStorageImageExtendedFormats        = true,
++      .shaderStorageImageMultisample            = false,
++      .shaderStorageImageReadWithoutFormat      = false,
++      .shaderStorageImageWriteWithoutFormat     = true,
++      .shaderUniformBufferArrayDynamicIndexing  = true,
++      .shaderSampledImageArrayDynamicIndexing   = true,
++      .shaderStorageBufferArrayDynamicIndexing  = true,
++      .shaderStorageImageArrayDynamicIndexing   = true,
++      .shaderClipDistance                       = true,
++      .shaderCullDistance                       = true,
++      .shaderFloat64                            = pdevice->info.ver >= 8 &&
++                                                  pdevice->info.has_64bit_float,
++      .shaderInt64                              = pdevice->info.ver >= 8,
++      .shaderInt16                              = pdevice->info.ver >= 8,
++      .shaderResourceMinLod                     = false,
++      .variableMultisampleRate                  = true,
++      .inheritedQueries                         = true,
++
++      /* Vulkan 1.1 */
++      .storageBuffer16BitAccess            = pdevice->info.ver >= 8 && !pdevice->instance->drirc.performance.no_16bit,
++      .uniformAndStorageBuffer16BitAccess  = pdevice->info.ver >= 8 && !pdevice->instance->drirc.performance.no_16bit,
++      .storagePushConstant16               = pdevice->info.ver >= 8,
++      .storageInputOutput16                = false,
++      .multiview                           = true,
++      .multiviewGeometryShader             = true,
++      .multiviewTessellationShader         = true,
++      .variablePointersStorageBuffer       = true,
++      .variablePointers                    = true,
++      .protectedMemory                     = false,
++      .samplerYcbcrConversion              = true,
++      .shaderDrawParameters                = true,
++
++      /* Vulkan 1.2 */
++      .samplerMirrorClampToEdge            = true,
++      .drawIndirectCount                   = true,
++      .storageBuffer8BitAccess             = pdevice->info.ver >= 8,
++      .uniformAndStorageBuffer8BitAccess   = pdevice->info.ver >= 8,
++      .storagePushConstant8                = pdevice->info.ver >= 8,
++      .shaderBufferInt64Atomics            = false,
++      .shaderSharedInt64Atomics            = false,
++      .shaderFloat16                       = pdevice->info.ver >= 8 && !pdevice->instance->drirc.performance.no_16bit,
++      .shaderInt8                          = pdevice->info.ver >= 8,
++
++      .descriptorIndexing                                 = false,
++      .shaderInputAttachmentArrayDynamicIndexing          = false,
++      .shaderUniformTexelBufferArrayDynamicIndexing       = false,
++      .shaderStorageTexelBufferArrayDynamicIndexing       = false,
++      .shaderUniformBufferArrayNonUniformIndexing         = false,
++      .shaderSampledImageArrayNonUniformIndexing          = false,
++      .shaderStorageBufferArrayNonUniformIndexing         = false,
++      .shaderStorageImageArrayNonUniformIndexing          = false,
++      .shaderInputAttachmentArrayNonUniformIndexing       = false,
++      .shaderUniformTexelBufferArrayNonUniformIndexing    = false,
++      .shaderStorageTexelBufferArrayNonUniformIndexing    = false,
++      .descriptorBindingUniformBufferUpdateAfterBind      = false,
++      .descriptorBindingSampledImageUpdateAfterBind       = false,
++      .descriptorBindingStorageImageUpdateAfterBind       = false,
++      .descriptorBindingStorageBufferUpdateAfterBind      = false,
++      .descriptorBindingUniformTexelBufferUpdateAfterBind = false,
++      .descriptorBindingStorageTexelBufferUpdateAfterBind = false,
++      .descriptorBindingUpdateUnusedWhilePending          = false,
++      .descriptorBindingPartiallyBound                    = false,
++      .descriptorBindingVariableDescriptorCount           = false,
++      .runtimeDescriptorArray                             = false,
++
++      .samplerFilterMinmax                 = false,
++      .scalarBlockLayout                   = true,
++      .imagelessFramebuffer                = true,
++      .uniformBufferStandardLayout         = true,
++      .shaderSubgroupExtendedTypes         = true,
++      .separateDepthStencilLayouts         = true,
++      .hostQueryReset                      = true,
++      .timelineSemaphore                   = true,
++      .bufferDeviceAddress                 = pdevice->has_a64_buffer_access,
++      .bufferDeviceAddressCaptureReplay    = pdevice->has_a64_buffer_access,
++      .bufferDeviceAddressMultiDevice      = false,
++      .vulkanMemoryModel                   = true,
++      .vulkanMemoryModelDeviceScope        = true,
++      .vulkanMemoryModelAvailabilityVisibilityChains = true,
++      .shaderOutputViewportIndex           = true,
++      .shaderOutputLayer                   = true,
++      .subgroupBroadcastDynamicId          = true,
++
++      /* Vulkan 1.3 */
++      .robustImageAccess = true,
++      .inlineUniformBlock = true,
++      .descriptorBindingInlineUniformBlockUpdateAfterBind = true,
++      .pipelineCreationCacheControl = true,
++      .privateData = true,
++      .shaderDemoteToHelperInvocation = true,
++      .shaderTerminateInvocation = true,
++      .subgroupSizeControl = true,
++      .computeFullSubgroups = true,
++      .synchronization2 = true,
++      .textureCompressionASTC_HDR = false,
++      .shaderZeroInitializeWorkgroupMemory = true,
++      .dynamicRendering = true,
++      .shaderIntegerDotProduct = true,
++      .maintenance4 = true,
++
++      /* VK_EXT_4444_formats */
++      .formatA4R4G4B4 = true,
++      .formatA4B4G4R4 = false,
++
++      /* VK_EXT_border_color_swizzle */
++      .borderColorSwizzle = true,
++      .borderColorSwizzleFromImage = true,
++
++      /* VK_EXT_color_write_enable */
++      .colorWriteEnable = true,
++
++      /* VK_EXT_image_2d_view_of_3d */
++      .image2DViewOf3D = true,
++      .sampler2DViewOf3D = false,
++
++      /* VK_NV_compute_shader_derivatives */
++      .computeDerivativeGroupQuads = true,
++      .computeDerivativeGroupLinear = true,
++
++      /* VK_EXT_conditional_rendering */
++      .conditionalRendering = pdevice->info.verx10 >= 75,
++      .inheritedConditionalRendering = pdevice->info.verx10 >= 75,
++
++      /* VK_EXT_custom_border_color */
++      .customBorderColors = pdevice->info.ver >= 8,
++      .customBorderColorWithoutFormat = pdevice->info.ver >= 8,
++
++      /* VK_EXT_depth_clamp_zero_one */
++      .depthClampZeroOne = true,
++
++      /* VK_EXT_depth_clip_enable */
++      .depthClipEnable = true,
++
++      /* VK_KHR_global_priority */
++      .globalPriorityQuery = true,
++
++      /* VK_EXT_image_view_min_lod */
++      .minLod = true,
++
++      /* VK_EXT_index_type_uint8 */
++      .indexTypeUint8 = true,
++
++      /* VK_EXT_line_rasterization */
++      /* Rectangular lines must use the strict algorithm, which is not
++       * supported for wide lines prior to ICL.  See rasterization_mode for
++       * details and how the HW states are programmed.
++       */
++      .rectangularLines = false,
++      .bresenhamLines = true,
++      /* Support for Smooth lines with MSAA was removed on gfx11.  From the
++       * BSpec section "Multisample ModesState" table for "AA Line Support
++       * Requirements":
++       *
++       *    GFX10:BUG:######## 	NUM_MULTISAMPLES == 1
++       *
++       * Fortunately, this isn't a case most people care about.
++       */
++      .smoothLines = pdevice->info.ver < 10,
++      .stippledRectangularLines = false,
++      .stippledBresenhamLines = true,
++      .stippledSmoothLines = false,
++
++      /* VK_EXT_mutable_descriptor_type */
++      .mutableDescriptorType = true,
++
++      /* VK_KHR_performance_query */
++      .performanceCounterQueryPools = true,
++      /* HW only supports a single configuration at a time. */
++      .performanceCounterMultipleQueryPools = false,
++
++      /* VK_KHR_pipeline_executable_properties */
++      .pipelineExecutableInfo = true,
++
++      /* VK_EXT_primitives_generated_query */
++      .primitivesGeneratedQuery = true,
++      .primitivesGeneratedQueryWithRasterizerDiscard = false,
++      .primitivesGeneratedQueryWithNonZeroStreams = false,
++
++      /* VK_EXT_provoking_vertex */
++      .provokingVertexLast = true,
++      .transformFeedbackPreservesProvokingVertex = true,
++
++      /* VK_KHR_robustness2 */
++      .robustBufferAccess2 = true,
++      .robustImageAccess2 = true,
++      .nullDescriptor = true,
++
++      /* VK_EXT_shader_atomic_float */
++      .shaderBufferFloat32Atomics =    true,
++      .shaderBufferFloat32AtomicAdd =  pdevice->info.has_lsc,
++      .shaderBufferFloat64Atomics =
++         pdevice->info.has_64bit_float && pdevice->info.has_lsc,
++      .shaderBufferFloat64AtomicAdd =  false,
++      .shaderSharedFloat32Atomics =    true,
++      .shaderSharedFloat32AtomicAdd =  false,
++      .shaderSharedFloat64Atomics =    false,
++      .shaderSharedFloat64AtomicAdd =  false,
++      .shaderImageFloat32Atomics =     true,
++      .shaderImageFloat32AtomicAdd =   false,
++      .sparseImageFloat32Atomics =     false,
++      .sparseImageFloat32AtomicAdd =   false,
++
++      /* VK_KHR_shader_clock */
++      .shaderSubgroupClock = true,
++      .shaderDeviceClock = false,
++
++      /* VK_INTEL_shader_integer_functions2 */
++      .shaderIntegerFunctions2 = true,
++
++      /* VK_EXT_shader_module_identifier */
++      .shaderModuleIdentifier = true,
++
++      /* VK_EXT_shader_replicated_composites */
++      .shaderReplicatedComposites = true,
++
++      /* VK_KHR_shader_subgroup_uniform_control_flow */
++      .shaderSubgroupUniformControlFlow = true,
++
++      /* VK_EXT_texel_buffer_alignment */
++      .texelBufferAlignment = true,
++
++      /* VK_EXT_transform_feedback */
++      .transformFeedback = true,
++      .geometryStreams = true,
++
++      /* VK_EXT_vertex_attribute_divisor */
++      .vertexAttributeInstanceRateDivisor = true,
++      .vertexAttributeInstanceRateZeroDivisor = true,
++
++      /* VK_KHR_workgroup_memory_explicit_layout */
++      .workgroupMemoryExplicitLayout = true,
++      .workgroupMemoryExplicitLayoutScalarBlockLayout = true,
++      .workgroupMemoryExplicitLayout8BitAccess = true,
++      .workgroupMemoryExplicitLayout16BitAccess = true,
++
++      /* VK_EXT_ycbcr_image_arrays */
++      .ycbcrImageArrays = true,
++
++      /* VK_EXT_extended_dynamic_state */
++      .extendedDynamicState = true,
++
++      /* VK_EXT_extended_dynamic_state2 */
++      .extendedDynamicState2 = true,
++      .extendedDynamicState2LogicOp = true,
++      .extendedDynamicState2PatchControlPoints = false,
++
++      /* VK_EXT_multi_draw */
++      .multiDraw = true,
++
++      /* VK_EXT_non_seamless_cube_map */
++      .nonSeamlessCubeMap = true,
++
++      /* VK_EXT_primitive_topology_list_restart */
++      .primitiveTopologyListRestart = true,
++      .primitiveTopologyPatchListRestart = true,
++
++      /* VK_EXT_depth_clamp_control */
++      .depthClampControl = true,
++
++      /* VK_EXT_depth_clip_control */
++      .depthClipControl = true,
++
++#ifdef ANV_USE_WSI_PLATFORM
++      /* VK_KHR_present_id */
++      .presentId = true,
++
++      /* VK_KHR_present_wait */
++      .presentWait = true,
++
++      /* VK_KHR_present_id2 */
++      .presentId2 = true,
++
++      /* VK_KHR_present_wait2 */
++      .presentWait2 = true,
++
++      /* VK_EXT_present_timing */
++      .presentTiming = true,
++      .presentAtRelativeTime = true,
++      .presentAtAbsoluteTime = true,
++#endif
++
++      /* VK_KHR_shader_expect_assume */
++      .shaderExpectAssume = true,
++
++      /* VK_KHR_shader_relaxed_extended_instruction */
++      .shaderRelaxedExtendedInstruction = true,
++
++      /* VK_KHR_maintenance5 */
++      .maintenance5 = true,
++
++      /* VK_KHR_maintenance6 */
++      .maintenance6 = true,
++   };
++
++   /* We can't do image stores in vec4 shaders */
++   features->vertexPipelineStoresAndAtomics =
++      pdevice->compiler->scalar_stage[MESA_SHADER_VERTEX] &&
++      pdevice->compiler->scalar_stage[MESA_SHADER_GEOMETRY];
++
++   struct vk_app_info *app_info = &pdevice->instance->vk.app_info;
++
++   /* The new DOOM and Wolfenstein games require depthBounds without
++    * checking for it.  They seem to run fine without it so just claim it's
++    * there and accept the consequences.
++    */
++   if (app_info->engine_name && strcmp(app_info->engine_name, "idTech") == 0)
++      features->depthBounds = true;
++}
++
++
++static void
++get_properties_1_1(const struct anv_physical_device *pdevice,
++                   struct vk_properties *p)
++{
++   memcpy(p->deviceUUID, pdevice->device_uuid, VK_UUID_SIZE);
++   memcpy(p->driverUUID, pdevice->driver_uuid, VK_UUID_SIZE);
++   memset(p->deviceLUID, 0, VK_LUID_SIZE);
++   p->deviceNodeMask = 0;
++   p->deviceLUIDValid = false;
++
++   p->subgroupSize = ELK_SUBGROUP_SIZE;
++   VkShaderStageFlags scalar_stages = 0;
++   for (unsigned stage = 0; stage < MESA_SHADER_STAGES; stage++) {
++      if (pdevice->compiler->scalar_stage[stage])
++         scalar_stages |= mesa_to_vk_shader_stage(stage);
++   }
++   p->subgroupSupportedStages = scalar_stages;
++   p->subgroupSupportedOperations = VK_SUBGROUP_FEATURE_BASIC_BIT |
++                                    VK_SUBGROUP_FEATURE_VOTE_BIT |
++                                    VK_SUBGROUP_FEATURE_BALLOT_BIT |
++                                    VK_SUBGROUP_FEATURE_SHUFFLE_BIT |
++                                    VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT |
++                                    VK_SUBGROUP_FEATURE_QUAD_BIT;
++   if (pdevice->info.ver >= 8) {
++      /* TODO: There's no technical reason why these can't be made to
++       * work on gfx7 but they don't at the moment so it's best to leave
++       * the feature disabled than enabled and broken.
++       */
++      p->subgroupSupportedOperations |= VK_SUBGROUP_FEATURE_ARITHMETIC_BIT |
++                                        VK_SUBGROUP_FEATURE_CLUSTERED_BIT;
++   }
++   p->subgroupQuadOperationsInAllStages = pdevice->info.ver >= 8;
++
++   p->pointClippingBehavior      = VK_POINT_CLIPPING_BEHAVIOR_USER_CLIP_PLANES_ONLY;
++   p->maxMultiviewViewCount      = 16;
++   p->maxMultiviewInstanceIndex  = UINT32_MAX / 16;
++   p->protectedNoFault           = false;
++   /* This value doesn't matter for us today as our per-stage descriptors are
++    * the real limit.
++    */
++   p->maxPerSetDescriptors       = 1024;
++   p->maxMemoryAllocationSize    = MAX_MEMORY_ALLOCATION_SIZE;
++}
++
++
++static void
++get_properties_1_2(const struct anv_physical_device *pdevice,
++                   struct vk_properties *p)
++{
++   p->driverID = VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA;
++   memset(p->driverName, 0, sizeof(p->driverName));
++   snprintf(p->driverName, VK_MAX_DRIVER_NAME_SIZE,
++            "Intel open-source Mesa driver");
++   memset(p->driverInfo, 0, sizeof(p->driverInfo));
++   snprintf(p->driverInfo, VK_MAX_DRIVER_INFO_SIZE,
++            "Mesa " PACKAGE_VERSION MESA_GIT_SHA1);
++
++   /* Don't advertise conformance with a particular version if the hardware's
++    * support is incomplete/alpha.
++    */
++   if (pdevice->is_alpha) {
++      p->conformanceVersion = (VkConformanceVersion) {
++         .major = 0,
++         .minor = 0,
++         .subminor = 0,
++         .patch = 0,
++      };
++   }
++   else {
++      p->conformanceVersion = (VkConformanceVersion) {
++         .major = 1,
++         .minor = pdevice->use_softpin ? 3 : 2,
++         .subminor = 0,
++         .patch = 0,
++      };
++   }
++
++   p->denormBehaviorIndependence =
++      VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL;
++   p->roundingModeIndependence =
++      VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
++
++   /* Broadwell does not support HF denorms and there are restrictions
++    * other gens. According to Kabylake's PRM:
++    *
++    * "math - Extended Math Function
++    * [...]
++    * Restriction : Half-float denorms are always retained."
++    */
++   p->shaderDenormFlushToZeroFloat16         = false;
++   p->shaderDenormPreserveFloat16            = pdevice->info.ver > 8;
++   p->shaderRoundingModeRTEFloat16           = true;
++   p->shaderRoundingModeRTZFloat16           = true;
++   p->shaderSignedZeroInfNanPreserveFloat16  = true;
++
++   p->shaderDenormFlushToZeroFloat32         = true;
++   p->shaderDenormPreserveFloat32            = pdevice->info.ver >= 8;
++   p->shaderRoundingModeRTEFloat32           = true;
++   p->shaderRoundingModeRTZFloat32           = true;
++   p->shaderSignedZeroInfNanPreserveFloat32  = true;
++
++   p->shaderDenormFlushToZeroFloat64         = true;
++   p->shaderDenormPreserveFloat64            = true;
++   p->shaderRoundingModeRTEFloat64           = true;
++   p->shaderRoundingModeRTZFloat64           = true;
++   p->shaderSignedZeroInfNanPreserveFloat64  = true;
++
++   /* It's a bit hard to exactly map our implementation to the limits
++    * described by Vulkan.  The bindless surface handle in the extended
++    * message descriptors is 20 bits and it's an index into the table of
++    * RENDER_SURFACE_STATE structs that starts at bindless surface base
++    * address.  This means that we can have at must 1M surface states
++    * allocated at any given time.  Since most image views take two
++    * descriptors, this means we have a limit of about 500K image views.
++    *
++    * However, since we allocate surface states at vkCreateImageView time,
++    * this means our limit is actually something on the order of 500K image
++    * views allocated at any time.  The actual limit describe by Vulkan, on
++    * the other hand, is a limit of how many you can have in a descriptor set.
++    * Assuming anyone using 1M descriptors will be using the same image view
++    * twice a bunch of times (or a bunch of null descriptors), we can safely
++    * advertise a larger limit here.
++    */
++   const unsigned max_bindless_views = 1 << 20;
++   p->maxUpdateAfterBindDescriptorsInAllPools            = max_bindless_views;
++   p->shaderUniformBufferArrayNonUniformIndexingNative   = false;
++   p->shaderSampledImageArrayNonUniformIndexingNative    = false;
++   p->shaderStorageBufferArrayNonUniformIndexingNative   = true;
++   p->shaderStorageImageArrayNonUniformIndexingNative    = false;
++   p->shaderInputAttachmentArrayNonUniformIndexingNative = false;
++   p->robustBufferAccessUpdateAfterBind                  = true;
++   p->quadDivergentImplicitLod                           = false;
++   p->maxPerStageDescriptorUpdateAfterBindSamplers       = max_bindless_views;
++   p->maxPerStageDescriptorUpdateAfterBindUniformBuffers = MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BUFFERS;
++   p->maxPerStageDescriptorUpdateAfterBindStorageBuffers = UINT32_MAX;
++   p->maxPerStageDescriptorUpdateAfterBindSampledImages  = max_bindless_views;
++   p->maxPerStageDescriptorUpdateAfterBindStorageImages  = max_bindless_views;
++   p->maxPerStageDescriptorUpdateAfterBindInputAttachments = MAX_PER_STAGE_DESCRIPTOR_INPUT_ATTACHMENTS;
++   p->maxPerStageUpdateAfterBindResources                = UINT32_MAX;
++   p->maxDescriptorSetUpdateAfterBindSamplers            = max_bindless_views;
++   p->maxDescriptorSetUpdateAfterBindUniformBuffers      = 6 * MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BUFFERS;
++   p->maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = MAX_DYNAMIC_BUFFERS / 2;
++   p->maxDescriptorSetUpdateAfterBindStorageBuffers      = UINT32_MAX;
++   p->maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = MAX_DYNAMIC_BUFFERS / 2;
++   p->maxDescriptorSetUpdateAfterBindSampledImages       = max_bindless_views;
++   p->maxDescriptorSetUpdateAfterBindStorageImages       = max_bindless_views;
++   p->maxDescriptorSetUpdateAfterBindInputAttachments    = MAX_DESCRIPTOR_SET_INPUT_ATTACHMENTS;
++
++   /* We support all of the depth resolve modes */
++   p->supportedDepthResolveModes    = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT |
++                                      VK_RESOLVE_MODE_AVERAGE_BIT |
++                                      VK_RESOLVE_MODE_MIN_BIT |
++                                      VK_RESOLVE_MODE_MAX_BIT;
++   /* Average doesn't make sense for stencil so we don't support that */
++   p->supportedStencilResolveModes  = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
++   if (pdevice->info.ver >= 8) {
++      /* The advanced stencil resolve modes currently require stencil
++       * sampling be supported by the hardware.
++       */
++      p->supportedStencilResolveModes |= VK_RESOLVE_MODE_MIN_BIT |
++                                         VK_RESOLVE_MODE_MAX_BIT;
++   }
++   p->independentResolveNone  = true;
++   p->independentResolve      = true;
++
++   p->filterMinmaxSingleComponentFormats  = false;
++   p->filterMinmaxImageComponentMapping   = false;
++
++   p->maxTimelineSemaphoreValueDifference = UINT64_MAX;
++
++   p->framebufferIntegerColorSampleCounts =
++      pdevice->info.ver == 7 ? VK_SAMPLE_COUNT_1_BIT : isl_device_get_sample_counts(&pdevice->isl_dev);
++}
++
++
++static void
++get_properties_1_3(const struct anv_physical_device *pdevice,
++                   struct vk_properties *p)
++{
++   p->minSubgroupSize = 8;
++   p->maxSubgroupSize = 32;
++   p->maxComputeWorkgroupSubgroups = pdevice->info.max_cs_workgroup_threads;
++   p->requiredSubgroupSizeStages = VK_SHADER_STAGE_COMPUTE_BIT;
++
++   p->maxInlineUniformBlockSize = MAX_INLINE_UNIFORM_BLOCK_SIZE;
++   p->maxPerStageDescriptorInlineUniformBlocks =
++      MAX_INLINE_UNIFORM_BLOCK_DESCRIPTORS;
++   p->maxPerStageDescriptorUpdateAfterBindInlineUniformBlocks =
++      MAX_INLINE_UNIFORM_BLOCK_DESCRIPTORS;
++   p->maxDescriptorSetInlineUniformBlocks =
++      MAX_INLINE_UNIFORM_BLOCK_DESCRIPTORS;
++   p->maxDescriptorSetUpdateAfterBindInlineUniformBlocks =
++      MAX_INLINE_UNIFORM_BLOCK_DESCRIPTORS;
++   p->maxInlineUniformTotalSize = UINT16_MAX;
++
++   p->integerDotProduct8BitUnsignedAccelerated = false;
++   p->integerDotProduct8BitSignedAccelerated = false;
++   p->integerDotProduct8BitMixedSignednessAccelerated = false;
++   p->integerDotProduct4x8BitPackedUnsignedAccelerated = false;
++   p->integerDotProduct4x8BitPackedSignedAccelerated = false;
++   p->integerDotProduct4x8BitPackedMixedSignednessAccelerated = false;
++   p->integerDotProduct16BitUnsignedAccelerated = false;
++   p->integerDotProduct16BitSignedAccelerated = false;
++   p->integerDotProduct16BitMixedSignednessAccelerated = false;
++   p->integerDotProduct32BitUnsignedAccelerated = false;
++   p->integerDotProduct32BitSignedAccelerated = false;
++   p->integerDotProduct32BitMixedSignednessAccelerated = false;
++   p->integerDotProduct64BitUnsignedAccelerated = false;
++   p->integerDotProduct64BitSignedAccelerated = false;
++   p->integerDotProduct64BitMixedSignednessAccelerated = false;
++   p->integerDotProductAccumulatingSaturating8BitUnsignedAccelerated = false;
++   p->integerDotProductAccumulatingSaturating8BitSignedAccelerated = false;
++   p->integerDotProductAccumulatingSaturating8BitMixedSignednessAccelerated = false;
++   p->integerDotProductAccumulatingSaturating4x8BitPackedUnsignedAccelerated = false;
++   p->integerDotProductAccumulatingSaturating4x8BitPackedSignedAccelerated = false;
++   p->integerDotProductAccumulatingSaturating4x8BitPackedMixedSignednessAccelerated = false;
++   p->integerDotProductAccumulatingSaturating16BitUnsignedAccelerated = false;
++   p->integerDotProductAccumulatingSaturating16BitSignedAccelerated = false;
++   p->integerDotProductAccumulatingSaturating16BitMixedSignednessAccelerated = false;
++   p->integerDotProductAccumulatingSaturating32BitUnsignedAccelerated = false;
++   p->integerDotProductAccumulatingSaturating32BitSignedAccelerated = false;
++   p->integerDotProductAccumulatingSaturating32BitMixedSignednessAccelerated = false;
++   p->integerDotProductAccumulatingSaturating64BitUnsignedAccelerated = false;
++   p->integerDotProductAccumulatingSaturating64BitSignedAccelerated = false;
++   p->integerDotProductAccumulatingSaturating64BitMixedSignednessAccelerated = false;
++
++   /* From the SKL PRM Vol. 2d, docs for RENDER_SURFACE_STATE::Surface
++    * Base Address:
++    *
++    *    "For SURFTYPE_BUFFER non-rendertarget surfaces, this field
++    *    specifies the base address of the first element of the surface,
++    *    computed in software by adding the surface base address to the
++    *    byte offset of the element in the buffer. The base address must
++    *    be aligned to element size."
++    *
++    * The typed dataport messages require that things be texel aligned.
++    * Otherwise, we may just load/store the wrong data or, in the worst
++    * case, there may be hangs.
++    */
++   p->storageTexelBufferOffsetAlignmentBytes = 16;
++   p->storageTexelBufferOffsetSingleTexelAlignment = true;
++
++   /* The sampler, however, is much more forgiving and it can handle
++    * arbitrary byte alignment for linear and buffer surfaces.  It's
++    * hard to find a good PRM citation for this but years of empirical
++    * experience demonstrate that this is true.
++    */
++   p->uniformTexelBufferOffsetAlignmentBytes = 1;
++   p->uniformTexelBufferOffsetSingleTexelAlignment = true;
++
++   p->maxBufferSize = pdevice->isl_dev.max_buffer_size;
++}
++
++
++static void
++get_properties(const struct anv_physical_device *pdevice,
++               struct vk_properties *props)
++{
++   const struct intel_device_info *devinfo = &pdevice->info;
++
++   uint64_t page_size;
++   if (!os_get_page_size(&page_size))
++      page_size = 4096;         /* fallback */
++
++   const uint32_t max_ssbos = pdevice->has_a64_buffer_access ? UINT16_MAX : 64;
++   const uint32_t max_textures = 128;
++   const uint32_t max_samplers =
++      pdevice->has_bindless_samplers ? UINT16_MAX :
++      (devinfo->verx10 >= 75) ? 128 : 16;
++   const uint32_t max_images = MAX_IMAGES;
++
++   /* If we can use bindless for everything, claim a high per-stage limit,
++    * otherwise use the binding table size, minus the slots reserved for
++    * render targets and one slot for the descriptor buffer. */
++   const uint32_t max_per_stage = MAX_BINDING_TABLE_SIZE - MAX_RTS - 1;
++
++   const uint32_t max_workgroup_size =
++      MIN2(1024, 32 * devinfo->max_cs_workgroup_threads);
++
++   VkSampleCountFlags sample_counts =
++      isl_device_get_sample_counts(&pdevice->isl_dev);
++
++   *props = (struct vk_properties) {
++#if DETECT_OS_ANDROID
++      .apiVersion = ANV_API_VERSION,
++#else
++      .apiVersion = (pdevice->use_softpin || pdevice->instance->drirc.performance.report_vk_1_3_version) ?
++         ANV_API_VERSION_1_3 : ANV_API_VERSION_1_2,
++#endif /* DETECT_OS_ANDROID */
++      .driverVersion = vk_get_driver_version(),
++      .vendorID = 0x8086,
++      .deviceID = pdevice->info.pci_device_id,
++      .deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
++
++      /* Limits: */
++      .maxImageDimension1D                      = (1 << 14),
++      /* Gfx7 doesn't support 8xMSAA with depth/stencil images when their width
++       * is greater than 8192 pixels. */
++      .maxImageDimension2D                      = devinfo->ver == 7 ? (1 << 13) : (1 << 14),
++      .maxImageDimension3D                      = (1 << 11),
++      .maxImageDimensionCube                    = (1 << 14),
++      .maxImageArrayLayers                      = (1 << 11),
++      .maxTexelBufferElements                   = 128 * 1024 * 1024,
++      .maxUniformBufferRange                    = (1u << 27),
++      .maxStorageBufferRange                    = MIN2(pdevice->isl_dev.max_buffer_size, UINT32_MAX),
++      .maxPushConstantsSize                     = MAX_PUSH_CONSTANTS_SIZE,
++      .maxMemoryAllocationCount                 = UINT32_MAX,
++      .maxSamplerAllocationCount                = 64 * 1024,
++      .bufferImageGranularity                   = 1,
++      .sparseAddressSpaceSize                   = 0,
++      .maxBoundDescriptorSets                   = MAX_SETS,
++      .maxPerStageDescriptorSamplers            = max_samplers,
++      .maxPerStageDescriptorUniformBuffers      = MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BUFFERS,
++      .maxPerStageDescriptorStorageBuffers      = max_ssbos,
++      .maxPerStageDescriptorSampledImages       = max_textures,
++      .maxPerStageDescriptorStorageImages       = max_images,
++      .maxPerStageDescriptorInputAttachments    = MAX_PER_STAGE_DESCRIPTOR_INPUT_ATTACHMENTS,
++      .maxPerStageResources                     = max_per_stage,
++      .maxDescriptorSetSamplers                 = 6 * max_samplers, /* number of stages * maxPerStageDescriptorSamplers */
++      .maxDescriptorSetUniformBuffers           = 6 * MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BUFFERS,           /* number of stages * maxPerStageDescriptorUniformBuffers */
++      .maxDescriptorSetUniformBuffersDynamic    = MAX_DYNAMIC_BUFFERS / 2,
++      .maxDescriptorSetStorageBuffers           = 6 * max_ssbos,    /* number of stages * maxPerStageDescriptorStorageBuffers */
++      .maxDescriptorSetStorageBuffersDynamic    = MAX_DYNAMIC_BUFFERS / 2,
++      .maxDescriptorSetSampledImages            = 6 * max_textures, /* number of stages * maxPerStageDescriptorSampledImages */
++      .maxDescriptorSetStorageImages            = 6 * max_images,   /* number of stages * maxPerStageDescriptorStorageImages */
++      .maxDescriptorSetInputAttachments         = MAX_DESCRIPTOR_SET_INPUT_ATTACHMENTS,
++      .maxVertexInputAttributes                 = MAX_VES,
++      .maxVertexInputBindings                   = MAX_VBS,
++      /* Broadwell PRMs: Volume 2d: Command Reference: Structures:
++       *
++       * VERTEX_ELEMENT_STATE::Source Element Offset: [0,2047]
++       */
++      .maxVertexInputAttributeOffset            = 2047,
++      /* Broadwell PRMs: Volume 2d: Command Reference: Structures:
++       *
++       * VERTEX_BUFFER_STATE::Buffer Pitch: [0,2048]
++       *
++       * Skylake PRMs: Volume 2d: Command Reference: Structures:
++       *
++       * VERTEX_BUFFER_STATE::Buffer Pitch: [0,4095]
++       */
++      .maxVertexInputBindingStride              = devinfo->ver < 9 ? 2048 : 4095,
++      .maxVertexOutputComponents                = 128,
++      .maxTessellationGenerationLevel           = 64,
++      .maxTessellationPatchSize                 = 32,
++      .maxTessellationControlPerVertexInputComponents = 128,
++      .maxTessellationControlPerVertexOutputComponents = 128,
++      .maxTessellationControlPerPatchOutputComponents = 128,
++      .maxTessellationControlTotalOutputComponents = 2048,
++      .maxTessellationEvaluationInputComponents = 128,
++      .maxTessellationEvaluationOutputComponents = 128,
++      .maxGeometryShaderInvocations             = 32,
++      .maxGeometryInputComponents               = devinfo->ver >= 8 ? 128 : 64,
++      .maxGeometryOutputComponents              = 128,
++      .maxGeometryOutputVertices                = 256,
++      .maxGeometryTotalOutputComponents         = 1024,
++      .maxFragmentInputComponents               = 116, /* 128 components - (PSIZ, CLIP_DIST0, CLIP_DIST1) */
++      .maxFragmentOutputAttachments             = 8,
++      .maxFragmentDualSrcAttachments            = 1,
++      .maxFragmentCombinedOutputResources       = MAX_RTS + max_ssbos + max_images,
++      .maxComputeSharedMemorySize               = 64 * 1024,
++      .maxComputeWorkGroupCount                 = { 65535, 65535, 65535 },
++      .maxComputeWorkGroupInvocations           = max_workgroup_size,
++      .maxComputeWorkGroupSize = {
++         max_workgroup_size,
++         max_workgroup_size,
++         max_workgroup_size,
++      },
++      .subPixelPrecisionBits                    = 8,
++      .subTexelPrecisionBits                    = 8,
++      .mipmapPrecisionBits                      = 8,
++      .maxDrawIndexedIndexValue                 = UINT32_MAX,
++      .maxDrawIndirectCount                     = UINT32_MAX,
++      .maxSamplerLodBias                        = 16,
++      .maxSamplerAnisotropy                     = 16,
++      .maxViewports                             = MAX_VIEWPORTS,
++      .maxViewportDimensions                    = { (1 << 14), (1 << 14) },
++      .viewportBoundsRange                      = { INT16_MIN, INT16_MAX },
++      .viewportSubPixelBits                     = 13, /* We take a float? */
++      .minMemoryMapAlignment                    = page_size,
++      /* The dataport requires texel alignment so we need to assume a worst
++       * case of R32G32B32A32 which is 16 bytes.
++       */
++      .minTexelBufferOffsetAlignment            = 16,
++      .minUniformBufferOffsetAlignment          = ANV_UBO_ALIGNMENT,
++      .minStorageBufferOffsetAlignment          = ANV_SSBO_ALIGNMENT,
++      .minTexelOffset                           = -8,
++      .maxTexelOffset                           = 7,
++      .minTexelGatherOffset                     = -32,
++      .maxTexelGatherOffset                     = 31,
++      .minInterpolationOffset                   = -0.5,
++      .maxInterpolationOffset                   = 0.4375,
++      .subPixelInterpolationOffsetBits          = 4,
++      .maxFramebufferWidth                      = (1 << 14),
++      .maxFramebufferHeight                     = (1 << 14),
++      .maxFramebufferLayers                     = (1 << 11),
++      .framebufferColorSampleCounts             = sample_counts,
++      .framebufferDepthSampleCounts             = sample_counts,
++      .framebufferStencilSampleCounts           = sample_counts,
++      .framebufferNoAttachmentsSampleCounts     = sample_counts,
++      .maxColorAttachments                      = MAX_RTS,
++      .sampledImageColorSampleCounts            = sample_counts,
++      /* Multisampling with SINT formats is not supported on gfx7 */
++      .sampledImageIntegerSampleCounts          = devinfo->ver == 7 ? VK_SAMPLE_COUNT_1_BIT : sample_counts,
++      .sampledImageDepthSampleCounts            = sample_counts,
++      .sampledImageStencilSampleCounts          = sample_counts,
++      .storageImageSampleCounts                 = VK_SAMPLE_COUNT_1_BIT,
++      .maxSampleMaskWords                       = 1,
++      .timestampComputeAndGraphics              = true,
++      .timestampPeriod                          = 1000000000.0 / devinfo->timestamp_frequency,
++      .maxClipDistances                         = 8,
++      .maxCullDistances                         = 8,
++      .maxCombinedClipAndCullDistances          = 8,
++      .discreteQueuePriorities                  = 2,
++      .pointSizeRange                           = { 0.125, 255.875 },
++      /* While SKL and up support much wider lines than we are setting here,
++       * in practice we run into conformance issues if we go past this limit.
++       * Since the Windows driver does the same, it's probably fair to assume
++       * that no one needs more than this.
++       */
++      .lineWidthRange                           = { 0.0, devinfo->ver >= 9 ? 8.0 : 7.9921875 },
++      .pointSizeGranularity                     = (1.0 / 8.0),
++      .lineWidthGranularity                     = (1.0 / 128.0),
++      .strictLines                              = false,
++      .standardSampleLocations                  = true,
++      .optimalBufferCopyOffsetAlignment         = 128,
++      .optimalBufferCopyRowPitchAlignment       = 128,
++      .nonCoherentAtomSize                      = 64,
++
++      /* Broadwell doesn't do sparse. */
++      .sparseResidencyStandard2DBlockShape = false,
++      .sparseResidencyStandard2DMultisampleBlockShape = false,
++      .sparseResidencyStandard3DBlockShape = false,
++      .sparseResidencyAlignedMipSize = false,
++      .sparseResidencyNonResidentStrict = false,
++   };
++
++   snprintf(props->deviceName, sizeof(props->deviceName),
++            "%s", pdevice->info.name);
++   memcpy(props->pipelineCacheUUID,
++          pdevice->pipeline_cache_uuid, VK_UUID_SIZE);
++
++   get_properties_1_1(pdevice, props);
++   get_properties_1_2(pdevice, props);
++   get_properties_1_3(pdevice, props);
++
++   /* VK_KHR_performance_query */
++   {
++      /* We could support this by spawning a shader to do the equation normalization. */
++      props->allowCommandBufferQueryCopies = false;
++   }
++
++   /* VK_KHR_push_descriptor */
++   {
++      props->maxPushDescriptors = MAX_PUSH_DESCRIPTORS;
++   }
++
++   /* VK_KHR_vertex_attribute_divisor */
++   {
++      /* We have to restrict this a bit for multiview */
++      props->maxVertexAttribDivisor = UINT32_MAX / 16;
++   }
++
++   /* VK_EXT_custom_border_color */
++   {
++      props->maxCustomBorderColorSamplers = MAX_CUSTOM_BORDER_COLORS;
++   }
++
++   /* VK_EXT_external_memory_host */
++   {
++      /* Userptr needs page aligned memory. */
++      props->minImportedHostPointerAlignment = page_size;
++   }
++
++   /* VK_EXT_line_rasterization */
++   {
++      /* In the Skylake PRM Vol. 7, subsection titled "GIQ (Diamond) Sampling
++       * Rules - Legacy Mode", it says the following:
++       *
++       *    "Note that the device divides a pixel into a 16x16 array of
++       *     subpixels, referenced by their upper left corners."
++       *
++       * This is the only known reference in the PRMs to the subpixel
++       * precision of line rasterization and a "16x16 array of subpixels"
++       * implies 4 subpixel precision bits. Empirical testing has shown that 4
++       * subpixel precision bits applies to all line rasterization types.
++       */
++      props->lineSubPixelPrecisionBits = 4;
++   }
++
++   /* VK_EXT_multi_draw */
++   {
++      props->maxMultiDrawCount = 2048;
++   }
++
++   /* VK_EXT_pci_bus_info */
++   {
++      props->pciDomain = pdevice->info.pci_domain;
++      props->pciBus = pdevice->info.pci_bus;
++      props->pciDevice = pdevice->info.pci_dev;
++      props->pciFunction = pdevice->info.pci_func;
++   }
++
++   /* VK_EXT_physical_device_drm */
++   {
++      props->drmHasPrimary = pdevice->has_master;
++      props->drmPrimaryMajor = pdevice->master_major;
++      props->drmPrimaryMinor = pdevice->master_minor;
++      props->drmHasRender = pdevice->has_local;
++      props->drmRenderMajor = pdevice->local_major;
++      props->drmRenderMinor = pdevice->local_minor;
++   }
++
++   /* VK_EXT_provoking_vertex */
++   {
++      props->provokingVertexModePerPipeline = true;
++      props->transformFeedbackPreservesTriangleFanProvokingVertex = false;
++   }
++
++   /* VK_KHR_robustness2 */
++   {
++      props->robustStorageBufferAccessSizeAlignment =
++         ANV_SSBO_BOUNDS_CHECK_ALIGNMENT;
++      props->robustUniformBufferAccessSizeAlignment =
++         ANV_UBO_ALIGNMENT;
++   }
++
++   /* VK_EXT_sample_locations */
++   {
++      props->sampleLocationSampleCounts =
++         ~VK_SAMPLE_COUNT_1_BIT & isl_device_get_sample_counts(&pdevice->isl_dev);
++
++      /* See also anv_GetPhysicalDeviceMultisamplePropertiesEXT */
++      props->maxSampleLocationGridSize.width = 1;
++      props->maxSampleLocationGridSize.height = 1;
++
++      props->sampleLocationCoordinateRange[0] = 0;
++      props->sampleLocationCoordinateRange[1] = 0.9375;
++      props->sampleLocationSubPixelBits = 4;
++
++      props->variableSampleLocations = true;
++   }
++
++   /* VK_EXT_shader_module_identifier */
++   {
++      STATIC_ASSERT(sizeof(vk_shaderModuleIdentifierAlgorithmUUID) ==
++                    sizeof(props->shaderModuleIdentifierAlgorithmUUID));
++      memcpy(props->shaderModuleIdentifierAlgorithmUUID,
++             vk_shaderModuleIdentifierAlgorithmUUID,
++             sizeof(props->shaderModuleIdentifierAlgorithmUUID));
++   }
++
++   /* VK_EXT_transform_feedback */
++   {
++      props->maxTransformFeedbackStreams = MAX_XFB_STREAMS;
++      props->maxTransformFeedbackBuffers = MAX_XFB_BUFFERS;
++      props->maxTransformFeedbackBufferSize = (1ull << 32);
++      props->maxTransformFeedbackStreamDataSize = 128 * 4;
++      props->maxTransformFeedbackBufferDataSize = 128 * 4;
++      props->maxTransformFeedbackBufferDataStride = 2048;
++      props->transformFeedbackQueries = true;
++      props->transformFeedbackStreamsLinesTriangles = false;
++      props->transformFeedbackRasterizationStreamSelect = false;
++      /* This requires MI_MATH */
++      props->transformFeedbackDraw = pdevice->info.verx10 >= 75;
++   }
++
++   /* VK_ANDROID_native_buffer */
++#if DETECT_OS_ANDROID
++   {
++      props->sharedImage = VK_FALSE;
++   }
++#endif /* DETECT_OS_ANDROID */
++
++   /* VK_KHR_maintenance5 */
++   {
++      props->earlyFragmentMultisampleCoverageAfterSampleCounting = false;
++      props->earlyFragmentSampleMaskTestBeforeSampleCounting = false;
++      props->depthStencilSwizzleOneSupport = true;
++      props->polygonModePointSize = true;
++      props->nonStrictSinglePixelWideLinesUseParallelogram = false;
++      props->nonStrictWideLinesUseParallelogram = false;
++   }
++
++   /* VK_KHR_maintenance6 */
++   {
++      props->blockTexelViewCompatibleMultipleLayers = false;
++      props->maxCombinedImageSamplerDescriptorCount = 3;
++      props->fragmentShadingRateClampCombinerInputs = false;
++   }
++}
++
++
++void
++anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct vk_device_extension_table *ext,
++                               struct vk_features *features, struct vk_properties *props)
++{
++   get_device_extensions(pdevice, ext);
++   get_features(pdevice, features);
++   get_properties(pdevice, props);
++}
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_memcpy.c
 @@ -0,0 +1,301 @@

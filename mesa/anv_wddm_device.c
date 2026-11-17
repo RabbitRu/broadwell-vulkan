@@ -85,6 +85,8 @@ static const struct vk_instance_extension_table instance_extensions = {
    .EXT_debug_utils = true,
 #ifdef HASVK_WDDM_GRAPHICS
    .KHR_surface = true, .KHR_win32_surface = true,
+   .KHR_device_group_creation = true, .KHR_external_fence_capabilities = true,
+   .KHR_external_memory_capabilities = true, .KHR_external_semaphore_capabilities = true,
 #endif
 };
 #ifdef HASVK_WDDM_GRAPHICS
@@ -122,6 +124,61 @@ static void physical_destroy(struct vk_physical_device *base)
    vk_physical_device_finish(base);
    vk_free(&physical->instance->vk.alloc, physical);
 }
+#ifdef HASVK_WDDM_GRAPHICS
+/* Device extensions taken from upstream HasVK only after they were checked on
+ * this port. Everything else upstream reports stays off. */
+static const char *const verified_device_extensions[] = {
+   /* promoted to Vulkan 1.1 */
+   "VK_KHR_16bit_storage", "VK_KHR_bind_memory2", "VK_KHR_dedicated_allocation",
+   "VK_KHR_descriptor_update_template", "VK_KHR_device_group", "VK_KHR_external_memory",
+   "VK_KHR_external_semaphore", "VK_KHR_get_memory_requirements2", "VK_KHR_maintenance1",
+   "VK_KHR_maintenance2", "VK_KHR_maintenance3", "VK_KHR_multiview", "VK_KHR_relaxed_block_layout",
+   "VK_KHR_shader_draw_parameters", "VK_KHR_storage_buffer_storage_class", "VK_KHR_variable_pointers",
+   /* small, self-contained */
+   "VK_KHR_driver_properties", "VK_EXT_host_query_reset", "VK_KHR_sampler_mirror_clamp_to_edge",
+};
+/* Limits, features and extensions as upstream HasVK reports them for Gen8
+ * (anv_device.c, built as anv_wddm_capabilities.c), then the limits of this
+ * port: Vulkan 1.1, one WDDM allocation of at most 128 MiB, no external
+ * handles, not a conformant implementation. */
+static void apply_upstream_capabilities(struct anv_physical_device *physical)
+{
+   struct vk_device_extension_table upstream_extensions; struct vk_features upstream_features; struct vk_properties upstream;
+   memset(&upstream_extensions, 0, sizeof(upstream_extensions)); memset(&upstream_features, 0, sizeof(upstream_features));
+   memset(&upstream, 0, sizeof(upstream));
+   anv_wddm_upstream_capabilities(physical, &upstream_extensions, &upstream_features, &upstream);
+   struct vk_properties *p = &physical->vk.properties;
+   const struct vk_properties ours = *p;
+   *p = upstream;
+   p->apiVersion = VK_API_VERSION_1_1;
+   memcpy(p->deviceName, ours.deviceName, sizeof(p->deviceName));
+   memcpy(p->pipelineCacheUUID, ours.pipelineCacheUUID, VK_UUID_SIZE);
+   memcpy(p->deviceLUID, ours.deviceLUID, VK_LUID_SIZE); p->deviceLUIDValid = true; p->deviceNodeMask = 1;
+   memcpy(p->driverUUID, "HASVK-WDDM-DRV01", VK_UUID_SIZE);
+   memset(p->deviceUUID, 0, VK_UUID_SIZE);
+   const uint16_t ids[2] = {0x8086, 0x162b}; memcpy(p->deviceUUID, ids, sizeof(ids)); memcpy(p->deviceUUID + 8, ours.deviceLUID, VK_LUID_SIZE);
+   memset(&p->conformanceVersion, 0, sizeof(p->conformanceVersion));
+   p->maxMemoryAllocationCount = ANV_WDDM_MAX_BOS;
+   p->maxMemoryAllocationSize = ANV_WDDM_MAX_BO_BYTES;
+   p->maxStorageBufferRange = MIN2(p->maxStorageBufferRange, (uint32_t)ANV_WDDM_MAX_BO_BYTES);
+   p->maxUniformBufferRange = MIN2(p->maxUniformBufferRange, (uint32_t)ANV_WDDM_MAX_BO_BYTES);
+   p->maxBufferSize = MIN2(p->maxBufferSize, ANV_WDDM_MAX_BO_BYTES);
+   p->maxTexelBufferElements = MIN2(p->maxTexelBufferElements, (uint32_t)(ANV_WDDM_MAX_BO_BYTES / 16));
+   p->sparseAddressSpaceSize = 0;
+   physical->vk.supported_features = upstream_features;
+   struct vk_features *f = &physical->vk.supported_features;
+   f->samplerYcbcrConversion = false;   /* multi-planar images not verified on this port yet */
+   f->protectedMemory = false;
+   f->sparseBinding = f->sparseResidencyBuffer = f->sparseResidencyImage2D = f->sparseResidencyImage3D = false;
+   f->sparseResidencyAliased = false;
+   struct vk_device_extension_table *e = &physical->vk.supported_extensions;
+   memset(e, 0, sizeof(*e));
+   for (unsigned i = 0; i < ARRAY_SIZE(verified_device_extensions); ++i)
+      for (unsigned x = 0; x < VK_DEVICE_EXTENSION_COUNT; ++x)
+         if (!strcmp(vk_device_extensions[x].extensionName, verified_device_extensions[i])) e->extensions[x] = upstream_extensions.extensions[x];
+   e->KHR_swapchain = true;
+}
+#endif
 static VkResult enumerate(struct vk_instance *base)
 {
    struct anv_instance *instance = container_of(base, struct anv_instance, vk);
@@ -197,83 +254,7 @@ static VkResult enumerate(struct vk_instance *base)
    p->maxImageDimension2D = 4096; p->maxImageArrayLayers = 1;
    p->maxPerStageDescriptorStorageImages = p->maxDescriptorSetStorageImages = 1;
 #ifdef HASVK_WDDM_GRAPHICS
-   /* Vulkan 1.0 limits of HasVK for Gen8 (anv_device.c get_properties). Compute
-    * and memory limits above stay at what the Windows path has verified. */
-   enum { MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BUFFERS = 64, MAX_PER_STAGE_DESCRIPTOR_INPUT_ATTACHMENTS = 64,
-      MAX_DESCRIPTOR_SET_INPUT_ATTACHMENTS = 256 }; /* as in anv_device.c */
-   const VkSampleCountFlags sample_counts = isl_device_get_sample_counts(&physical->isl_dev);
-   p->maxImageDimension1D = p->maxImageDimension2D = p->maxImageDimensionCube = 1 << 14;
-   p->maxImageDimension3D = 1 << 11; p->maxImageArrayLayers = 1 << 11;
-   p->maxTexelBufferElements = 128 * 1024 * 1024; p->maxUniformBufferRange = 1u << 27;
-   p->maxPushConstantsSize = MAX_PUSH_CONSTANTS_SIZE; p->maxSamplerAllocationCount = 64 * 1024;
-   p->maxPerStageDescriptorSamplers = 128; p->maxDescriptorSetSamplers = 6 * 128;
-   p->maxPerStageDescriptorUniformBuffers = MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BUFFERS;
-   p->maxDescriptorSetUniformBuffers = 6 * MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BUFFERS;
-   p->maxDescriptorSetStorageBuffers = 6 * 64;
-   p->maxPerStageDescriptorSampledImages = 128; p->maxDescriptorSetSampledImages = 6 * 128;
-   p->maxPerStageDescriptorStorageImages = MAX_IMAGES; p->maxDescriptorSetStorageImages = 6 * MAX_IMAGES;
-   p->maxPerStageDescriptorInputAttachments = MAX_PER_STAGE_DESCRIPTOR_INPUT_ATTACHMENTS;
-   p->maxDescriptorSetInputAttachments = MAX_DESCRIPTOR_SET_INPUT_ATTACHMENTS;
-   p->maxPerStageResources = MAX_BINDING_TABLE_SIZE - MAX_RTS - 1;
-   p->maxDescriptorSetUniformBuffersDynamic = p->maxDescriptorSetStorageBuffersDynamic = MAX_DYNAMIC_BUFFERS / 2;
-   p->maxVertexInputAttributes = MAX_VES; p->maxVertexInputBindings = MAX_VBS;
-   p->maxVertexInputAttributeOffset = 2047; p->maxVertexInputBindingStride = 2048;
-   p->maxVertexOutputComponents = 128;
-   p->maxTessellationGenerationLevel = 64; p->maxTessellationPatchSize = 32;
-   p->maxTessellationControlPerVertexInputComponents = p->maxTessellationControlPerVertexOutputComponents = 128;
-   p->maxTessellationControlPerPatchOutputComponents = 128; p->maxTessellationControlTotalOutputComponents = 2048;
-   p->maxTessellationEvaluationInputComponents = p->maxTessellationEvaluationOutputComponents = 128;
-   p->maxGeometryShaderInvocations = 32; p->maxGeometryInputComponents = p->maxGeometryOutputComponents = 128;
-   p->maxGeometryOutputVertices = 256; p->maxGeometryTotalOutputComponents = 1024;
-   p->maxFragmentInputComponents = 116; p->maxFragmentOutputAttachments = 8; p->maxFragmentDualSrcAttachments = 1;
-   p->maxFragmentCombinedOutputResources = MAX_RTS + 64 + MAX_IMAGES;
-   p->subPixelPrecisionBits = p->subTexelPrecisionBits = p->mipmapPrecisionBits = 8;
-   p->maxDrawIndexedIndexValue = UINT32_MAX; p->maxDrawIndirectCount = UINT32_MAX;
-   p->maxSamplerLodBias = 16; p->maxSamplerAnisotropy = 16;
-   p->maxViewports = MAX_VIEWPORTS; p->maxViewportDimensions[0] = p->maxViewportDimensions[1] = 1 << 14;
-   p->viewportBoundsRange[0] = INT16_MIN; p->viewportBoundsRange[1] = INT16_MAX; p->viewportSubPixelBits = 13;
-   p->minTexelBufferOffsetAlignment = 16;
-   p->minTexelOffset = -8; p->maxTexelOffset = 7; p->minTexelGatherOffset = -32; p->maxTexelGatherOffset = 31;
-   p->minInterpolationOffset = -0.5f; p->maxInterpolationOffset = 0.4375f; p->subPixelInterpolationOffsetBits = 4;
-   p->maxFramebufferWidth = p->maxFramebufferHeight = 1 << 14; p->maxFramebufferLayers = 1 << 11;
-   p->framebufferColorSampleCounts = p->framebufferDepthSampleCounts = p->framebufferStencilSampleCounts = sample_counts;
-   p->framebufferNoAttachmentsSampleCounts = sample_counts; p->maxColorAttachments = MAX_RTS;
-   p->sampledImageColorSampleCounts = p->sampledImageIntegerSampleCounts = sample_counts;
-   p->sampledImageDepthSampleCounts = p->sampledImageStencilSampleCounts = sample_counts;
-   p->storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT; p->maxSampleMaskWords = 1;
-   p->maxClipDistances = p->maxCullDistances = p->maxCombinedClipAndCullDistances = 8;
-   p->discreteQueuePriorities = 2;
-   p->pointSizeRange[0] = 0.125f; p->pointSizeRange[1] = 255.875f;
-   p->lineWidthRange[0] = 0; p->lineWidthRange[1] = 7.9921875f;
-   p->pointSizeGranularity = 1.0f / 8.0f; p->lineWidthGranularity = 1.0f / 128.0f;
-   p->strictLines = false; p->standardSampleLocations = true;
-   p->optimalBufferCopyOffsetAlignment = p->optimalBufferCopyRowPitchAlignment = 128;
-   const uint32_t max_workgroup_size = MIN2(1024, 32 * physical->info.max_cs_workgroup_threads);
-   p->maxComputeSharedMemorySize = 64 * 1024; p->maxComputeWorkGroupInvocations = max_workgroup_size;
-   for (unsigned i = 0; i < 3; ++i) { p->maxComputeWorkGroupSize[i] = max_workgroup_size; p->maxComputeWorkGroupCount[i] = 65535; }
-   /* Vulkan 1.0 features of HasVK for Gen8. */
-   struct vk_features *f = &physical->vk.supported_features;
-   f->robustBufferAccess = f->fullDrawIndexUint32 = f->imageCubeArray = f->independentBlend = true;
-   f->geometryShader = f->tessellationShader = f->sampleRateShading = f->dualSrcBlend = f->logicOp = true;
-   f->multiDrawIndirect = f->drawIndirectFirstInstance = f->depthClamp = f->depthBiasClamp = true;
-   f->fillModeNonSolid = f->wideLines = f->largePoints = f->alphaToOne = f->multiViewport = true;
-   f->samplerAnisotropy = f->textureCompressionETC2 = f->textureCompressionBC = true;
-   f->fragmentStoresAndAtomics = f->shaderTessellationAndGeometryPointSize = f->shaderImageGatherExtended = true;
-   f->shaderStorageImageExtendedFormats = f->shaderStorageImageWriteWithoutFormat = true;
-   f->shaderUniformBufferArrayDynamicIndexing = f->shaderSampledImageArrayDynamicIndexing = true;
-   f->shaderStorageBufferArrayDynamicIndexing = f->shaderStorageImageArrayDynamicIndexing = true;
-   f->shaderClipDistance = f->shaderCullDistance = true;
-   f->shaderFloat64 = physical->info.has_64bit_float; f->shaderInt64 = f->shaderInt16 = true;
-   f->variableMultisampleRate = f->inheritedQueries = true;
-   /* As upstream: image stores need scalar VS and GS (not vec4). */
-   f->vertexPipelineStoresAndAtomics = physical->compiler->scalar_stage[MESA_SHADER_VERTEX] &&
-      physical->compiler->scalar_stage[MESA_SHADER_GEOMETRY];
-   /* PS_DEPTH_COUNT gives exact sample counts (HasVK genX_query.c). */
-   physical->vk.supported_features.occlusionQueryPrecise = true;
-   physical->vk.supported_features.pipelineStatisticsQuery = true;
-   p->timestampComputeAndGraphics = true;
-   p->timestampPeriod = 1000000000.0f / physical->info.timestamp_frequency;
-   physical->vk.supported_extensions.KHR_swapchain = true;
+   apply_upstream_capabilities(physical);
    result = wsi_device_init(&physical->wsi_device, anv_physical_device_to_handle(physical), wddm_wsi_proc_addr,
       &base->alloc, -1, NULL, &(struct wsi_device_options){.sw_device = false});
    if (result != VK_SUCCESS) { physical_destroy(&physical->vk); return result; }
@@ -285,7 +266,14 @@ static VkResult enumerate(struct vk_instance *base)
    return VK_SUCCESS;
 }
 VKAPI_ATTR VkResult VKAPI_CALL anv_EnumerateInstanceVersion(uint32_t *version)
-{ *version = VK_API_VERSION_1_0; return VK_SUCCESS; }
+{
+#ifdef HASVK_WDDM_GRAPHICS
+   *version = VK_API_VERSION_1_1;
+#else
+   *version = VK_API_VERSION_1_0;
+#endif
+   return VK_SUCCESS;
+}
 VKAPI_ATTR VkResult VKAPI_CALL anv_EnumerateInstanceExtensionProperties(const char *layer, uint32_t *count, VkExtensionProperties *properties)
 {
    if (layer) return VK_ERROR_LAYER_NOT_PRESENT;
@@ -671,8 +659,9 @@ PUBLIC int hasvk_wddm_icd_has_entrypoint(VkDevice handle, const char *name)
 {
    ANV_FROM_HANDLE(anv_device, device, handle);
    if (!device || !name) return -1;
-   if (vk_device_get_proc_addr(&device->vk, name)) return 1;
-   /* Not the generic instance lookup: it hands out trampolines for device commands. */
+   /* Dispatch tables directly: the proc-addr lookups also hide commands whose
+    * version or extension is not enabled, even when they are implemented. */
+   if (vk_device_dispatch_table_get(&device->vk.dispatch_table, name)) return 1;
    struct anv_physical_device *physical = device->physical;
    return vk_instance_dispatch_table_get(&physical->instance->vk.dispatch_table, name) != NULL ||
           vk_physical_device_dispatch_table_get(&physical->vk.dispatch_table, name) != NULL;

@@ -47,6 +47,40 @@ def generate_graphics_sources(originals):
         'static void\nanv_device_init_border_colors(', 'void\nanv_wddm_init_border_colors(')
     common += function(device, 'void anv_DestroySampler(')
 
+    # Upstream capability tables (extensions, features, limits) for the physical
+    # device; anv_wddm_device.c restricts them to what this port supports.
+    capabilities = '#include "anv_wddm.h"\n#include "util/os_misc.h"\n#include "vk_util.h"\n' \
+        '/* No intel_perf on Windows: no performance-query extensions. */\n' \
+        '#define intel_perf_has_hold_preemption(perf) false\n' \
+        '#include "git_sha1.h"\n' \
+        '/* Context priorities cannot be set through WDDM here: compare as unsupported. */\n' \
+        '#define INTEL_CONTEXT_MEDIUM_PRIORITY 0x7fffffff\n' \
+        '#define ANV_API_VERSION_1_3 VK_MAKE_VERSION(1, 3, VK_HEADER_VERSION)\n' \
+        '#define ANV_API_VERSION_1_2 VK_MAKE_VERSION(1, 2, VK_HEADER_VERSION)\n' \
+        '#define MAX_PER_STAGE_DESCRIPTOR_UNIFORM_BUFFERS   64\n' \
+        '#define MAX_PER_STAGE_DESCRIPTOR_INPUT_ATTACHMENTS 64\n' \
+        '#define MAX_DESCRIPTOR_SET_INPUT_ATTACHMENTS       256\n' \
+        '#define MAX_CUSTOM_BORDER_COLORS                   4096\n'
+    for signature in ['static void\nget_device_extensions(', 'static void\nget_features(', 'static void\nget_properties_1_1(',
+                      'static void\nget_properties_1_2(', 'static void\nget_properties_1_3(', 'static void\nget_properties(']:
+        capabilities += function(device, signature) + '\n'
+    # driconf is not loaded on Windows: instance->drirc stays zero, so its string
+    # and option-cache members must not be dereferenced.
+    capabilities, count = re.subn(r'\(strlen\(pdevice->instance->drirc\.debug\.force_vk_devicename\) > 0\) \?\s*pdevice->instance->drirc\.debug\.force_vk_devicename : pdevice->info\.name',
+                                  'pdevice->info.name', capabilities)
+    assert count == 1, count
+    capabilities, count = re.subn(r'wsi_instance_supports_google_display_timing\([^;]*?\),', 'false,', capabilities)
+    assert count == 1, count
+    capabilities += '''void
+anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct vk_device_extension_table *ext,
+                               struct vk_features *features, struct vk_properties *props)
+{
+   get_device_extensions(pdevice, ext);
+   get_features(pdevice, features);
+   get_properties(pdevice, props);
+}
+'''
+
     hardware = read('genX_cmd_buffer.c').replace('#include "anv_private.h"', '#include "anv_wddm.h"')
     # Begin/End/ExecuteCommands stay upstream; the Windows command-buffer file
     # wraps them for runtime state tracking and supplies the batch-chain hooks.
@@ -111,6 +145,7 @@ def generate_graphics_sources(originals):
 ''')
     return {
         'src/intel/wddm_compiler/anv_wddm_graphics_query.c': query,
+        'src/intel/wddm_compiler/anv_wddm_capabilities.c': capabilities,
         'src/intel/wddm_compiler/anv_wddm_graphics_memcpy.c': read('genX_gpu_memcpy.c'),
         'src/intel/wddm_compiler/anv_wddm_graphics_common.c': instrumentation(common),
         'src/intel/wddm_compiler/anv_wddm_graphics_gen8.c': instrumentation(hardware),
