@@ -170,15 +170,20 @@ extern "C" int hasvk_wddm_bo_destroy(hasvk_wddm_bo *bo)
 extern "C" void *hasvk_wddm_bo_map(hasvk_wddm_bo *bo) { return bo ? bo->native->cpu() : nullptr; }
 extern "C" uint64_t hasvk_wddm_bo_address(const hasvk_wddm_bo *bo) { return bo ? bo->native->address() : 0; }
 extern "C" uint64_t hasvk_wddm_bo_size(const hasvk_wddm_bo *bo) { return bo ? bo->native->size() : 0; }
-extern "C" int hasvk_wddm_bo_set_cpu_tracking(hasvk_wddm_bo *bo, int tracked)
+extern "C" int hasvk_wddm_bo_set_cpu_tracking(hasvk_wddm_bo *bo, int mode)
 {
    if (!bo) return failure("Invalid BO");
-   return checked([&] { std::lock_guard<std::mutex> lock(bo->device->mutex); bo->native->set_cpu_tracked(tracked != 0); });
+   return checked([&] { std::lock_guard<std::mutex> lock(bo->device->mutex); bo->native->set_cpu_tracking(static_cast<unsigned>(mode)); });
 }
 extern "C" int hasvk_wddm_bo_flush(hasvk_wddm_bo *bo)
 {
    if (!bo) return failure("Invalid BO");
    return checked([&] { bo->native->flush(); });
+}
+extern "C" int hasvk_wddm_bo_flush_range(hasvk_wddm_bo *bo, uint64_t offset, uint64_t bytes)
+{
+   if (!bo) return failure("Invalid BO");
+   return checked([&] { bo->native->flush(offset, bytes); });
 }
 extern "C" int hasvk_wddm_submit_wait(hasvk_wddm_device *device, hasvk_wddm_bo *commands,
                                        uint32_t offset, uint32_t bytes)

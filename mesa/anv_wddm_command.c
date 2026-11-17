@@ -328,6 +328,10 @@ int anv_wddm_execute_command(struct anv_cmd_buffer *cmd)
       return -1;
    }
    uint64_t *marker = (uint64_t *)((char *)cmd->wddm->bo->map + marker_offset); *marker = 0;
+   /* Command BOs are not flushed by the transport: write back exactly this
+    * command buffer's chunks now, and re-read the marker line after each segment. */
+   for (uint32_t c = 0; c < cmd->wddm->chunk_count; ++c)
+      if (hasvk_wddm_bo_flush(cmd->wddm->chunks[c].bo->wddm_bo)) return -1;
    struct anv_address start = {cmd->wddm->bo, 0};
    for (uint32_t segment = 0;; ++segment) {
       struct anv_batch entry = {.start = hasvk_wddm_bo_map(w->entry), .next = hasvk_wddm_bo_map(w->entry),
@@ -340,6 +344,7 @@ int anv_wddm_execute_command(struct anv_cmd_buffer *cmd)
          fprintf(stderr, "WDDM command segment %u: %s\n", segment, hasvk_wddm_error());
          return -1;
       }
+      if (hasvk_wddm_bo_flush_range(cmd->wddm->bo->wddm_bo, marker_offset & ~63u, 64)) return -1;
       if (segment == cmd->wddm->wait_count) break;
       const struct anv_wddm_wait *wait = &cmd->wddm->waits[segment];
       for (uint32_t e = 0; e < wait->event_count; ++e)

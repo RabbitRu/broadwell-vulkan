@@ -2024,7 +2024,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_memory.c
-@@ -0,0 +1,418 @@
+@@ -0,0 +1,444 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -2122,8 +2122,21 @@
 +   bo->has_fixed_address = fixed;
 +   bo->map = hasvk_wddm_bo_map(bo->wddm_bo);
 +   bo->has_client_visible_address = (flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0;
++   /* CPU cache flushing around submissions, by how the BO is used:
++    * state pools are written by the CPU and only read by the GPU; command BOs
++    * are flushed by anv_wddm_execute_command for the buffers it submits. */
++   const size_t name_length = strlen(name);
++   int tracking = HASVK_WDDM_FLUSH_BEFORE | HASVK_WDDM_FLUSH_AFTER;
++   if (name_length > 5 && !strcmp(name + name_length - 5, " pool")) tracking = HASVK_WDDM_FLUSH_BEFORE;
++   else if (!strcmp(name, "command")) tracking = 0;
++   if (tracking != (HASVK_WDDM_FLUSH_BEFORE | HASVK_WDDM_FLUSH_AFTER) && hasvk_wddm_bo_set_cpu_tracking(bo->wddm_bo, tracking)) {
++      mtx_lock(&w->mutex); hasvk_wddm_bo_destroy(bo->wddm_bo); util_vma_heap_free(heap, address, size); mtx_unlock(&w->mutex);
++      vk_free(&device->vk.alloc, bo); return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++   }
 +   w->allocated_bytes += size; ++w->allocation_count;
 +   mtx_unlock(&w->mutex);
++   { static int profile = -1; if (profile < 0) profile = getenv("HASVK_WDDM_PROFILE") != NULL;
++     if (profile) fprintf(stderr, "WDDM BO alloc %s %llu\n", name, (unsigned long long)size); }
 +   *out = bo;
 +   return VK_SUCCESS;
 +}
@@ -2235,7 +2248,8 @@
 +      return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
 +   /* Drop lines the CPU may still hold from before; from now on every
 +    * submission flushes this BO (HOST_COHERENT semantics). */
-+   if (hasvk_wddm_bo_flush(mem->bo->wddm_bo) || hasvk_wddm_bo_set_cpu_tracking(mem->bo->wddm_bo, 1))
++   if (hasvk_wddm_bo_flush(mem->bo->wddm_bo) ||
++       hasvk_wddm_bo_set_cpu_tracking(mem->bo->wddm_bo, HASVK_WDDM_FLUSH_BEFORE | HASVK_WDDM_FLUSH_AFTER))
 +      return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
 +   mem->map = mem->bo->map; mem->map_size = size; mem->map_delta = offset;
 +   *out = (char *)mem->map + offset;
@@ -2333,6 +2347,7 @@
 +          buffer->vk.size > mem->wddm_allocation_size - offset)
 +         return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 +      buffer->address = (struct anv_address){.bo = mem->bo, .offset = offset};
++      buffer->vk.device_address = anv_address_physical(buffer->address);
 +   }
 +   return VK_SUCCESS;
 +}
@@ -2442,6 +2457,17 @@
 +anv_GetDeviceMemoryOpaqueCaptureAddress(VkDevice handle, const VkDeviceMemoryOpaqueCaptureAddressInfo *info)
 +{
 +   (void)handle; (void)info; return 0;
++}
++
++/* As upstream anv_GetBufferDeviceAddress: the pinned GPU address of the bound
++ * memory. (The runtime's common version returns vk_buffer::device_address,
++ * which only drivers that fill it at bind time can use.) */
++VKAPI_ATTR VkDeviceAddress VKAPI_CALL
++anv_GetBufferDeviceAddress(VkDevice handle, const VkBufferDeviceAddressInfo *info)
++{
++   (void)handle; ANV_FROM_HANDLE(anv_buffer, buffer, info->buffer);
++   assert(!anv_address_is_null(buffer->address));
++   return anv_address_physical(buffer->address);
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_allocator.h
@@ -2722,7 +2748,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_command.c
-@@ -0,0 +1,385 @@
+@@ -0,0 +1,390 @@
 +/* Windows lifetime and submission backing for HasVK command buffers.
 + * Packet emission, descriptor binding and push packing use upstream HasVK.
 + *
@@ -3053,6 +3079,10 @@
 +      return -1;
 +   }
 +   uint64_t *marker = (uint64_t *)((char *)cmd->wddm->bo->map + marker_offset); *marker = 0;
++   /* Command BOs are not flushed by the transport: write back exactly this
++    * command buffer's chunks now, and re-read the marker line after each segment. */
++   for (uint32_t c = 0; c < cmd->wddm->chunk_count; ++c)
++      if (hasvk_wddm_bo_flush(cmd->wddm->chunks[c].bo->wddm_bo)) return -1;
 +   struct anv_address start = {cmd->wddm->bo, 0};
 +   for (uint32_t segment = 0;; ++segment) {
 +      struct anv_batch entry = {.start = hasvk_wddm_bo_map(w->entry), .next = hasvk_wddm_bo_map(w->entry),
@@ -3065,6 +3095,7 @@
 +         fprintf(stderr, "WDDM command segment %u: %s\n", segment, hasvk_wddm_error());
 +         return -1;
 +      }
++      if (hasvk_wddm_bo_flush_range(cmd->wddm->bo->wddm_bo, marker_offset & ~63u, 64)) return -1;
 +      if (segment == cmd->wddm->wait_count) break;
 +      const struct anv_wddm_wait *wait = &cmd->wddm->waits[segment];
 +      for (uint32_t e = 0; e < wait->event_count; ++e)
@@ -22708,7 +22739,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.h
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,52 @@
 +#pragma once
 +#include <stdint.h>
 +#ifdef __cplusplus
@@ -22738,11 +22769,13 @@
 +void *hasvk_wddm_bo_map(struct hasvk_wddm_bo *bo);
 +uint64_t hasvk_wddm_bo_address(const struct hasvk_wddm_bo *bo);
 +uint64_t hasvk_wddm_bo_size(const struct hasvk_wddm_bo *bo);
-+/* CPU-cache tracking. A tracked BO (the default) is flushed before and after
-+ * every submission. Untracked BOs are skipped: the caller guarantees that the
-+ * CPU does not access them, and calls bo_flush when that changes. */
-+int hasvk_wddm_bo_set_cpu_tracking(struct hasvk_wddm_bo *bo, int tracked);
++/* CPU-cache tracking, a mask: HASVK_WDDM_FLUSH_BEFORE (CPU writes the GPU must
++ * see) and HASVK_WDDM_FLUSH_AFTER (GPU writes the CPU will read). New BOs use
++ * both. For anything not covered the caller flushes explicitly. */
++enum { HASVK_WDDM_FLUSH_BEFORE = 1, HASVK_WDDM_FLUSH_AFTER = 2 };
++int hasvk_wddm_bo_set_cpu_tracking(struct hasvk_wddm_bo *bo, int mode);
 +int hasvk_wddm_bo_flush(struct hasvk_wddm_bo *bo);
++int hasvk_wddm_bo_flush_range(struct hasvk_wddm_bo *bo, uint64_t offset, uint64_t bytes);
 +int hasvk_wddm_submit_wait(struct hasvk_wddm_device *device, struct hasvk_wddm_bo *commands,
 +                          uint32_t offset, uint32_t bytes);
 +/* Stable contiguous CPU shadow for GPU-read-only state/instruction pools.
@@ -22761,7 +22794,7 @@
 +#endif
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.hpp
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,110 @@
 +#pragma once
 +#define NOMINMAX
 +#include <windows.h>
@@ -22855,13 +22888,16 @@
 +   uint64_t size() const { return bytes_; }
 +   /* Whether the CPU may have touched this buffer since its last flush. Only
 +    * such buffers are flushed around submissions (all of them by default). */
-+   bool cpu_tracked() const { return cpu_tracked_; }
-+   void set_cpu_tracked(bool tracked) { cpu_tracked_ = tracked; }
-+   void flush() const;   // write back and invalidate the CPU cache lines of the whole buffer
++   /* Bit 0: flush before each submission (CPU writes the GPU must see).
++    * Bit 1: flush after completion (GPU writes the CPU will read). */
++   unsigned cpu_tracking() const { return cpu_tracking_; }
++   void set_cpu_tracking(unsigned mode) { cpu_tracking_ = mode & 3; }
++   void flush() const { flush(0, bytes_); }   // write back and invalidate the CPU cache lines
++   void flush(uint64_t offset, uint64_t bytes) const;
 +private:
 +   void close() noexcept;
 +   Device &device_;
-+   bool cpu_tracked_ = true;
++   unsigned cpu_tracking_ = 3;
 +   D3DKMT_HANDLE allocation_ = 0;
 +   void *cpu_ = nullptr;
 +   uint64_t address_ = 0, bytes_ = 0;
@@ -22871,7 +22907,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.cpp
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,288 @@
 +#include "hasvk_wddm.hpp"
 +#include <dxgi1_2.h>
 +#include <wrl/client.h>
@@ -22988,7 +23024,7 @@
 +      // cache policy. Publish CPU writes explicitly instead of assuming KMT
 +      // Lock2 mappings and every GPU access path are mutually snooped.
 +      LARGE_INTEGER t0, t1, t2, t3; QueryPerformanceCounter(&t0);
-+      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracked()) { buffer->flush(); flushed_bytes += buffer->size(); }
++      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 1) { buffer->flush(); flushed_bytes += buffer->size(); }
 +      _mm_mfence();
 +      QueryPerformanceCounter(&t1);
 +      check(D3DKMTSubmitCommand(&submit), "SubmitCommand");
@@ -23004,15 +23040,16 @@
 +      if (state != D3DKMT_DEVICEEXECUTION_ACTIVE)
 +         throw std::runtime_error("WDDM device is not active after submission (execution state " + std::to_string(state) + ")");
 +      QueryPerformanceCounter(&t2);
-+      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracked()) { buffer->flush(); flushed_bytes += buffer->size(); }
++      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 2) { buffer->flush(); flushed_bytes += buffer->size(); }
 +      _mm_mfence();
 +      QueryPerformanceCounter(&t3);
 +      flush_ticks += (t1.QuadPart - t0.QuadPart) + (t3.QuadPart - t2.QuadPart); kernel_ticks += t2.QuadPart - t1.QuadPart;
 +   } catch (...) { abort_context(); throw; }
 +}
-+void Buffer::flush() const
++void Buffer::flush(uint64_t offset, uint64_t bytes) const
 +{
-+   for (uint64_t offset = 0; offset < bytes_; offset += 64) _mm_clflush(static_cast<const char *>(cpu_) + offset);
++   if (offset > bytes_ || bytes > bytes_ - offset) throw std::runtime_error("Flush range outside the buffer");
++   for (uint64_t line = offset & ~63ull; line < offset + bytes; line += 64) _mm_clflush(static_cast<const char *>(cpu_) + line);
 +   _mm_mfence();
 +}
 +uint32_t Device::execution_state()
@@ -23161,7 +23198,7 @@
 +} // namespace hasvk::wddm
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm_c.cpp
-@@ -0,0 +1,261 @@
+@@ -0,0 +1,266 @@
 +#include "hasvk_wddm.h"
 +#include "hasvk_wddm.hpp"
 +#include <cstdio>
@@ -23334,15 +23371,20 @@
 +extern "C" void *hasvk_wddm_bo_map(hasvk_wddm_bo *bo) { return bo ? bo->native->cpu() : nullptr; }
 +extern "C" uint64_t hasvk_wddm_bo_address(const hasvk_wddm_bo *bo) { return bo ? bo->native->address() : 0; }
 +extern "C" uint64_t hasvk_wddm_bo_size(const hasvk_wddm_bo *bo) { return bo ? bo->native->size() : 0; }
-+extern "C" int hasvk_wddm_bo_set_cpu_tracking(hasvk_wddm_bo *bo, int tracked)
++extern "C" int hasvk_wddm_bo_set_cpu_tracking(hasvk_wddm_bo *bo, int mode)
 +{
 +   if (!bo) return failure("Invalid BO");
-+   return checked([&] { std::lock_guard<std::mutex> lock(bo->device->mutex); bo->native->set_cpu_tracked(tracked != 0); });
++   return checked([&] { std::lock_guard<std::mutex> lock(bo->device->mutex); bo->native->set_cpu_tracking(static_cast<unsigned>(mode)); });
 +}
 +extern "C" int hasvk_wddm_bo_flush(hasvk_wddm_bo *bo)
 +{
 +   if (!bo) return failure("Invalid BO");
 +   return checked([&] { bo->native->flush(); });
++}
++extern "C" int hasvk_wddm_bo_flush_range(hasvk_wddm_bo *bo, uint64_t offset, uint64_t bytes)
++{
++   if (!bo) return failure("Invalid BO");
++   return checked([&] { bo->native->flush(offset, bytes); });
 +}
 +extern "C" int hasvk_wddm_submit_wait(hasvk_wddm_device *device, hasvk_wddm_bo *commands,
 +                                       uint32_t offset, uint32_t bytes)

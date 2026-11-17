@@ -114,7 +114,7 @@ void Device::submit_and_wait(uint64_t commands, uint32_t bytes,
       // cache policy. Publish CPU writes explicitly instead of assuming KMT
       // Lock2 mappings and every GPU access path are mutually snooped.
       LARGE_INTEGER t0, t1, t2, t3; QueryPerformanceCounter(&t0);
-      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracked()) { buffer->flush(); flushed_bytes += buffer->size(); }
+      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 1) { buffer->flush(); flushed_bytes += buffer->size(); }
       _mm_mfence();
       QueryPerformanceCounter(&t1);
       check(D3DKMTSubmitCommand(&submit), "SubmitCommand");
@@ -130,15 +130,16 @@ void Device::submit_and_wait(uint64_t commands, uint32_t bytes,
       if (state != D3DKMT_DEVICEEXECUTION_ACTIVE)
          throw std::runtime_error("WDDM device is not active after submission (execution state " + std::to_string(state) + ")");
       QueryPerformanceCounter(&t2);
-      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracked()) { buffer->flush(); flushed_bytes += buffer->size(); }
+      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 2) { buffer->flush(); flushed_bytes += buffer->size(); }
       _mm_mfence();
       QueryPerformanceCounter(&t3);
       flush_ticks += (t1.QuadPart - t0.QuadPart) + (t3.QuadPart - t2.QuadPart); kernel_ticks += t2.QuadPart - t1.QuadPart;
    } catch (...) { abort_context(); throw; }
 }
-void Buffer::flush() const
+void Buffer::flush(uint64_t offset, uint64_t bytes) const
 {
-   for (uint64_t offset = 0; offset < bytes_; offset += 64) _mm_clflush(static_cast<const char *>(cpu_) + offset);
+   if (offset > bytes_ || bytes > bytes_ - offset) throw std::runtime_error("Flush range outside the buffer");
+   for (uint64_t line = offset & ~63ull; line < offset + bytes; line += 64) _mm_clflush(static_cast<const char *>(cpu_) + line);
    _mm_mfence();
 }
 uint32_t Device::execution_state()

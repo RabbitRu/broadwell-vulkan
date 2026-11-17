@@ -95,8 +95,21 @@ anv_device_alloc_bo(struct anv_device *device, const char *name, uint64_t size,
    bo->has_fixed_address = fixed;
    bo->map = hasvk_wddm_bo_map(bo->wddm_bo);
    bo->has_client_visible_address = (flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0;
+   /* CPU cache flushing around submissions, by how the BO is used:
+    * state pools are written by the CPU and only read by the GPU; command BOs
+    * are flushed by anv_wddm_execute_command for the buffers it submits. */
+   const size_t name_length = strlen(name);
+   int tracking = HASVK_WDDM_FLUSH_BEFORE | HASVK_WDDM_FLUSH_AFTER;
+   if (name_length > 5 && !strcmp(name + name_length - 5, " pool")) tracking = HASVK_WDDM_FLUSH_BEFORE;
+   else if (!strcmp(name, "command")) tracking = 0;
+   if (tracking != (HASVK_WDDM_FLUSH_BEFORE | HASVK_WDDM_FLUSH_AFTER) && hasvk_wddm_bo_set_cpu_tracking(bo->wddm_bo, tracking)) {
+      mtx_lock(&w->mutex); hasvk_wddm_bo_destroy(bo->wddm_bo); util_vma_heap_free(heap, address, size); mtx_unlock(&w->mutex);
+      vk_free(&device->vk.alloc, bo); return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+   }
    w->allocated_bytes += size; ++w->allocation_count;
    mtx_unlock(&w->mutex);
+   { static int profile = -1; if (profile < 0) profile = getenv("HASVK_WDDM_PROFILE") != NULL;
+     if (profile) fprintf(stderr, "WDDM BO alloc %s %llu\n", name, (unsigned long long)size); }
    *out = bo;
    return VK_SUCCESS;
 }
@@ -208,7 +221,8 @@ anv_MapMemory(VkDevice handle, VkDeviceMemory memory, VkDeviceSize offset,
       return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
    /* Drop lines the CPU may still hold from before; from now on every
     * submission flushes this BO (HOST_COHERENT semantics). */
-   if (hasvk_wddm_bo_flush(mem->bo->wddm_bo) || hasvk_wddm_bo_set_cpu_tracking(mem->bo->wddm_bo, 1))
+   if (hasvk_wddm_bo_flush(mem->bo->wddm_bo) ||
+       hasvk_wddm_bo_set_cpu_tracking(mem->bo->wddm_bo, HASVK_WDDM_FLUSH_BEFORE | HASVK_WDDM_FLUSH_AFTER))
       return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
    mem->map = mem->bo->map; mem->map_size = size; mem->map_delta = offset;
    *out = (char *)mem->map + offset;
@@ -306,6 +320,7 @@ anv_BindBufferMemory2(VkDevice handle, uint32_t count, const VkBindBufferMemoryI
           buffer->vk.size > mem->wddm_allocation_size - offset)
          return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
       buffer->address = (struct anv_address){.bo = mem->bo, .offset = offset};
+      buffer->vk.device_address = anv_address_physical(buffer->address);
    }
    return VK_SUCCESS;
 }
@@ -415,4 +430,15 @@ VKAPI_ATTR uint64_t VKAPI_CALL
 anv_GetDeviceMemoryOpaqueCaptureAddress(VkDevice handle, const VkDeviceMemoryOpaqueCaptureAddressInfo *info)
 {
    (void)handle; (void)info; return 0;
+}
+
+/* As upstream anv_GetBufferDeviceAddress: the pinned GPU address of the bound
+ * memory. (The runtime's common version returns vk_buffer::device_address,
+ * which only drivers that fill it at bind time can use.) */
+VKAPI_ATTR VkDeviceAddress VKAPI_CALL
+anv_GetBufferDeviceAddress(VkDevice handle, const VkBufferDeviceAddressInfo *info)
+{
+   (void)handle; ANV_FROM_HANDLE(anv_buffer, buffer, info->buffer);
+   assert(!anv_address_is_null(buffer->address));
+   return anv_address_physical(buffer->address);
 }
