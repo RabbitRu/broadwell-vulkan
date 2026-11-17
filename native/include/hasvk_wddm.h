@@ -41,6 +41,14 @@ int hasvk_wddm_submit_wait(struct hasvk_wddm_device *device, struct hasvk_wddm_b
  * height aligned to 32 rows, GPU-mapped, never CPU-mapped. A submission with
  * present_token = (0x80000000 | HWND) << 32 | share handle shows the surface
  * contents in that window once the submission completes. */
+/* Asynchronous submission: *seq is the submission's number (increasing from 1).
+ * wait_submission(seq) returns when it and every earlier submission completed
+ * (FLUSH_AFTER buffers then flushed); it does not block other threads'
+ * submissions while waiting. completed_submission: highest completed number. */
+int hasvk_wddm_submit_async(struct hasvk_wddm_device *device, struct hasvk_wddm_bo *commands,
+                           uint32_t offset, uint32_t bytes, uint64_t *seq);
+int hasvk_wddm_wait_submission(struct hasvk_wddm_device *device, uint64_t seq);
+uint64_t hasvk_wddm_completed_submission(struct hasvk_wddm_device *device);
 int hasvk_wddm_bo_create_window_surface(struct hasvk_wddm_device *device, uint32_t width, uint32_t height,
                                        struct hasvk_wddm_bo **out);
 int hasvk_wddm_bo_window_surface_info(const struct hasvk_wddm_bo *bo, uint32_t *share, uint64_t *pitch);

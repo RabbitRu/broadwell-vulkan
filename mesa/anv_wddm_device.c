@@ -474,25 +474,87 @@ static VkResult submit(struct vk_queue *queue, struct vk_queue_submit *work)
    if (vk_queue_submit_has_bind(work)) return VK_ERROR_FEATURE_NOT_PRESENT;
    VkResult result = vk_sync_wait_many(&device->vk, work->wait_count, work->waits, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
    if (result != VK_SUCCESS) return result;
-   /* Completion write at entry + 64: MI_STORE_DATA_IMM of the serial, then
-    * MI_BATCH_BUFFER_END. The last command buffer jumps there, so a
-    * vkQueueSubmit costs one kernel submission unless event waits or a
-    * repeated command buffer split it. */
+   /* The command buffers and a completion write of the next serial go to the
+    * kernel as one submission (unless event waits or a repeated command
+    * buffer split it), which is not waited for here: the completion thread
+    * verifies it and signals the syncs, while this thread submits on. */
+   struct anv_wddm_pending *pending = vk_zalloc(&device->vk.alloc, sizeof(*pending) +
+      work->command_buffer_count * sizeof(*pending->commands) + work->signal_count * sizeof(*pending->signals),
+      8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+   if (!pending) return VK_ERROR_OUT_OF_HOST_MEMORY;
+   pending->commands = (struct anv_cmd_buffer **)(pending + 1);
+   pending->signals = (struct vk_sync_signal *)(pending->commands + work->command_buffer_count);
+   pending->command_count = work->command_buffer_count; pending->signal_count = work->signal_count;
+   for (uint32_t i = 0; i < work->command_buffer_count; ++i)
+      pending->commands[i] = container_of(work->command_buffers[i], struct anv_cmd_buffer, vk);
+   memcpy(pending->signals, work->signals, work->signal_count * sizeof(*pending->signals));
    mtx_lock(&w->submit_mutex);
-   uint32_t serial = (uint32_t)(w->completed + 1);
-   uint64_t target = intel_canonical_address(hasvk_wddm_bo_address(w->completion));
-   uint32_t *batch = (uint32_t *)hasvk_wddm_bo_map(w->entry) + 16;
-   batch[0] = 0x10000002; batch[1] = (uint32_t)target; batch[2] = target >> 32; batch[3] = serial;
-   batch[4] = 0x05000000; batch[5] = 0;
+   pending->serial = ++w->next_serial;
    const int failed = anv_wddm_execute_commands(device, work->command_buffers, work->command_buffer_count,
-                                                hasvk_wddm_bo_address(w->entry) + 64, 0);
+                                                pending->serial, 0, true, &pending->seq);
+   const uint64_t seq = pending->seq;   /* the completion thread frees pending */
+   if (!failed) {
+      mtx_lock(&w->mutex);
+      list_addtail(&pending->link, &w->pending);
+      u_cnd_monotonic_broadcast(&w->condition);
+      mtx_unlock(&w->mutex);
+   }
    mtx_unlock(&w->submit_mutex);
-   if (failed) return queue_lost(queue, "HasVK command buffer submission/completion failed");
-   const uint32_t *actual = hasvk_wddm_bo_map(w->completion);
-   if (actual[0] != serial) return queue_lost(queue, "GPU completion counter mismatch");
-   for (unsigned i = 1; i < 1024; ++i) if (actual[i] != 0x39393939) return queue_lost(queue, "GPU guard corrupted");
-   mtx_lock(&w->mutex); ++w->completed; mtx_unlock(&w->mutex);
-   return vk_sync_signal_many(&device->vk, work->signal_count, work->signals);
+   if (failed) { vk_free(&device->vk.alloc, pending); return queue_lost(queue, "HasVK command buffer submission failed"); }
+   /* HASVK_WDDM_SYNC_SUBMIT=1: wait for each submission as before (comparison, debugging). */
+   static int sync_submit = -1;
+   if (sync_submit < 0) sync_submit = getenv("HASVK_WDDM_SYNC_SUBMIT") != NULL;
+   if (sync_submit) anv_wddm_wait_verified(device, seq);
+   return VK_SUCCESS;
+}
+/* Completion thread: in submission order, waits for each non-blocking
+ * submission, verifies its command buffers' markers and guards and the
+ * completion write, then signals its syncs. A failure loses the device. */
+static int completion_main(void *data)
+{
+   struct anv_device *device = data;
+   struct anv_wddm_device_state *w = device->wddm;
+   mtx_lock(&w->mutex);
+   for (;;) {
+      while (list_is_empty(&w->pending) && !w->completion_exit) u_cnd_monotonic_wait(&w->condition, &w->mutex);
+      if (list_is_empty(&w->pending)) break;
+      struct anv_wddm_pending *p = list_first_entry(&w->pending, struct anv_wddm_pending, link);
+      mtx_unlock(&w->mutex);
+      const char *error = NULL;
+      if (vk_device_is_lost_no_report(&device->vk)) error = "device lost earlier";
+      else if (hasvk_wddm_wait_submission(w->transport, p->seq)) error = hasvk_wddm_error();
+      for (uint32_t i = 0; !error && i < p->command_count; ++i)
+         if (p->commands[i]->wddm->seq == p->seq && anv_wddm_check_completed(p->commands[i])) error = "command buffer completion check failed";
+      if (!error) {
+         const uint32_t *actual = hasvk_wddm_bo_map(w->completion);
+         if ((int32_t)(actual[0] - p->serial) < 0) error = "GPU completion counter behind";
+         for (unsigned i = 1; !error && i < 1024; ++i) if (actual[i] != 0x39393939) error = "GPU guard corrupted";
+      }
+      if (error && !vk_device_is_lost_no_report(&device->vk)) vk_device_set_lost(&device->vk, "HasVK/WDDM completion: %s", error);
+      /* All signals at once (one lock): a waiter woken by a fence must also
+       * see the timeline points of the same submission. Mesa's timeline
+       * emulation hands the driver only binary syncs of our type. */
+      bool foreign = false;
+      for (uint32_t i = 0; !error && i < p->signal_count; ++i) foreign |= p->signals[i].sync->type != &wddm_sync_type;
+      if (!error && foreign && vk_sync_signal_many(&device->vk, p->signal_count, p->signals) != VK_SUCCESS)
+         vk_device_set_lost(&device->vk, "HasVK/WDDM: signalling completion failed");
+      mtx_lock(&w->mutex);
+      for (uint32_t i = 0; !error && !foreign && i < p->signal_count; ++i) ((struct anv_wddm_sync *)p->signals[i].sync)->signaled = true;
+      list_del(&p->link);
+      w->verified_seq = p->seq; ++w->completed;
+      u_cnd_monotonic_broadcast(&w->condition);
+      vk_free(&device->vk.alloc, p);
+   }
+   mtx_unlock(&w->mutex);
+   return 0;
+}
+static void completion_finish(struct anv_device *device)
+{
+   struct anv_wddm_device_state *w = device->wddm;
+   if (!w || !w->completion_thread_started) return;
+   mtx_lock(&w->mutex); w->completion_exit = true; u_cnd_monotonic_broadcast(&w->condition); mtx_unlock(&w->mutex);
+   thrd_join(w->completion_thread, NULL);
+   w->completion_thread_started = false;
 }
 #ifdef HASVK_WDDM_GRAPHICS
 /* Device initialization runs before the queue is returned to the application. */
@@ -504,6 +566,12 @@ VkResult anv_queue_submit_simple_batch(struct anv_queue *queue, struct anv_batch
    if (!bytes || bytes > 8180) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
    size_t aligned = align(bytes, 8);
    mtx_lock(&w->submit_mutex);
+   /* The batch fills the entry BO from offset 0: every ring slot must be idle. */
+   if (hasvk_wddm_wait_submission(w->transport, UINT64_MAX)) {
+      mtx_unlock(&w->submit_mutex);
+      return vk_errorf(queue->device, VK_ERROR_DEVICE_LOST, "WDDM initialization batch: %s", hasvk_wddm_error());
+   }
+   memset(w->slot_seq, 0, sizeof(w->slot_seq));
    memcpy(hasvk_wddm_bo_map(w->entry), batch->start, bytes);
    if (aligned > bytes) memset((char *)hasvk_wddm_bo_map(w->entry) + bytes, 0, aligned - bytes);
    const int failed = anv_wddm_flush_state_pools(queue->device) || hasvk_wddm_submit_wait(w->transport, w->entry, 0, aligned);
@@ -559,6 +627,10 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle
    if (hasvk_wddm_bo_create(w->transport, 8192, w->origin + 0x2c0000000, 1, &w->entry) ||
        hasvk_wddm_bo_create(w->transport, 4096, w->origin + 0x2c0200000, 1, &w->completion)) { result = VK_ERROR_OUT_OF_DEVICE_MEMORY; goto fail_state; }
    memset(hasvk_wddm_bo_map(w->completion), 0x39, 4096);
+   *(uint32_t *)hasvk_wddm_bo_map(w->completion) = 0;
+   list_inithead(&w->pending);
+   if (thrd_create(&w->completion_thread, completion_main, device) != thrd_success) { result = VK_ERROR_INITIALIZATION_FAILED; goto fail_state; }
+   w->completion_thread_started = true;
    result = anv_wddm_pools_init(device);
    if (result != VK_SUCCESS) goto fail_state;
    device->null_surface_state = anv_state_pool_alloc(&device->surface_state_pool, device->isl_dev.ss.size, device->isl_dev.ss.align);
@@ -597,6 +669,7 @@ fail_queue_alloc:
    vk_free(&device->vk.alloc, device->queues);
 fail_state:
    fprintf(stderr, "HasVK/WDDM device init: %s\n", hasvk_wddm_error());
+   completion_finish(device);
    if (device->default_pipeline_cache) vk_pipeline_cache_destroy(device->default_pipeline_cache, NULL);
 #ifdef HASVK_WDDM_GRAPHICS
    if (device->internal_cache) { anv_device_finish_blorp(device); vk_pipeline_cache_destroy(device->internal_cache, NULL); }
@@ -615,6 +688,7 @@ VKAPI_ATTR void VKAPI_CALL anv_DestroyDevice(VkDevice handle, const VkAllocation
    (void)allocator; ANV_FROM_HANDLE(anv_device, device, handle);
    if (!device) return;
    vk_queue_finish(&device->queues[0].vk); vk_free(&device->vk.alloc, device->queues);
+   completion_finish(device);   /* drains every non-blocking submission */
    vk_pipeline_cache_destroy(device->default_pipeline_cache, NULL);
 #ifdef HASVK_WDDM_GRAPHICS
    anv_device_finish_blorp(device); vk_pipeline_cache_destroy(device->internal_cache, NULL);

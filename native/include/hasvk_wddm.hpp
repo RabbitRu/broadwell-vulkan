@@ -5,6 +5,7 @@
 #include <d3dkmthk.h>
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -51,6 +52,17 @@ public:
    void submit_and_wait(uint64_t commands, uint32_t bytes,
                         const std::vector<uint8_t> &header, DWORD timeout_ms = 15000,
                         uint64_t present_token = 0);
+   /* Asynchronous form: submit returns the submission's sequence number
+    * (increasing from 1); wait(seq) waits for it and every earlier one, then
+    * flushes FLUSH_AFTER buffers. pending_event/retire_oldest let a caller
+    * wait without holding its own lock (the C API does that). */
+   uint64_t submit(uint64_t commands, uint32_t bytes, const std::vector<uint8_t> &header, uint64_t present_token = 0);
+   void wait(uint64_t seq, DWORD timeout_ms = 15000);
+   /* Oldest pending submission's event and number if seq is not complete, else null. */
+   HANDLE pending_event(uint64_t seq, uint64_t *oldest = nullptr) const;
+   void retire_oldest();                       // after its event was set
+   uint64_t completed_seq() const { return completed_seq_; }
+   uint64_t submitted_seq() const { return next_seq_; }
    uint64_t reserve_va(uint64_t bytes, uint64_t requested_address = 0);
    void free_va(uint64_t address, uint64_t bytes);
    void shutdown();
@@ -76,6 +88,9 @@ private:
    LUID luid_{};
    std::vector<Buffer *> buffers_;
    std::vector<uint8_t> context_buffer_;   // referenced by the context's private data
+   std::deque<std::pair<uint64_t, HANDLE>> pending_;   // submissions not yet retired, oldest first
+   std::vector<HANDLE> free_events_;
+   uint64_t next_seq_ = 0, completed_seq_ = 0;
    bool lost_ = false;
    bool cancellation_failed_ = false;
    unsigned cleanup_errors_ = 0;

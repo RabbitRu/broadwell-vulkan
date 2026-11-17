@@ -122,12 +122,12 @@ PUBLIC int hasvk_wddm_icd_test_state_pools(VkDevice handle, uint32_t *reads)
    status = anv_wddm_flush_state_pools(device);
    if (!status) status = hasvk_wddm_submit_wait(w->transport, w->entry, 0, (next - batch) * 4);
    if (!status) {
-      for (unsigned i = 0; i < 1024; ++i) {
+      for (unsigned i = 1; i < 1024; ++i) {   /* dword 0 is the queue's completion counter */
          uint32_t wanted = i >= 16 && i < 16 + read_count ? expected[i - 16] : 0x39393939;
          if (result[i] != wanted) status = -1;
       }
    }
-   memset(result, 0x39, 4096);
+   memset(result + 1, 0x39, 4096 - 4);
 cleanup:
    for (unsigned p = 0; p < allocated_pools; ++p)
       for (unsigned i = 0; i < count; ++i) anv_state_pool_free(pools[p], all_states[p * count + i]);

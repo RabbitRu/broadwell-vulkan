@@ -1295,7 +1295,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,741 @@
+@@ -0,0 +1,815 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -1772,25 +1772,87 @@
 +   if (vk_queue_submit_has_bind(work)) return VK_ERROR_FEATURE_NOT_PRESENT;
 +   VkResult result = vk_sync_wait_many(&device->vk, work->wait_count, work->waits, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
 +   if (result != VK_SUCCESS) return result;
-+   /* Completion write at entry + 64: MI_STORE_DATA_IMM of the serial, then
-+    * MI_BATCH_BUFFER_END. The last command buffer jumps there, so a
-+    * vkQueueSubmit costs one kernel submission unless event waits or a
-+    * repeated command buffer split it. */
++   /* The command buffers and a completion write of the next serial go to the
++    * kernel as one submission (unless event waits or a repeated command
++    * buffer split it), which is not waited for here: the completion thread
++    * verifies it and signals the syncs, while this thread submits on. */
++   struct anv_wddm_pending *pending = vk_zalloc(&device->vk.alloc, sizeof(*pending) +
++      work->command_buffer_count * sizeof(*pending->commands) + work->signal_count * sizeof(*pending->signals),
++      8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
++   if (!pending) return VK_ERROR_OUT_OF_HOST_MEMORY;
++   pending->commands = (struct anv_cmd_buffer **)(pending + 1);
++   pending->signals = (struct vk_sync_signal *)(pending->commands + work->command_buffer_count);
++   pending->command_count = work->command_buffer_count; pending->signal_count = work->signal_count;
++   for (uint32_t i = 0; i < work->command_buffer_count; ++i)
++      pending->commands[i] = container_of(work->command_buffers[i], struct anv_cmd_buffer, vk);
++   memcpy(pending->signals, work->signals, work->signal_count * sizeof(*pending->signals));
 +   mtx_lock(&w->submit_mutex);
-+   uint32_t serial = (uint32_t)(w->completed + 1);
-+   uint64_t target = intel_canonical_address(hasvk_wddm_bo_address(w->completion));
-+   uint32_t *batch = (uint32_t *)hasvk_wddm_bo_map(w->entry) + 16;
-+   batch[0] = 0x10000002; batch[1] = (uint32_t)target; batch[2] = target >> 32; batch[3] = serial;
-+   batch[4] = 0x05000000; batch[5] = 0;
++   pending->serial = ++w->next_serial;
 +   const int failed = anv_wddm_execute_commands(device, work->command_buffers, work->command_buffer_count,
-+                                                hasvk_wddm_bo_address(w->entry) + 64, 0);
++                                                pending->serial, 0, true, &pending->seq);
++   const uint64_t seq = pending->seq;   /* the completion thread frees pending */
++   if (!failed) {
++      mtx_lock(&w->mutex);
++      list_addtail(&pending->link, &w->pending);
++      u_cnd_monotonic_broadcast(&w->condition);
++      mtx_unlock(&w->mutex);
++   }
 +   mtx_unlock(&w->submit_mutex);
-+   if (failed) return queue_lost(queue, "HasVK command buffer submission/completion failed");
-+   const uint32_t *actual = hasvk_wddm_bo_map(w->completion);
-+   if (actual[0] != serial) return queue_lost(queue, "GPU completion counter mismatch");
-+   for (unsigned i = 1; i < 1024; ++i) if (actual[i] != 0x39393939) return queue_lost(queue, "GPU guard corrupted");
-+   mtx_lock(&w->mutex); ++w->completed; mtx_unlock(&w->mutex);
-+   return vk_sync_signal_many(&device->vk, work->signal_count, work->signals);
++   if (failed) { vk_free(&device->vk.alloc, pending); return queue_lost(queue, "HasVK command buffer submission failed"); }
++   /* HASVK_WDDM_SYNC_SUBMIT=1: wait for each submission as before (comparison, debugging). */
++   static int sync_submit = -1;
++   if (sync_submit < 0) sync_submit = getenv("HASVK_WDDM_SYNC_SUBMIT") != NULL;
++   if (sync_submit) anv_wddm_wait_verified(device, seq);
++   return VK_SUCCESS;
++}
++/* Completion thread: in submission order, waits for each non-blocking
++ * submission, verifies its command buffers' markers and guards and the
++ * completion write, then signals its syncs. A failure loses the device. */
++static int completion_main(void *data)
++{
++   struct anv_device *device = data;
++   struct anv_wddm_device_state *w = device->wddm;
++   mtx_lock(&w->mutex);
++   for (;;) {
++      while (list_is_empty(&w->pending) && !w->completion_exit) u_cnd_monotonic_wait(&w->condition, &w->mutex);
++      if (list_is_empty(&w->pending)) break;
++      struct anv_wddm_pending *p = list_first_entry(&w->pending, struct anv_wddm_pending, link);
++      mtx_unlock(&w->mutex);
++      const char *error = NULL;
++      if (vk_device_is_lost_no_report(&device->vk)) error = "device lost earlier";
++      else if (hasvk_wddm_wait_submission(w->transport, p->seq)) error = hasvk_wddm_error();
++      for (uint32_t i = 0; !error && i < p->command_count; ++i)
++         if (p->commands[i]->wddm->seq == p->seq && anv_wddm_check_completed(p->commands[i])) error = "command buffer completion check failed";
++      if (!error) {
++         const uint32_t *actual = hasvk_wddm_bo_map(w->completion);
++         if ((int32_t)(actual[0] - p->serial) < 0) error = "GPU completion counter behind";
++         for (unsigned i = 1; !error && i < 1024; ++i) if (actual[i] != 0x39393939) error = "GPU guard corrupted";
++      }
++      if (error && !vk_device_is_lost_no_report(&device->vk)) vk_device_set_lost(&device->vk, "HasVK/WDDM completion: %s", error);
++      /* All signals at once (one lock): a waiter woken by a fence must also
++       * see the timeline points of the same submission. Mesa's timeline
++       * emulation hands the driver only binary syncs of our type. */
++      bool foreign = false;
++      for (uint32_t i = 0; !error && i < p->signal_count; ++i) foreign |= p->signals[i].sync->type != &wddm_sync_type;
++      if (!error && foreign && vk_sync_signal_many(&device->vk, p->signal_count, p->signals) != VK_SUCCESS)
++         vk_device_set_lost(&device->vk, "HasVK/WDDM: signalling completion failed");
++      mtx_lock(&w->mutex);
++      for (uint32_t i = 0; !error && !foreign && i < p->signal_count; ++i) ((struct anv_wddm_sync *)p->signals[i].sync)->signaled = true;
++      list_del(&p->link);
++      w->verified_seq = p->seq; ++w->completed;
++      u_cnd_monotonic_broadcast(&w->condition);
++      vk_free(&device->vk.alloc, p);
++   }
++   mtx_unlock(&w->mutex);
++   return 0;
++}
++static void completion_finish(struct anv_device *device)
++{
++   struct anv_wddm_device_state *w = device->wddm;
++   if (!w || !w->completion_thread_started) return;
++   mtx_lock(&w->mutex); w->completion_exit = true; u_cnd_monotonic_broadcast(&w->condition); mtx_unlock(&w->mutex);
++   thrd_join(w->completion_thread, NULL);
++   w->completion_thread_started = false;
 +}
 +#ifdef HASVK_WDDM_GRAPHICS
 +/* Device initialization runs before the queue is returned to the application. */
@@ -1802,6 +1864,12 @@
 +   if (!bytes || bytes > 8180) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 +   size_t aligned = align(bytes, 8);
 +   mtx_lock(&w->submit_mutex);
++   /* The batch fills the entry BO from offset 0: every ring slot must be idle. */
++   if (hasvk_wddm_wait_submission(w->transport, UINT64_MAX)) {
++      mtx_unlock(&w->submit_mutex);
++      return vk_errorf(queue->device, VK_ERROR_DEVICE_LOST, "WDDM initialization batch: %s", hasvk_wddm_error());
++   }
++   memset(w->slot_seq, 0, sizeof(w->slot_seq));
 +   memcpy(hasvk_wddm_bo_map(w->entry), batch->start, bytes);
 +   if (aligned > bytes) memset((char *)hasvk_wddm_bo_map(w->entry) + bytes, 0, aligned - bytes);
 +   const int failed = anv_wddm_flush_state_pools(queue->device) || hasvk_wddm_submit_wait(w->transport, w->entry, 0, aligned);
@@ -1857,6 +1925,10 @@
 +   if (hasvk_wddm_bo_create(w->transport, 8192, w->origin + 0x2c0000000, 1, &w->entry) ||
 +       hasvk_wddm_bo_create(w->transport, 4096, w->origin + 0x2c0200000, 1, &w->completion)) { result = VK_ERROR_OUT_OF_DEVICE_MEMORY; goto fail_state; }
 +   memset(hasvk_wddm_bo_map(w->completion), 0x39, 4096);
++   *(uint32_t *)hasvk_wddm_bo_map(w->completion) = 0;
++   list_inithead(&w->pending);
++   if (thrd_create(&w->completion_thread, completion_main, device) != thrd_success) { result = VK_ERROR_INITIALIZATION_FAILED; goto fail_state; }
++   w->completion_thread_started = true;
 +   result = anv_wddm_pools_init(device);
 +   if (result != VK_SUCCESS) goto fail_state;
 +   device->null_surface_state = anv_state_pool_alloc(&device->surface_state_pool, device->isl_dev.ss.size, device->isl_dev.ss.align);
@@ -1895,6 +1967,7 @@
 +   vk_free(&device->vk.alloc, device->queues);
 +fail_state:
 +   fprintf(stderr, "HasVK/WDDM device init: %s\n", hasvk_wddm_error());
++   completion_finish(device);
 +   if (device->default_pipeline_cache) vk_pipeline_cache_destroy(device->default_pipeline_cache, NULL);
 +#ifdef HASVK_WDDM_GRAPHICS
 +   if (device->internal_cache) { anv_device_finish_blorp(device); vk_pipeline_cache_destroy(device->internal_cache, NULL); }
@@ -1913,6 +1986,7 @@
 +   (void)allocator; ANV_FROM_HANDLE(anv_device, device, handle);
 +   if (!device) return;
 +   vk_queue_finish(&device->queues[0].vk); vk_free(&device->vk.alloc, device->queues);
++   completion_finish(device);   /* drains every non-blocking submission */
 +   vk_pipeline_cache_destroy(device->default_pipeline_cache, NULL);
 +#ifdef HASVK_WDDM_GRAPHICS
 +   anv_device_finish_blorp(device); vk_pipeline_cache_destroy(device->internal_cache, NULL);
@@ -2039,13 +2113,15 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm.h
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,132 @@
 +/* Private Windows platform state for the HasVK port. */
 +#pragma once
 +#include "anv_private.h"
 +#include "wddm/hasvk_wddm.h"
 +#include "util/cnd_monotonic.h"
 +#include "util/vma.h"
++#include "util/list.h"
++#include "c11/threads.h"
 +
 +/* One WDDM allocation is at most 128 MiB (transport profile). The device-wide
 + * budget is what the single Vulkan heap reports. */
@@ -2053,6 +2129,7 @@
 +#define ANV_WDDM_HEAP_BYTES (3ull << 30)
 +#define ANV_WDDM_MAX_BOS 65536u
 +#define ANV_WDDM_EVENT_SLOTS 4096u   /* 8 bytes each in one BO */
++#define ANV_WDDM_ENTRY_SLOTS 64u     /* 128 bytes each in the 8192-byte entry BO */
 +
 +struct anv_wddm_device_state {
 +   struct hasvk_wddm_device *transport;
@@ -2078,6 +2155,28 @@
 +   BITSET_WORD event_slots[BITSET_WORDS(ANV_WDDM_EVENT_SLOTS)];
 +   uint64_t command_batches_completed;
 +   uint64_t runs;   /* kernel submissions of command buffers, for chaining */
++   /* The entry BO is a ring of 128-byte slots (jump at +0, completion write
++    * at +64); a slot is reused only after the transport submission that last
++    * used it completed (slot_seq). Protected by submit_mutex. */
++   uint64_t slot_seq[ANV_WDDM_ENTRY_SLOTS];
++   uint32_t next_slot;
++   uint32_t next_serial;
++   /* Non-blocking queue: a vkQueueSubmit's last kernel submission is not
++    * waited for; the completion thread waits for it, verifies markers and
++    * guards, then signals its syncs. pending (oldest first), verified_seq and
++    * completion_exit are protected by mutex and announced on condition. */
++   struct list_head pending;
++   uint64_t verified_seq;
++   thrd_t completion_thread;
++   bool completion_thread_started, completion_exit;
++};
++struct anv_wddm_pending {
++   struct list_head link;
++   uint64_t seq;        /* transport submission number */
++   uint32_t serial;     /* value of the completion write */
++   uint32_t command_count, signal_count;
++   struct anv_cmd_buffer **commands;
++   struct vk_sync_signal *signals;
 +};
 +
 +VkResult anv_wddm_pools_init(struct anv_device *device);
@@ -2107,17 +2206,25 @@
 +   uint32_t *tail;
 +   /* Kernel submission ("run") this buffer's final segment last joined. */
 +   uint64_t run;
++   /* Transport submission of its last non-blocking execution, until verified. */
++   uint64_t seq;
 +};
 +/* Executes command buffers in order, chaining them into as few kernel
-+ * submissions as their event waits and repetitions allow. The last one jumps
-+ * to completion (a batch ending in MI_BATCH_BUFFER_END), or ends there if
-+ * completion is 0. present_token != 0: the last kernel submission is a
-+ * redirected present (hasvk_wddm_submit_present) and executable (not only
-+ * pending) command buffers are accepted (driver-internal use).
++ * submissions as their event waits and repetitions allow. serial != 0: the
++ * last one jumps to a completion write of serial (completion BO dword 0).
++ * async: the last kernel submission is not waited for; *seq receives its
++ * transport number and the caller must verify the command buffers
++ * (anv_wddm_check_completed) after it completed. Otherwise everything is
++ * verified before returning. present_token != 0 (not async): the last kernel
++ * submission is a redirected present and executable (not only pending)
++ * command buffers are accepted (driver-internal use).
 + * Caller holds submit_mutex. */
 +int anv_wddm_execute_commands(struct anv_device *device, struct vk_command_buffer *const *commands, uint32_t count,
-+                              uint64_t completion, uint64_t present_token);
++                              uint32_t serial, uint64_t present_token, bool async, uint64_t *seq);
 +int anv_wddm_execute_command(struct anv_cmd_buffer *cmd, uint64_t present_token);
++int anv_wddm_check_completed(struct anv_cmd_buffer *cmd);
++/* Waits until every non-blocking submission up to seq has been verified. */
++void anv_wddm_wait_verified(struct anv_device *device, uint64_t seq);
 +VkResult anv_wddm_alloc_window_surface_bo(struct anv_device *device, uint32_t width, uint32_t height,
 +                                          struct anv_bo **out, uint32_t *share, uint64_t *pitch);
 +#ifdef HASVK_WDDM_GRAPHICS
@@ -2823,12 +2930,12 @@
 +   status = anv_wddm_flush_state_pools(device);
 +   if (!status) status = hasvk_wddm_submit_wait(w->transport, w->entry, 0, (next - batch) * 4);
 +   if (!status) {
-+      for (unsigned i = 0; i < 1024; ++i) {
++      for (unsigned i = 1; i < 1024; ++i) {   /* dword 0 is the queue's completion counter */
 +         uint32_t wanted = i >= 16 && i < 16 + read_count ? expected[i - 16] : 0x39393939;
 +         if (result[i] != wanted) status = -1;
 +      }
 +   }
-+   memset(result, 0x39, 4096);
++   memset(result + 1, 0x39, 4096 - 4);
 +cleanup:
 +   for (unsigned p = 0; p < allocated_pools; ++p)
 +      for (unsigned i = 0; i < count; ++i) anv_state_pool_free(pools[p], all_states[p * count + i]);
@@ -2921,7 +3028,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_command.c
-@@ -0,0 +1,454 @@
+@@ -0,0 +1,503 @@
 +/* Windows lifetime and submission backing for HasVK command buffers.
 + * Packet emission, descriptor binding and push packing use upstream HasVK.
 + *
@@ -3258,15 +3365,29 @@
 +      "conservative compute memory barrier");
 +   genX(cmd_buffer_apply_pipe_flushes)(cmd);
 +}
-+/* One kernel submission: the entry batch jumps to start; wait for the GPU. */
-+static int submit_run(struct anv_wddm_device_state *w, struct anv_address start, uint64_t present_token)
++/* A free slot of the entry ring (its previous submission completed). */
++static int take_slot(struct anv_wddm_device_state *w, uint32_t *slot)
 +{
-+   write_tail(hasvk_wddm_bo_map(w->entry), start, true);
-+   if (present_token ? hasvk_wddm_submit_present(w->transport, w->entry, 0, 16, present_token)
-+                     : hasvk_wddm_submit_wait(w->transport, w->entry, 0, 16)) {
++   *slot = w->next_slot++ % ANV_WDDM_ENTRY_SLOTS;
++   if (w->slot_seq[*slot] && hasvk_wddm_wait_submission(w->transport, w->slot_seq[*slot])) return -1;
++   w->slot_seq[*slot] = 0;
++   return 0;
++}
++/* One kernel submission from a slot whose jump goes to start. Waits for the
++ * GPU unless seq is given (non-blocking: *seq receives its number). */
++static int submit_run(struct anv_wddm_device_state *w, uint32_t slot, struct anv_address start, uint64_t present_token,
++                      uint64_t *seq)
++{
++   write_tail((uint32_t *)hasvk_wddm_bo_map(w->entry) + slot * 32, start, true);
++   const uint32_t offset = slot * 128;
++   const int failed = seq ? hasvk_wddm_submit_async(w->transport, w->entry, offset, 16, seq)
++                    : present_token ? hasvk_wddm_submit_present(w->transport, w->entry, offset, 16, present_token)
++                    : hasvk_wddm_submit_wait(w->transport, w->entry, offset, 16);
++   if (failed) {
 +      fprintf(stderr, "WDDM command submission: %s\n", hasvk_wddm_error());
 +      return -1;
 +   }
++   if (seq) w->slot_seq[slot] = *seq;
 +   ++w->runs;
 +   return 0;
 +}
@@ -3275,10 +3396,25 @@
 +   return container_of(commands[i], struct anv_cmd_buffer, vk);
 +}
 +static int check_completed(struct anv_cmd_buffer *cmd);
-+int anv_wddm_execute_commands(struct anv_device *device, struct vk_command_buffer *const *commands, uint32_t count,
-+                              uint64_t completion, uint64_t present_token)
++int anv_wddm_check_completed(struct anv_cmd_buffer *cmd) { return check_completed(cmd); }
++void anv_wddm_wait_verified(struct anv_device *device, uint64_t seq)
 +{
 +   struct anv_wddm_device_state *w = device->wddm;
++   mtx_lock(&w->mutex);
++   while (w->verified_seq < seq && !vk_device_is_lost_no_report(&device->vk))
++      u_cnd_monotonic_wait(&w->condition, &w->mutex);
++   mtx_unlock(&w->mutex);
++}
++int anv_wddm_execute_commands(struct anv_device *device, struct vk_command_buffer *const *commands, uint32_t count,
++                              uint32_t serial, uint64_t present_token, bool async, uint64_t *seq)
++{
++   struct anv_wddm_device_state *w = device->wddm;
++   /* A buffer still owned by an unverified non-blocking execution must not
++    * have its tail and marker rewritten yet. */
++   for (uint32_t i = 0; i < count; ++i) {
++      struct anv_cmd_buffer *cmd = command_at(commands, i);
++      if (cmd->wddm->seq) { anv_wddm_wait_verified(device, cmd->wddm->seq); cmd->wddm->seq = 0; }
++   }
 +   for (uint32_t i = 0; i < count; ++i) {
 +      const struct anv_cmd_buffer *cmd = command_at(commands, i);
 +      const bool runnable = cmd->vk.state == MESA_VK_COMMAND_BUFFER_STATE_PENDING ||
@@ -3288,9 +3424,16 @@
 +         return -1;
 +      }
 +   }
-+   if (!count && !completion) return 0;
++   if (!count && !serial) return 0;
 +   if (count && anv_wddm_flush_state_pools(device)) return -1;
-+   const struct anv_address done = {NULL, completion};
++   /* The last kernel submission's slot also holds the completion write. */
++   uint32_t final_slot;
++   if (take_slot(w, &final_slot)) return -1;
++   uint32_t *completion = (uint32_t *)hasvk_wddm_bo_map(w->entry) + final_slot * 32 + 16;
++   const uint64_t counter = intel_canonical_address(hasvk_wddm_bo_address(w->completion));
++   completion[0] = 0x10000002; completion[1] = (uint32_t)counter; completion[2] = counter >> 32; completion[3] = serial;
++   completion[4] = 0x05000000; completion[5] = 0;   /* MI_STORE_DATA_IMM serial, MI_BATCH_BUFFER_END */
++   const struct anv_address done = {NULL, serial ? hasvk_wddm_bo_address(w->entry) + final_slot * 128 + 64 : 0};
 +   /* The pending kernel submission is run number w->runs + 1. A buffer is
 +    * chained to its successor unless the successor's final segment is already
 +    * part of that run (a repeated buffer has only one tail). */
@@ -3303,7 +3446,7 @@
 +      /* After its event waits this buffer's final segment starts a run of its own. */
 +      const bool chain = next && next != cmd && (s->wait_count || next->wddm->run != w->runs + 1);
 +      if (next) write_tail(s->tail, (struct anv_address){next->wddm->bo, 0}, chain);
-+      else write_tail(s->tail, done, completion != 0);
++      else write_tail(s->tail, done, serial != 0);
 +      *(uint64_t *)((char *)s->bo->map + marker_offset) = 0;
 +      /* Command BOs are not flushed by the transport: write back exactly this
 +       * command buffer's chunks (with its tail and marker) now. */
@@ -3311,30 +3454,43 @@
 +         if (hasvk_wddm_bo_flush(s->chunks[c].bo->wddm_bo)) return -1;
 +      s->run = w->runs + 1;
 +      for (uint32_t k = 0; k < s->wait_count; ++k) {
-+         if (submit_run(w, start, 0)) return -1;
++         uint32_t slot;
++         if (take_slot(w, &slot) || submit_run(w, slot, start, 0, NULL)) return -1;
 +         for (; first < i; ++first) if (check_completed(command_at(commands, first))) return -1;
 +         const struct anv_wddm_wait *wait = &s->waits[k];
-+         for (uint32_t e = 0; e < wait->event_count; ++e)
++         for (uint32_t e = 0; e < wait->event_count; ++e) {
++            /* An event set by a still-running earlier submission becomes
++             * visible only after its cache line is re-read. */
++            const uint32_t line = (uint32_t)wait->events[e]->state.offset & ~63u;
 +            while (*(volatile uint64_t *)wait->events[e]->state.map != VK_EVENT_SET) {
 +               if (vk_device_is_lost_no_report(&device->vk)) return -1;
 +               Sleep(0);
++               hasvk_wddm_bo_flush_range(w->event_bo->wddm_bo, line, 64);
 +            }
++         }
 +         start = wait->resume; s->run = w->runs + 1;
 +      }
 +      if (next && !chain) {
-+         if (submit_run(w, start, 0)) return -1;
++         uint32_t slot;
++         if (take_slot(w, &slot) || submit_run(w, slot, start, 0, NULL)) return -1;
 +         for (; first <= i; ++first) if (check_completed(command_at(commands, first))) return -1;
 +         start = (struct anv_address){next->wddm->bo, 0};
 +      }
 +   }
-+   if (submit_run(w, start, present_token)) return -1;
++   if (async) {
++      /* Not waited for: the caller verifies [first, count) after completion. */
++      if (submit_run(w, final_slot, start, 0, seq)) return -1;
++      for (uint32_t i = first; i < count; ++i) command_at(commands, i)->wddm->seq = *seq;
++      return 0;
++   }
++   if (submit_run(w, final_slot, start, present_token, NULL)) return -1;
 +   for (; first < count; ++first) if (check_completed(command_at(commands, first))) return -1;
 +   return 0;
 +}
 +int anv_wddm_execute_command(struct anv_cmd_buffer *cmd, uint64_t present_token)
 +{
 +   struct vk_command_buffer *one = &cmd->vk;
-+   return anv_wddm_execute_commands(cmd->device, &one, 1, 0, present_token);
++   return anv_wddm_execute_commands(cmd->device, &one, 1, 0, present_token, false, NULL);
 +}
 +/* After the GPU ran a command buffer to its end: completion marker and guards. */
 +static int check_completed(struct anv_cmd_buffer *cmd)
@@ -23140,7 +23296,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.h
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,70 @@
 +#pragma once
 +#include <stdint.h>
 +#ifdef __cplusplus
@@ -23184,6 +23340,14 @@
 + * height aligned to 32 rows, GPU-mapped, never CPU-mapped. A submission with
 + * present_token = (0x80000000 | HWND) << 32 | share handle shows the surface
 + * contents in that window once the submission completes. */
++/* Asynchronous submission: *seq is the submission's number (increasing from 1).
++ * wait_submission(seq) returns when it and every earlier submission completed
++ * (FLUSH_AFTER buffers then flushed); it does not block other threads'
++ * submissions while waiting. completed_submission: highest completed number. */
++int hasvk_wddm_submit_async(struct hasvk_wddm_device *device, struct hasvk_wddm_bo *commands,
++                           uint32_t offset, uint32_t bytes, uint64_t *seq);
++int hasvk_wddm_wait_submission(struct hasvk_wddm_device *device, uint64_t seq);
++uint64_t hasvk_wddm_completed_submission(struct hasvk_wddm_device *device);
 +int hasvk_wddm_bo_create_window_surface(struct hasvk_wddm_device *device, uint32_t width, uint32_t height,
 +                                       struct hasvk_wddm_bo **out);
 +int hasvk_wddm_bo_window_surface_info(const struct hasvk_wddm_bo *bo, uint32_t *share, uint64_t *pitch);
@@ -23205,7 +23369,7 @@
 +#endif
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.hpp
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,148 @@
 +#pragma once
 +#define NOMINMAX
 +#include <windows.h>
@@ -23213,6 +23377,7 @@
 +#include <d3dkmthk.h>
 +#include <atomic>
 +#include <cstdint>
++#include <deque>
 +#include <stdexcept>
 +#include <string>
 +#include <vector>
@@ -23259,6 +23424,17 @@
 +   void submit_and_wait(uint64_t commands, uint32_t bytes,
 +                        const std::vector<uint8_t> &header, DWORD timeout_ms = 15000,
 +                        uint64_t present_token = 0);
++   /* Asynchronous form: submit returns the submission's sequence number
++    * (increasing from 1); wait(seq) waits for it and every earlier one, then
++    * flushes FLUSH_AFTER buffers. pending_event/retire_oldest let a caller
++    * wait without holding its own lock (the C API does that). */
++   uint64_t submit(uint64_t commands, uint32_t bytes, const std::vector<uint8_t> &header, uint64_t present_token = 0);
++   void wait(uint64_t seq, DWORD timeout_ms = 15000);
++   /* Oldest pending submission's event and number if seq is not complete, else null. */
++   HANDLE pending_event(uint64_t seq, uint64_t *oldest = nullptr) const;
++   void retire_oldest();                       // after its event was set
++   uint64_t completed_seq() const { return completed_seq_; }
++   uint64_t submitted_seq() const { return next_seq_; }
 +   uint64_t reserve_va(uint64_t bytes, uint64_t requested_address = 0);
 +   void free_va(uint64_t address, uint64_t bytes);
 +   void shutdown();
@@ -23284,6 +23460,9 @@
 +   LUID luid_{};
 +   std::vector<Buffer *> buffers_;
 +   std::vector<uint8_t> context_buffer_;   // referenced by the context's private data
++   std::deque<std::pair<uint64_t, HANDLE>> pending_;   // submissions not yet retired, oldest first
++   std::vector<HANDLE> free_events_;
++   uint64_t next_seq_ = 0, completed_seq_ = 0;
 +   bool lost_ = false;
 +   bool cancellation_failed_ = false;
 +   unsigned cleanup_errors_ = 0;
@@ -23341,7 +23520,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.cpp
-@@ -0,0 +1,368 @@
+@@ -0,0 +1,408 @@
 +#include "hasvk_wddm.hpp"
 +#include <dxgi1_2.h>
 +#include <wrl/client.h>
@@ -23452,6 +23631,43 @@
 +void Device::submit_and_wait(uint64_t commands, uint32_t bytes,
 +                             const std::vector<uint8_t> &header, DWORD timeout_ms, uint64_t present_token)
 +{
++   wait(submit(commands, bytes, header, present_token), timeout_ms);
++}
++HANDLE Device::pending_event(uint64_t seq, uint64_t *oldest) const
++{
++   if (seq <= completed_seq_ || pending_.empty()) return nullptr;
++   if (oldest) *oldest = pending_.front().first;
++   return pending_.front().second;
++}
++void Device::retire_oldest()
++{
++   if (pending_.empty()) return;
++   try {
++      MemoryBarrier();
++      const uint32_t state = execution_state();
++      if (state != D3DKMT_DEVICEEXECUTION_ACTIVE)
++         throw std::runtime_error("WDDM device is not active after submission (execution state " + std::to_string(state) + ")");
++      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 2) buffer->flush();
++      _mm_mfence();
++   } catch (...) { abort_context(); throw; }
++   completed_seq_ = pending_.front().first;
++   ResetEvent(pending_.front().second);
++   free_events_.push_back(pending_.front().second);
++   pending_.pop_front();
++}
++void Device::wait(uint64_t seq, DWORD timeout_ms)
++{
++   while (HANDLE event = pending_event(seq)) {
++      if (lost_) throw std::runtime_error("Device/context is lost");
++      if (WaitForSingleObject(event, timeout_ms) != WAIT_OBJECT_0) {
++         abort_context();
++         throw std::runtime_error("GPU completion event timed out or failed");
++      }
++      retire_oldest();
++   }
++}
++uint64_t Device::submit(uint64_t commands, uint32_t bytes, const std::vector<uint8_t> &header, uint64_t present_token)
++{
 +   if (lost_) throw std::runtime_error("Device/context is lost");
 +   uint32_t signature = 0;
 +   if (header.size() == 80) memcpy(&signature, header.data(), 4);
@@ -23487,22 +23703,22 @@
 +         throw Error("SubmitCommand (present refused)", submitted);
 +      }
 +      check(submitted, "SubmitCommand");
++      /* Completion: a manual-reset CPU event per submission, set by the
++       * kernel when the GPU reaches this point of the context. */
++      HANDLE event;
++      if (!free_events_.empty()) { event = free_events_.back(); free_events_.pop_back(); }
++      else if (!(event = CreateEventW(nullptr, TRUE, FALSE, nullptr))) throw Error("CreateEventW", HRESULT_FROM_WIN32(GetLastError()));
 +      D3DKMT_SIGNALSYNCHRONIZATIONOBJECT2 signal{};
 +      signal.hContext = context_;
 +      signal.Flags.EnqueueCpuEvent = 1;
-+      signal.CpuEventHandle = completed_;
-+      check(D3DKMTSignalSynchronizationObject2(&signal), "Enqueue completion event");
-+      DWORD wait = WaitForSingleObject(completed_, timeout_ms);
-+      if (wait != WAIT_OBJECT_0) throw std::runtime_error("GPU completion event timed out or failed");
-+      MemoryBarrier();
-+      const uint32_t state = execution_state();
-+      if (state != D3DKMT_DEVICEEXECUTION_ACTIVE)
-+         throw std::runtime_error("WDDM device is not active after submission (execution state " + std::to_string(state) + ")");
++      signal.CpuEventHandle = event;
++      const LONG enqueued = D3DKMTSignalSynchronizationObject2(&signal);
++      if (enqueued < 0) { free_events_.push_back(event); check(enqueued, "Enqueue completion event"); }
++      pending_.emplace_back(++next_seq_, event);
 +      QueryPerformanceCounter(&t2);
-+      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 2) buffer->flush();
-+      _mm_mfence();
 +      kernel_ticks += t2.QuadPart - t1.QuadPart;
 +   } catch (...) { if (!refused) abort_context(); throw; }
++   return next_seq_;
 +}
 +void Buffer::flush(uint64_t offset, uint64_t bytes) const
 +{
@@ -23569,6 +23785,9 @@
 +{
 +   abort_context();
 +   if (completed_) { CloseHandle(completed_); completed_ = nullptr; }
++   for (auto &entry : pending_) CloseHandle(entry.second);
++   for (HANDLE event : free_events_) CloseHandle(event);
++   pending_.clear(); free_events_.clear();
 +   if (paging_.hPagingQueue) {
 +      D3DDDI_DESTROYPAGINGQUEUE destroy{paging_.hPagingQueue};
 +      note_cleanup(D3DKMTDestroyPagingQueue(&destroy), "DestroyPagingQueue");
@@ -23712,7 +23931,7 @@
 +} // namespace hasvk::wddm
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm_c.cpp
-@@ -0,0 +1,297 @@
+@@ -0,0 +1,341 @@
 +#include "hasvk_wddm.h"
 +#include "hasvk_wddm.hpp"
 +#include <cstdio>
@@ -23920,35 +24139,79 @@
 +   *share = bo->native->share(); *pitch = bo->native->pitch();
 +   return 0;
 +}
-+static int submit(hasvk_wddm_device *device, hasvk_wddm_bo *commands, uint32_t offset, uint32_t bytes, uint64_t present_token);
++/* Waits for submission seq without holding the device lock, so other threads
++ * can submit meanwhile. Submissions complete in order. */
++static void wait_submission(hasvk_wddm_device *device, uint64_t seq, DWORD timeout_ms)
++{
++   for (;;) {
++      HANDLE event; uint64_t oldest = 0;
++      {
++         std::lock_guard<std::mutex> lock(device->mutex);
++         if (device->native.lost()) throw std::runtime_error("Device/context is lost");
++         if (!(event = device->native.pending_event(seq, &oldest))) return;
++      }
++      const DWORD waited = WaitForSingleObject(event, timeout_ms);
++      std::lock_guard<std::mutex> lock(device->mutex);
++      uint64_t front = 0;
++      const bool still_pending = device->native.pending_event(oldest, &front) && front == oldest;
++      if (waited != WAIT_OBJECT_0 && still_pending) {
++         device->native.abort_context();
++         throw std::runtime_error("GPU completion event timed out or failed");
++      }
++      if (still_pending) device->native.retire_oldest();
++   }
++}
++static int submit(hasvk_wddm_device *device, hasvk_wddm_bo *commands, uint32_t offset, uint32_t bytes, uint64_t present_token,
++                  bool wait, uint64_t *seq_out)
++{
++   if (!device || !commands || commands->device != device) return failure("Invalid submission device/BO");
++   return checked([&] {
++      uint64_t seq;
++      {
++         std::lock_guard<std::mutex> lock(device->mutex);
++         if (commands->native->size() != 8192 || offset > 8192 || bytes > 8192 - offset || (offset & 7))
++            throw std::runtime_error("Submission entry must fit the calibrated 8192-byte command BO");
++         const uint64_t t0 = ticks();
++         for (const auto *pool : device->pools) {
++            for (size_t i = 0; i < pool->chunks.size(); ++i) {
++               if (pool->chunks[i]) { memcpy(pool->chunks[i]->cpu(), static_cast<const char *>(pool->cpu) + i * 65536, 65536); device->profile.upload_bytes += 65536; }
++            }
++         }
++         const uint64_t t1 = ticks();
++         seq = device->native.submit(commands->native->address() + offset, bytes, command_header_8192(), present_token);
++         device->profile.upload_ticks += t1 - t0; device->profile.submit_ticks += ticks() - t1; ++device->profile.submissions;
++      }
++      if (seq_out) *seq_out = seq;
++      if (wait) wait_submission(device, seq, 15000);
++   });
++}
 +extern "C" int hasvk_wddm_submit_present(hasvk_wddm_device *device, hasvk_wddm_bo *commands,
 +                                          uint32_t offset, uint32_t bytes, uint64_t present_token)
 +{
 +   if (!present_token) return failure("Missing present token");
-+   return submit(device, commands, offset, bytes, present_token);
++   return submit(device, commands, offset, bytes, present_token, true, nullptr);
 +}
 +extern "C" int hasvk_wddm_submit_wait(hasvk_wddm_device *device, hasvk_wddm_bo *commands,
 +                                       uint32_t offset, uint32_t bytes)
 +{
-+   return submit(device, commands, offset, bytes, 0);
++   return submit(device, commands, offset, bytes, 0, true, nullptr);
 +}
-+static int submit(hasvk_wddm_device *device, hasvk_wddm_bo *commands, uint32_t offset, uint32_t bytes, uint64_t present_token)
++extern "C" int hasvk_wddm_submit_async(hasvk_wddm_device *device, hasvk_wddm_bo *commands,
++                                        uint32_t offset, uint32_t bytes, uint64_t *seq)
 +{
-+   if (!device || !commands || commands->device != device) return failure("Invalid submission device/BO");
-+   return checked([&] {
-+      std::lock_guard<std::mutex> lock(device->mutex);
-+      if (commands->native->size() != 8192 || offset > 8192 || bytes > 8192 - offset || (offset & 7))
-+         throw std::runtime_error("Submission entry must fit the calibrated 8192-byte command BO");
-+      const uint64_t t0 = ticks();
-+      for (const auto *pool : device->pools) {
-+         for (size_t i = 0; i < pool->chunks.size(); ++i) {
-+            if (pool->chunks[i]) { memcpy(pool->chunks[i]->cpu(), static_cast<const char *>(pool->cpu) + i * 65536, 65536); device->profile.upload_bytes += 65536; }
-+         }
-+      }
-+      const uint64_t t1 = ticks();
-+      device->native.submit_and_wait(commands->native->address() + offset, bytes, command_header_8192(), 15000, present_token);
-+      device->profile.upload_ticks += t1 - t0; device->profile.submit_ticks += ticks() - t1; ++device->profile.submissions;
-+   });
++   if (!seq) return failure("Missing sequence output");
++   return submit(device, commands, offset, bytes, 0, false, seq);
++}
++extern "C" int hasvk_wddm_wait_submission(hasvk_wddm_device *device, uint64_t seq)
++{
++   if (!device) return failure("Invalid device");
++   return checked([&] { wait_submission(device, seq, 15000); });
++}
++extern "C" uint64_t hasvk_wddm_completed_submission(hasvk_wddm_device *device)
++{
++   if (!device) return 0;
++   std::lock_guard<std::mutex> lock(device->mutex);
++   return device->native.completed_seq();
 +}
 +extern "C" int hasvk_wddm_readonly_pool_create(hasvk_wddm_device *device, uint64_t address,
 +                                               uint32_t size, hasvk_wddm_readonly_pool **out)

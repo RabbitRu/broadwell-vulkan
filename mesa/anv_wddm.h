@@ -4,6 +4,8 @@
 #include "wddm/hasvk_wddm.h"
 #include "util/cnd_monotonic.h"
 #include "util/vma.h"
+#include "util/list.h"
+#include "c11/threads.h"
 
 /* One WDDM allocation is at most 128 MiB (transport profile). The device-wide
  * budget is what the single Vulkan heap reports. */
@@ -11,6 +13,7 @@
 #define ANV_WDDM_HEAP_BYTES (3ull << 30)
 #define ANV_WDDM_MAX_BOS 65536u
 #define ANV_WDDM_EVENT_SLOTS 4096u   /* 8 bytes each in one BO */
+#define ANV_WDDM_ENTRY_SLOTS 64u     /* 128 bytes each in the 8192-byte entry BO */
 
 struct anv_wddm_device_state {
    struct hasvk_wddm_device *transport;
@@ -36,6 +39,28 @@ struct anv_wddm_device_state {
    BITSET_WORD event_slots[BITSET_WORDS(ANV_WDDM_EVENT_SLOTS)];
    uint64_t command_batches_completed;
    uint64_t runs;   /* kernel submissions of command buffers, for chaining */
+   /* The entry BO is a ring of 128-byte slots (jump at +0, completion write
+    * at +64); a slot is reused only after the transport submission that last
+    * used it completed (slot_seq). Protected by submit_mutex. */
+   uint64_t slot_seq[ANV_WDDM_ENTRY_SLOTS];
+   uint32_t next_slot;
+   uint32_t next_serial;
+   /* Non-blocking queue: a vkQueueSubmit's last kernel submission is not
+    * waited for; the completion thread waits for it, verifies markers and
+    * guards, then signals its syncs. pending (oldest first), verified_seq and
+    * completion_exit are protected by mutex and announced on condition. */
+   struct list_head pending;
+   uint64_t verified_seq;
+   thrd_t completion_thread;
+   bool completion_thread_started, completion_exit;
+};
+struct anv_wddm_pending {
+   struct list_head link;
+   uint64_t seq;        /* transport submission number */
+   uint32_t serial;     /* value of the completion write */
+   uint32_t command_count, signal_count;
+   struct anv_cmd_buffer **commands;
+   struct vk_sync_signal *signals;
 };
 
 VkResult anv_wddm_pools_init(struct anv_device *device);
@@ -65,17 +90,25 @@ struct anv_wddm_cmd_state {
    uint32_t *tail;
    /* Kernel submission ("run") this buffer's final segment last joined. */
    uint64_t run;
+   /* Transport submission of its last non-blocking execution, until verified. */
+   uint64_t seq;
 };
 /* Executes command buffers in order, chaining them into as few kernel
- * submissions as their event waits and repetitions allow. The last one jumps
- * to completion (a batch ending in MI_BATCH_BUFFER_END), or ends there if
- * completion is 0. present_token != 0: the last kernel submission is a
- * redirected present (hasvk_wddm_submit_present) and executable (not only
- * pending) command buffers are accepted (driver-internal use).
+ * submissions as their event waits and repetitions allow. serial != 0: the
+ * last one jumps to a completion write of serial (completion BO dword 0).
+ * async: the last kernel submission is not waited for; *seq receives its
+ * transport number and the caller must verify the command buffers
+ * (anv_wddm_check_completed) after it completed. Otherwise everything is
+ * verified before returning. present_token != 0 (not async): the last kernel
+ * submission is a redirected present and executable (not only pending)
+ * command buffers are accepted (driver-internal use).
  * Caller holds submit_mutex. */
 int anv_wddm_execute_commands(struct anv_device *device, struct vk_command_buffer *const *commands, uint32_t count,
-                              uint64_t completion, uint64_t present_token);
+                              uint32_t serial, uint64_t present_token, bool async, uint64_t *seq);
 int anv_wddm_execute_command(struct anv_cmd_buffer *cmd, uint64_t present_token);
+int anv_wddm_check_completed(struct anv_cmd_buffer *cmd);
+/* Waits until every non-blocking submission up to seq has been verified. */
+void anv_wddm_wait_verified(struct anv_device *device, uint64_t seq);
 VkResult anv_wddm_alloc_window_surface_bo(struct anv_device *device, uint32_t width, uint32_t height,
                                           struct anv_bo **out, uint32_t *share, uint64_t *pitch);
 #ifdef HASVK_WDDM_GRAPHICS

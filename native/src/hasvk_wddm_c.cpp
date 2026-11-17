@@ -205,35 +205,79 @@ extern "C" int hasvk_wddm_bo_window_surface_info(const hasvk_wddm_bo *bo, uint32
    *share = bo->native->share(); *pitch = bo->native->pitch();
    return 0;
 }
-static int submit(hasvk_wddm_device *device, hasvk_wddm_bo *commands, uint32_t offset, uint32_t bytes, uint64_t present_token);
+/* Waits for submission seq without holding the device lock, so other threads
+ * can submit meanwhile. Submissions complete in order. */
+static void wait_submission(hasvk_wddm_device *device, uint64_t seq, DWORD timeout_ms)
+{
+   for (;;) {
+      HANDLE event; uint64_t oldest = 0;
+      {
+         std::lock_guard<std::mutex> lock(device->mutex);
+         if (device->native.lost()) throw std::runtime_error("Device/context is lost");
+         if (!(event = device->native.pending_event(seq, &oldest))) return;
+      }
+      const DWORD waited = WaitForSingleObject(event, timeout_ms);
+      std::lock_guard<std::mutex> lock(device->mutex);
+      uint64_t front = 0;
+      const bool still_pending = device->native.pending_event(oldest, &front) && front == oldest;
+      if (waited != WAIT_OBJECT_0 && still_pending) {
+         device->native.abort_context();
+         throw std::runtime_error("GPU completion event timed out or failed");
+      }
+      if (still_pending) device->native.retire_oldest();
+   }
+}
+static int submit(hasvk_wddm_device *device, hasvk_wddm_bo *commands, uint32_t offset, uint32_t bytes, uint64_t present_token,
+                  bool wait, uint64_t *seq_out)
+{
+   if (!device || !commands || commands->device != device) return failure("Invalid submission device/BO");
+   return checked([&] {
+      uint64_t seq;
+      {
+         std::lock_guard<std::mutex> lock(device->mutex);
+         if (commands->native->size() != 8192 || offset > 8192 || bytes > 8192 - offset || (offset & 7))
+            throw std::runtime_error("Submission entry must fit the calibrated 8192-byte command BO");
+         const uint64_t t0 = ticks();
+         for (const auto *pool : device->pools) {
+            for (size_t i = 0; i < pool->chunks.size(); ++i) {
+               if (pool->chunks[i]) { memcpy(pool->chunks[i]->cpu(), static_cast<const char *>(pool->cpu) + i * 65536, 65536); device->profile.upload_bytes += 65536; }
+            }
+         }
+         const uint64_t t1 = ticks();
+         seq = device->native.submit(commands->native->address() + offset, bytes, command_header_8192(), present_token);
+         device->profile.upload_ticks += t1 - t0; device->profile.submit_ticks += ticks() - t1; ++device->profile.submissions;
+      }
+      if (seq_out) *seq_out = seq;
+      if (wait) wait_submission(device, seq, 15000);
+   });
+}
 extern "C" int hasvk_wddm_submit_present(hasvk_wddm_device *device, hasvk_wddm_bo *commands,
                                           uint32_t offset, uint32_t bytes, uint64_t present_token)
 {
    if (!present_token) return failure("Missing present token");
-   return submit(device, commands, offset, bytes, present_token);
+   return submit(device, commands, offset, bytes, present_token, true, nullptr);
 }
 extern "C" int hasvk_wddm_submit_wait(hasvk_wddm_device *device, hasvk_wddm_bo *commands,
                                        uint32_t offset, uint32_t bytes)
 {
-   return submit(device, commands, offset, bytes, 0);
+   return submit(device, commands, offset, bytes, 0, true, nullptr);
 }
-static int submit(hasvk_wddm_device *device, hasvk_wddm_bo *commands, uint32_t offset, uint32_t bytes, uint64_t present_token)
+extern "C" int hasvk_wddm_submit_async(hasvk_wddm_device *device, hasvk_wddm_bo *commands,
+                                        uint32_t offset, uint32_t bytes, uint64_t *seq)
 {
-   if (!device || !commands || commands->device != device) return failure("Invalid submission device/BO");
-   return checked([&] {
-      std::lock_guard<std::mutex> lock(device->mutex);
-      if (commands->native->size() != 8192 || offset > 8192 || bytes > 8192 - offset || (offset & 7))
-         throw std::runtime_error("Submission entry must fit the calibrated 8192-byte command BO");
-      const uint64_t t0 = ticks();
-      for (const auto *pool : device->pools) {
-         for (size_t i = 0; i < pool->chunks.size(); ++i) {
-            if (pool->chunks[i]) { memcpy(pool->chunks[i]->cpu(), static_cast<const char *>(pool->cpu) + i * 65536, 65536); device->profile.upload_bytes += 65536; }
-         }
-      }
-      const uint64_t t1 = ticks();
-      device->native.submit_and_wait(commands->native->address() + offset, bytes, command_header_8192(), 15000, present_token);
-      device->profile.upload_ticks += t1 - t0; device->profile.submit_ticks += ticks() - t1; ++device->profile.submissions;
-   });
+   if (!seq) return failure("Missing sequence output");
+   return submit(device, commands, offset, bytes, 0, false, seq);
+}
+extern "C" int hasvk_wddm_wait_submission(hasvk_wddm_device *device, uint64_t seq)
+{
+   if (!device) return failure("Invalid device");
+   return checked([&] { wait_submission(device, seq, 15000); });
+}
+extern "C" uint64_t hasvk_wddm_completed_submission(hasvk_wddm_device *device)
+{
+   if (!device) return 0;
+   std::lock_guard<std::mutex> lock(device->mutex);
+   return device->native.completed_seq();
 }
 extern "C" int hasvk_wddm_readonly_pool_create(hasvk_wddm_device *device, uint64_t address,
                                                uint32_t size, hasvk_wddm_readonly_pool **out)

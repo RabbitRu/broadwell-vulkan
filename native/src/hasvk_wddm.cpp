@@ -108,6 +108,43 @@ void Device::wait_paging(uint64_t fence, DWORD timeout_ms)
 void Device::submit_and_wait(uint64_t commands, uint32_t bytes,
                              const std::vector<uint8_t> &header, DWORD timeout_ms, uint64_t present_token)
 {
+   wait(submit(commands, bytes, header, present_token), timeout_ms);
+}
+HANDLE Device::pending_event(uint64_t seq, uint64_t *oldest) const
+{
+   if (seq <= completed_seq_ || pending_.empty()) return nullptr;
+   if (oldest) *oldest = pending_.front().first;
+   return pending_.front().second;
+}
+void Device::retire_oldest()
+{
+   if (pending_.empty()) return;
+   try {
+      MemoryBarrier();
+      const uint32_t state = execution_state();
+      if (state != D3DKMT_DEVICEEXECUTION_ACTIVE)
+         throw std::runtime_error("WDDM device is not active after submission (execution state " + std::to_string(state) + ")");
+      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 2) buffer->flush();
+      _mm_mfence();
+   } catch (...) { abort_context(); throw; }
+   completed_seq_ = pending_.front().first;
+   ResetEvent(pending_.front().second);
+   free_events_.push_back(pending_.front().second);
+   pending_.pop_front();
+}
+void Device::wait(uint64_t seq, DWORD timeout_ms)
+{
+   while (HANDLE event = pending_event(seq)) {
+      if (lost_) throw std::runtime_error("Device/context is lost");
+      if (WaitForSingleObject(event, timeout_ms) != WAIT_OBJECT_0) {
+         abort_context();
+         throw std::runtime_error("GPU completion event timed out or failed");
+      }
+      retire_oldest();
+   }
+}
+uint64_t Device::submit(uint64_t commands, uint32_t bytes, const std::vector<uint8_t> &header, uint64_t present_token)
+{
    if (lost_) throw std::runtime_error("Device/context is lost");
    uint32_t signature = 0;
    if (header.size() == 80) memcpy(&signature, header.data(), 4);
@@ -143,22 +180,22 @@ void Device::submit_and_wait(uint64_t commands, uint32_t bytes,
          throw Error("SubmitCommand (present refused)", submitted);
       }
       check(submitted, "SubmitCommand");
+      /* Completion: a manual-reset CPU event per submission, set by the
+       * kernel when the GPU reaches this point of the context. */
+      HANDLE event;
+      if (!free_events_.empty()) { event = free_events_.back(); free_events_.pop_back(); }
+      else if (!(event = CreateEventW(nullptr, TRUE, FALSE, nullptr))) throw Error("CreateEventW", HRESULT_FROM_WIN32(GetLastError()));
       D3DKMT_SIGNALSYNCHRONIZATIONOBJECT2 signal{};
       signal.hContext = context_;
       signal.Flags.EnqueueCpuEvent = 1;
-      signal.CpuEventHandle = completed_;
-      check(D3DKMTSignalSynchronizationObject2(&signal), "Enqueue completion event");
-      DWORD wait = WaitForSingleObject(completed_, timeout_ms);
-      if (wait != WAIT_OBJECT_0) throw std::runtime_error("GPU completion event timed out or failed");
-      MemoryBarrier();
-      const uint32_t state = execution_state();
-      if (state != D3DKMT_DEVICEEXECUTION_ACTIVE)
-         throw std::runtime_error("WDDM device is not active after submission (execution state " + std::to_string(state) + ")");
+      signal.CpuEventHandle = event;
+      const LONG enqueued = D3DKMTSignalSynchronizationObject2(&signal);
+      if (enqueued < 0) { free_events_.push_back(event); check(enqueued, "Enqueue completion event"); }
+      pending_.emplace_back(++next_seq_, event);
       QueryPerformanceCounter(&t2);
-      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 2) buffer->flush();
-      _mm_mfence();
       kernel_ticks += t2.QuadPart - t1.QuadPart;
    } catch (...) { if (!refused) abort_context(); throw; }
+   return next_seq_;
 }
 void Buffer::flush(uint64_t offset, uint64_t bytes) const
 {
@@ -225,6 +262,9 @@ void Device::close() noexcept
 {
    abort_context();
    if (completed_) { CloseHandle(completed_); completed_ = nullptr; }
+   for (auto &entry : pending_) CloseHandle(entry.second);
+   for (HANDLE event : free_events_) CloseHandle(event);
+   pending_.clear(); free_events_.clear();
    if (paging_.hPagingQueue) {
       D3DDDI_DESTROYPAGINGQUEUE destroy{paging_.hPagingQueue};
       note_cleanup(D3DKMTDestroyPagingQueue(&destroy), "DestroyPagingQueue");

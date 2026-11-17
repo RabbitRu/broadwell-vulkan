@@ -81,6 +81,7 @@ static json test_submit_cost(VkDevice device, VkQueue queue, PFN_vkGetDeviceProc
    VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; ca.commandPool = pool; ca.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ca.commandBufferCount = 8;
    check(vkAllocateCommandBuffers(device, &ca, commands), "Submit-cost command buffers");
    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+   begin.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;   // resubmitted while possibly pending
    for (VkCommandBuffer c : commands) { check(vkBeginCommandBuffer(c, &begin), "Begin"); check(vkEndCommandBuffer(c), "End"); }
    VkFenceCreateInfo fc{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; VkFence fence{}; check(vkCreateFence(device, &fc, nullptr, &fence), "Fence");
    auto measure = [&](uint32_t per_submit, unsigned rounds) {
@@ -93,6 +94,17 @@ static json test_submit_cost(VkDevice device, VkQueue queue, PFN_vkGetDeviceProc
       return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / (rounds * per_submit);
    };
    json result;
+   /* Throughput: back-to-back submissions, one fence at the end. */
+   {
+      const unsigned rounds = 40;
+      const auto start = std::chrono::steady_clock::now();
+      for (unsigned i = 0; i < rounds; ++i) {
+         VkSubmitInfo s{VK_STRUCTURE_TYPE_SUBMIT_INFO}; s.commandBufferCount = 1; s.pCommandBuffers = &commands[i % 8];
+         check(vkQueueSubmit(queue, 1, &s, i + 1 == rounds ? fence : VK_NULL_HANDLE), "Pipelined submit");
+      }
+      check(vkWaitForFences(device, 1, &fence, VK_TRUE, 10000000000ull), "Pipelined wait"); check(vkResetFences(device, 1, &fence), "Reset");
+      result["usPerSubmitPipelined"] = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / rounds;
+   }
    result["usPerCommandBufferSmallMemory"] = measure(1, 40);
    result["usPerCommandBufferEightPerSubmit"] = measure(8, 10);
    /* 512 MiB of live allocations that the submission does not reference. */
