@@ -1,0 +1,14 @@
+{
+  "beforeHang": "working",
+  "hang": {
+    "counterAtLoss": 28981677,
+    "deviceWaitIdleAfterLoss": -4,
+    "fenceStatusAfterLoss": -4,
+    "fenceWait": -4,
+    "seconds": 4.4936492,
+    "submitAfterLoss": -4
+  },
+  "lostDeviceDestroyed": true,
+  "newDeviceAfterLoss": "working",
+  "passed": true
+}

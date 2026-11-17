@@ -1,0 +1,9 @@
+#version 450
+// Device-loss test: v[0] = 0xffffffff atomic additions, far beyond the 2 s
+// Windows TDR. Atomics keep the compiler from shortening the loop.
+layout(local_size_x = 1) in;
+layout(std430, binding = 0) buffer Data { uint v[]; };
+void main()
+{
+   for (uint i = 0u; i < v[0]; ++i) atomicAdd(v[1], 1u);
+}

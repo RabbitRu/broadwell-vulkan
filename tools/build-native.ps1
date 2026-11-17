@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'import-toolchain.ps1')
 $taskBuild = Join-Path $taskRoot 'build\native'
 New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
-$taskSources = @('native\src\hasvk_wddm.cpp','native\src\hasvk_wddm_c.cpp','native\src\intel_2019_profile.cpp','native\tests\probe.cpp','native\tests\icd_probe.cpp','native\tests\graphics_probe.cpp')
+$taskSources = @('native\src\hasvk_wddm.cpp','native\src\hasvk_wddm_c.cpp','native\src\intel_2019_profile.cpp','native\tests\probe.cpp','native\tests\icd_probe.cpp','native\tests\graphics_probe.cpp','native\tests\device_lost_probe.cpp')
 $taskIncludes = @('/I', $taskBuild, '/I', (Join-Path $taskRoot 'native\include'), '/I', (Join-Path $taskRoot 'third_party'), '/I', (Join-Path $taskRoot 'third_party\mesa-26.2.7\include'))
 Push-Location $taskBuild
 try {
@@ -27,6 +27,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'ICD probe link failed' }
     & link.exe /nologo /OUT:IrisGraphicsProbe.exe /DEBUG graphics_probe.obj
     if ($LASTEXITCODE -ne 0) { throw 'Graphics probe link failed' }
+    & link.exe /nologo /OUT:IrisDeviceLostProbe.exe /DEBUG device_lost_probe.obj
+    if ($LASTEXITCODE -ne 0) { throw 'Device lost probe link failed' }
     $taskManifest = [ordered]@{
         builtUtc = [DateTime]::UtcNow.ToString('o')
         toolchain = $taskToolchain

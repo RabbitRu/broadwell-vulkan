@@ -31,6 +31,7 @@ Copy-Item -LiteralPath (Join-Path $taskSource 'src\intel\wddm_compiler\vulkan_ha
 Copy-Item -LiteralPath (Join-Path $taskSource 'subprojects\zlib-1.3.1\z-1.dll') -Destination $taskPackage
 Copy-Item -LiteralPath (Join-Path $taskRoot 'build\native\IrisIcdProbe.exe') -Destination $taskPackage
 Copy-Item -LiteralPath (Join-Path $taskRoot 'build\native\IrisGraphicsProbe.exe') -Destination $taskPackage
+Copy-Item -LiteralPath (Join-Path $taskRoot 'build\native\IrisDeviceLostProbe.exe') -Destination $taskPackage
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run-icd.ps1') -Destination (Join-Path $taskPackage 'Run-Icd.ps1')
 $taskManifest=[ordered]@{file_format_version='1.0.0'; ICD=[ordered]@{library_path='.\vulkan_hasvk_wddm.dll'; api_version='1.2.0'}}
 [IO.File]::WriteAllText((Join-Path $taskPackage 'intel_hasvk_wddm_icd.json'), ($taskManifest | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
