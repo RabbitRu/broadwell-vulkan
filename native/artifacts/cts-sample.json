@@ -1,0 +1,345 @@
+﻿{
+    "schema":  1,
+    "testedUtc":  "2026-11-17T12:16:01.0377008Z",
+    "hardware":  "8086:162b",
+    "driverVersion":  "20.19.15.5171",
+    "cts":  "vulkan-cts-1.4.5.5",
+    "apiVersion":  "1.1",
+    "icdSha256":  "e436469069c60285b4e908e27d9cbc62eb4ffdf8adad11b0a47bd8bcf524a1e2",
+    "method":  "every Nth case of each group (tools/run-cts-sample.ps1); not a conformance run",
+    "groups":  {
+                   "value":  [
+                                 {
+                                     "group":  "api",
+                                     "matched":  321144,
+                                     "selected":  215,
+                                     "executed":  215,
+                                     "seconds":  25.7,
+                                     "counts":  {
+                                                    "NotSupported":  158,
+                                                    "Pass":  57
+                                                }
+                                 },
+                                 {
+                                     "group":  "pipeline.monolithic",
+                                     "matched":  293309,
+                                     "selected":  98,
+                                     "executed":  98,
+                                     "seconds":  11.3,
+                                     "counts":  {
+                                                    "NotSupported":  74,
+                                                    "Pass":  24
+                                                }
+                                 },
+                                 {
+                                     "group":  "renderpasses.renderpass1",
+                                     "matched":  19678,
+                                     "selected":  99,
+                                     "executed":  99,
+                                     "seconds":  47,
+                                     "counts":  {
+                                                    "NotSupported":  15,
+                                                    "Pass":  84
+                                                }
+                                 },
+                                 {
+                                     "group":  "draw.renderpass",
+                                     "matched":  12889,
+                                     "selected":  86,
+                                     "executed":  86,
+                                     "seconds":  9.4,
+                                     "counts":  {
+                                                    "NotSupported":  78,
+                                                    "Pass":  8
+                                                }
+                                 },
+                                 {
+                                     "group":  "compute.pipeline",
+                                     "matched":  20282,
+                                     "selected":  68,
+                                     "executed":  68,
+                                     "seconds":  1.3,
+                                     "counts":  {
+                                                    "NotSupported":  67,
+                                                    "Pass":  1
+                                                }
+                                 },
+                                 {
+                                     "group":  "image",
+                                     "matched":  142323,
+                                     "selected":  143,
+                                     "executed":  143,
+                                     "seconds":  8.7,
+                                     "counts":  {
+                                                    "NotSupported":  123,
+                                                    "Pass":  20
+                                                }
+                                 },
+                                 {
+                                     "group":  "binding_model",
+                                     "matched":  146470,
+                                     "selected":  147,
+                                     "executed":  147,
+                                     "seconds":  21.6,
+                                     "counts":  {
+                                                    "NotSupported":  114,
+                                                    "Pass":  33
+                                                }
+                                 },
+                                 {
+                                     "group":  "texture",
+                                     "matched":  16303,
+                                     "selected":  136,
+                                     "executed":  136,
+                                     "seconds":  58.1,
+                                     "counts":  {
+                                                    "NotSupported":  83,
+                                                    "Pass":  53
+                                                }
+                                 },
+                                 {
+                                     "group":  "glsl",
+                                     "matched":  23929,
+                                     "selected":  150,
+                                     "executed":  150,
+                                     "seconds":  127.5,
+                                     "counts":  {
+                                                    "NotSupported":  33,
+                                                    "Pass":  117
+                                                }
+                                 },
+                                 {
+                                     "group":  "ubo",
+                                     "matched":  9844,
+                                     "selected":  141,
+                                     "executed":  141,
+                                     "seconds":  19.8,
+                                     "counts":  {
+                                                    "NotSupported":  102,
+                                                    "Pass":  39
+                                                }
+                                 },
+                                 {
+                                     "group":  "ssbo",
+                                     "matched":  12224,
+                                     "selected":  136,
+                                     "executed":  136,
+                                     "seconds":  15.1,
+                                     "counts":  {
+                                                    "NotSupported":  90,
+                                                    "Pass":  46
+                                                }
+                                 },
+                                 {
+                                     "group":  "query_pool",
+                                     "matched":  18256,
+                                     "selected":  141,
+                                     "executed":  141,
+                                     "seconds":  80.8,
+                                     "counts":  {
+                                                    "NotSupported":  1,
+                                                    "Pass":  140
+                                                }
+                                 },
+                                 {
+                                     "group":  "memory",
+                                     "matched":  6267,
+                                     "selected":  126,
+                                     "executed":  126,
+                                     "seconds":  27.9,
+                                     "counts":  {
+                                                    "NotSupported":  29,
+                                                    "Pass":  97
+                                                }
+                                 },
+                                 {
+                                     "group":  "synchronization",
+                                     "matched":  64823,
+                                     "selected":  145,
+                                     "executed":  145,
+                                     "seconds":  13.6,
+                                     "counts":  {
+                                                    "NotSupported":  131,
+                                                    "Pass":  14
+                                                }
+                                 },
+                                 {
+                                     "group":  "rasterization",
+                                     "matched":  15079,
+                                     "selected":  138,
+                                     "executed":  138,
+                                     "seconds":  3.6,
+                                     "counts":  {
+                                                    "NotSupported":  133,
+                                                    "Pass":  5
+                                                }
+                                 },
+                                 {
+                                     "group":  "dynamic_state",
+                                     "matched":  671,
+                                     "selected":  112,
+                                     "executed":  112,
+                                     "seconds":  4.7,
+                                     "counts":  {
+                                                    "NotSupported":  101,
+                                                    "Pass":  11
+                                                }
+                                 },
+                                 {
+                                     "group":  "spirv_assembly",
+                                     "matched":  61618,
+                                     "selected":  147,
+                                     "executed":  147,
+                                     "seconds":  17.8,
+                                     "counts":  {
+                                                    "NotSupported":  113,
+                                                    "Pass":  34
+                                                }
+                                 },
+                                 {
+                                     "group":  "clipping",
+                                     "matched":  308,
+                                     "selected":  103,
+                                     "executed":  103,
+                                     "seconds":  27.3,
+                                     "counts":  {
+                                                    "NotSupported":  4,
+                                                    "Pass":  99
+                                                }
+                                 },
+                                 {
+                                     "group":  "fragment_operations",
+                                     "matched":  151,
+                                     "selected":  76,
+                                     "executed":  76,
+                                     "seconds":  20.4,
+                                     "counts":  {
+                                                    "NotSupported":  21,
+                                                    "Pass":  54,
+                                                    "QualityWarning":  1
+                                                }
+                                 },
+                                 {
+                                     "group":  "geometry",
+                                     "matched":  199,
+                                     "selected":  100,
+                                     "executed":  100,
+                                     "seconds":  19.2,
+                                     "counts":  {
+                                                    "NotSupported":  4,
+                                                    "Pass":  96
+                                                }
+                                 },
+                                 {
+                                     "group":  "tessellation",
+                                     "matched":  1103,
+                                     "selected":  138,
+                                     "executed":  138,
+                                     "seconds":  31.6,
+                                     "counts":  {
+                                                    "Fail":  1,
+                                                    "NotSupported":  76,
+                                                    "Pass":  60,
+                                                    "ResourceError":  1
+                                                }
+                                 },
+                                 {
+                                     "group":  "wsi.win32",
+                                     "matched":  3874,
+                                     "selected":  16,
+                                     "executed":  16,
+                                     "seconds":  1.3,
+                                     "counts":  {
+                                                    "NotSupported":  15,
+                                                    "Pass":  1
+                                                }
+                                 }
+                             ],
+                   "Count":  22
+               },
+    "totals":  {
+                   "NotSupported":  1565,
+                   "Pass":  1093,
+                   "QualityWarning":  1,
+                   "Fail":  1,
+                   "ResourceError":  1
+               },
+    "previousSweepVulkan10":  {
+                                  "Pass":  791,
+                                  "Fail":  0
+                              },
+    "topNotSupportedReasons":  [
+                                   {
+                                       "reason":  "VK_EXT_host_image_copy is not supported",
+                                       "cases":  146
+                                   },
+                                   {
+                                       "reason":  "VK_KHR_maintenanceN is not supported",
+                                       "cases":  106
+                                   },
+                                   {
+                                       "reason":  "VK_EXT_depth_bias_control is not supported",
+                                       "cases":  74
+                                   },
+                                   {
+                                       "reason":  "scalarBlockLayout not supported",
+                                       "cases":  74
+                                   },
+                                   {
+                                       "reason":  "VK_KHR_external_semaphore_capabilities is not supported",
+                                       "cases":  69
+                                   },
+                                   {
+                                       "reason":  "VK_EXT_multi_draw is not supported",
+                                       "cases":  60
+                                   },
+                                   {
+                                       "reason":  "VK_KHR_timeline_semaphore is not supported",
+                                       "cases":  58
+                                   },
+                                   {
+                                       "reason":  "VK_EXT_shader_object not supported",
+                                       "cases":  55
+                                   },
+                                   {
+                                       "reason":  "VK_KHR_dynamic_rendering is not supported",
+                                       "cases":  50
+                                   },
+                                   {
+                                       "reason":  "VkPhysicalDeviceCooperativeMatrixFeaturesKHR::cooperativeMatrix not supported",
+                                       "cases":  49
+                                   },
+                                   {
+                                       "reason":  "Source format not supported",
+                                       "cases":  43
+                                   },
+                                   {
+                                       "reason":  "stdN not supported",
+                                       "cases":  42
+                                   },
+                                   {
+                                       "reason":  "Shader requires SPIR-V higher than available",
+                                       "cases":  41
+                                   },
+                                   {
+                                       "reason":  "Physical storage buffer pointers not supported",
+                                       "cases":  39
+                                   },
+                                   {
+                                       "reason":  "Destination format not supported",
+                                       "cases":  24
+                                   }
+                               ],
+    "knownProblems":  [
+                          {
+                              "case":  "dEQP-VK.tessellation.misc_draw.tess_factor_barrier_bug",
+                              "status":  "Fail (GPU reset)",
+                              "note":  "524288 instances, 512 contended atomics per VS invocation; probably exceeds the 2 s Windows TDR. Not proven."
+                          },
+                          {
+                              "case":  "dEQP-VK.tessellation.common_edge.quads_fractional_odd_spacing",
+                              "status":  "ResourceError in the sweep only",
+                              "note":  "runs right after the GPU reset above; passes alone"
+                          }
+                      ]
+}
