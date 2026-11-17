@@ -1,5 +1,7 @@
-param([Parameter(Mandatory)][string]$Case, [string]$Name, [string]$Root = 'C:\VulkanCTS-local', [int]$CaseSeconds = 120, [int]$MaxCases = 0,
-    [int]$MaxCrashes = 50)
+param([string]$Case, [string]$CaseFile, [string]$Name, [string]$Root = 'C:\VulkanCTS-local', [int]$CaseSeconds = 120, [int]$MaxCases = 0,
+    [int]$MaxCrashes = 50, [int]$Every = 1)
+# -CaseFile <file>: run exactly the cases listed there (one name per line), e.g. to recheck earlier failures.
+# -Every N keeps every Nth matching case: a quick, evenly spread sample of a large group.
 # Runs Khronos deqp-vk cases matching -Case (dEQP wildcard, e.g. dEQP-VK.api.smoke.*)
 # against the local ICD and writes build\cts\<Name>\summary.json.
 # Unattended: no window (--deqp-visibility=hidden), crash dialogs suppressed, a
@@ -11,8 +13,14 @@ $taskPackage=Join-Path $taskRoot 'build\icd'
 $taskBuild=Get-Content -LiteralPath (Join-Path $Root 'build.json') -Raw | ConvertFrom-Json
 $taskExe=$taskBuild.executable
 $taskWork=Split-Path $taskExe -Parent
-if (-not $Name) { $Name=($Case -replace '[^A-Za-z0-9._-]', '_').Trim('_') }
-$taskOut=Join-Path $taskRoot ('build\cts\'+$Name)
+if (-not $Case -and -not $CaseFile) { throw 'Pass -Case or -CaseFile' }
+if ($CaseFile) { if (-not $Name) { $Name=[IO.Path]::GetFileNameWithoutExtension($CaseFile) }; $Case='file:'+$CaseFile }
+if (-not $Name) { $Name=($Case -replace '[^A-Za-z0-9._-]', '_').Trim('_', '.') }
+# deqp-vk takes file names as narrow strings, so logs live under the ASCII CTS
+# root; only the summary is copied into the project.
+$taskOut=Join-Path $Root ('results\'+$Name)
+$taskSummaryDirectory=Join-Path $taskRoot 'build\cts'
+New-Item -ItemType Directory -Path $taskSummaryDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $taskOut -Force | Out-Null
 Add-Type @'
 using System.Runtime.InteropServices;
@@ -22,7 +30,8 @@ public static class CtsErrorMode { [DllImport("kernel32.dll")] public static ext
 function Start-Deqp([string[]]$Arguments, [int]$Seconds, [string]$LogName) {
     $start=[Diagnostics.ProcessStartInfo]::new()
     $start.FileName=$taskExe; $start.WorkingDirectory=$taskWork; $start.UseShellExecute=$false; $start.CreateNoWindow=$true
-    $start.Arguments=($Arguments | ForEach-Object { '"'+$_+'"' }) -join ' '
+    # deqp's own command-line parser does not strip quotes; all paths here are space-free.
+    $start.Arguments=$Arguments -join ' '
     $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true
     $start.EnvironmentVariables['VK_DRIVER_FILES']=Join-Path $taskPackage 'intel_hasvk_wddm_icd.json'
     $start.EnvironmentVariables.Remove('VK_ICD_FILENAMES'); $start.EnvironmentVariables.Remove('VK_ADD_DRIVER_FILES')
@@ -39,16 +48,25 @@ function Start-Deqp([string[]]$Arguments, [int]$Seconds, [string]$LogName) {
 }
 # Full case list of this deqp-vk build for this ICD, cached per ICD binary.
 $taskIcdHash=(Get-FileHash -LiteralPath (Join-Path $taskPackage 'vulkan_hasvk_wddm.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
-$taskListCache=Join-Path $taskRoot ('build\cts\caselist-'+$taskIcdHash.Substring(0,16)+'.txt')
+$taskListCache=Join-Path $Root 'results\caselist.txt'   # depends on the CTS build, not on the ICD
 if (-not (Test-Path -LiteralPath $taskListCache)) {
     $generated=Join-Path $taskWork 'dEQP-VK-cases.txt'
     if (Test-Path -LiteralPath $generated) { Remove-Item -LiteralPath $generated -Confirm:$false }
     $list=Start-Deqp @('--deqp-runmode=txt-caselist', '--deqp-visibility=hidden', '--deqp-log-filename='+(Join-Path $taskOut 'caselist.qpa')) 1800 'caselist'
     if ($list.exitCode -or $list.timedOut -or -not (Test-Path -LiteralPath $generated)) { throw "deqp-vk could not enumerate its cases (exit $($list.exitCode)); see $taskOut\caselist.stderr.log" }
-    Get-Content -LiteralPath $generated | ForEach-Object { if ($_ -match '^TEST: (.+)$') { $Matches[1] } } | Set-Content -LiteralPath $taskListCache -Encoding ASCII
+    Move-Item -LiteralPath $generated -Destination $taskListCache -Force
 }
 $taskPattern='^'+[regex]::Escape($Case).Replace('\*','.*')+'$'
-$taskCases=@(Get-Content -LiteralPath $taskListCache | Where-Object { $_ -match $taskPattern })
+# The list is about a gigabyte ("TEST: <name>" per line): stream it and test the literal prefix first.
+$taskPrefix='TEST: '+($Case -split '\*')[0]; $taskRegex=[regex]::new($taskPattern)
+$taskSelected=[Collections.Generic.List[string]]::new()
+foreach ($line in [IO.File]::ReadLines($taskListCache)) {
+    if ($line.StartsWith($taskPrefix, [StringComparison]::Ordinal)) { $name=$line.Substring(6); if ($taskRegex.IsMatch($name)) { $taskSelected.Add($name) } }
+}
+$taskMatched=$taskSelected.Count
+if ($Every -gt 1) { $taskSampled=[Collections.Generic.List[string]]::new(); for ($i=0; $i -lt $taskSelected.Count; $i+=$Every) { $taskSampled.Add($taskSelected[$i]) }; $taskSelected=$taskSampled }
+$taskCases=$taskSelected.ToArray()
+if ($CaseFile) { $taskCases=@(Get-Content -LiteralPath $CaseFile | Where-Object { $_ -match '^dEQP-' }); $taskMatched=$taskCases.Count }
 if (-not $taskCases.Count) { throw "No CTS cases match $Case" }
 if ($MaxCases -gt 0 -and $taskCases.Count -gt $MaxCases) { $taskCases=$taskCases[0..($MaxCases-1)] }
 $taskResults=[ordered]@{}
@@ -80,7 +98,8 @@ $taskCounts=[ordered]@{}; foreach ($group in ($taskGroups | Sort-Object Name)) {
 $taskBad=@($taskResults.GetEnumerator() | Where-Object { $_.Value -notin @('Pass','NotSupported','QualityWarning','CompatibilityWarning') } |
     ForEach-Object { [ordered]@{case=$_.Key; status=$_.Value} })
 $taskSummary=[ordered]@{schema=1; testedUtc=[DateTime]::UtcNow.ToString('o'); cts=$taskBuild.tag; pattern=$Case; icdSha256=$taskIcdHash;
-    selected=$taskCases.Count; executed=$taskResults.Count; processRuns=$taskRun; seconds=[math]::Round($taskWatch.Elapsed.TotalSeconds,1);
+    matched=$taskMatched; every=$Every; selected=$taskCases.Count; executed=$taskResults.Count; processRuns=$taskRun; seconds=[math]::Round($taskWatch.Elapsed.TotalSeconds,1);
     counts=$taskCounts; notPassing=$taskBad}
 $taskSummary | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $taskOut 'summary.json') -Encoding UTF8
+Copy-Item -LiteralPath (Join-Path $taskOut 'summary.json') -Destination (Join-Path $taskSummaryDirectory ($Name+'.json')) -Force
 [ordered]@{pattern=$Case; selected=$taskCases.Count; executed=$taskResults.Count; counts=$taskCounts; seconds=$taskSummary.seconds; summary=(Join-Path $taskOut 'summary.json')} | ConvertTo-Json -Depth 4

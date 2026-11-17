@@ -38,6 +38,7 @@ static VkResult command_extend(struct anv_batch *batch, void *data)
    uint32_t *jump = batch->next;
    struct GENX(MI_BATCH_BUFFER_START) start = { GENX(MI_BATCH_BUFFER_START_header),
       .AddressSpaceIndicator = ASI_PPGTT, .BatchBufferStartAddress = (struct anv_address){bo, 0} };
+   batch->end = (char *)batch->end + chain_bytes;   /* the packer checks that the location is inside the batch */
    GENX(MI_BATCH_BUFFER_START_pack)(batch, jump, &start);
    jump[GENX(MI_BATCH_BUFFER_START_length)] = 0; /* MI_NOOP */
    s->chunks[s->chunk_count++] = (struct anv_wddm_cmd_chunk){bo, 0};
@@ -133,6 +134,17 @@ static void destroy_command(struct vk_command_buffer *base)
 const struct vk_command_buffer_ops anv_cmd_buffer_ops = {
    .create = create_command, .reset = anv_cmd_buffer_reset, .destroy = destroy_command,
 };
+/* HASVK_WDDM_DUMP_REGISTERS=1 prints these context registers after each submission. */
+static const uint32_t anv_wddm_dumped_registers[] = {0x7004 /* CACHE_MODE_1 */, 0x7000 /* CACHE_MODE_0 */, 0x7008 /* GT_MODE */,
+   0x7300 /* HDC_CHICKEN0 */, 0x7010 /* HIZ_CHICKEN */, 0x7014 /* COMMON_SLICE_CHICKEN2 */, 0xe184 /* HALF_SLICE_CHICKEN3 */,
+   0xe4f0 /* ROW_CHICKEN */, 0xe4f4 /* ROW_CHICKEN2 */, 0x20c0 /* INSTPM */, 0xe180 /* HALF_SLICE_CHICKEN2 */, 0x7018 /* SLICE_COMMON_ECO_CHICKEN1 */,
+   0x7034 /* GEN8_L3CNTLREG */, 0xb100 /* GEN8_L3SQCREG1 */, 0xb118 /* GEN8_L3SQCREG4 */, 0xb010 /* L3 LRA */, 0x2358 /* TIMESTAMP, control */};
+static bool anv_wddm_dump_registers(void)
+{
+   static int enabled = -1;
+   if (enabled < 0) enabled = getenv("HASVK_WDDM_DUMP_REGISTERS") != NULL;
+   return enabled;
+}
 /* End of recording. A primary buffer flushes its caches and writes the
  * completion marker that the submit path checks; a secondary just ends. */
 void anv_cmd_buffer_end_batch_buffer(struct anv_cmd_buffer *cmd)
@@ -145,6 +157,13 @@ void anv_cmd_buffer_end_batch_buffer(struct anv_cmd_buffer *cmd)
       anv_add_pending_pipe_bits(cmd, ANV_PIPE_DATA_CACHE_FLUSH_BIT | ANV_PIPE_CS_STALL_BIT | ANV_PIPE_END_OF_PIPE_SYNC_BIT,
          "command buffer completion");
       genX(cmd_buffer_apply_pipe_flushes)(cmd);
+      if (anv_wddm_dump_registers()) {   /* diagnostics: context register values into the guard region */
+         for (unsigned i = 0; i < ARRAY_SIZE(anv_wddm_dumped_registers); ++i)
+            anv_batch_emit(&cmd->batch, GENX(MI_STORE_REGISTER_MEM), store) {
+               store.RegisterAddress = anv_wddm_dumped_registers[i];
+               store.MemoryAddress = (struct anv_address){cmd->wddm->bo, command_bytes - guard_bytes + 4 * i};
+            }
+      }
       anv_batch_emit(&cmd->batch, GENX(PIPE_CONTROL), flush) {
          flush.DCFlushEnable = true; flush.CommandStreamerStallEnable = true;
          flush.PostSyncOperation = WriteImmediateData;
@@ -156,6 +175,21 @@ void anv_cmd_buffer_end_batch_buffer(struct anv_cmd_buffer *cmd)
    s->chunks[s->chunk_count - 1].length = (uint32_t)((char *)cmd->batch.next - (char *)cmd->batch.start);
 }
 #ifdef HASVK_WDDM_GRAPHICS
+/* Context workarounds that the i915 kernel driver applies to every Broadwell
+ * context and that nothing sets for a context created through WDDM without
+ * Intel's user-mode driver. Masked registers: only the named bits change.
+ *
+ * Wa4x4STCOptimizationDisable:bdw - CACHE_MODE_1 bit 6. Without it the sampler
+ * returns texels permuted inside 4x4 blocks of a Y-tile column for some small
+ * mip levels of 8/16-bit formats (seen with CTS api.image_clearing and the
+ * 200x180 mip-chain round trip). */
+static void anv_wddm_emit_context_workarounds(struct anv_cmd_buffer *cmd)
+{
+   anv_batch_emit(&cmd->batch, GENX(MI_LOAD_REGISTER_IMM), lri) {
+      lri.RegisterOffset = 0x7004; /* CACHE_MODE_1 */
+      lri.DataDWord = (1u << (16 + 6)) | (1u << 6);
+   }
+}
 /* vkCmdExecuteCommands: commands only reference pinned addresses, so the
  * secondary's chunks are copied into the primary without their chain jumps. */
 void anv_cmd_buffer_add_secondary(struct anv_cmd_buffer *primary, struct anv_cmd_buffer *secondary)
@@ -174,6 +208,7 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_BeginCommandBuffer(VkCommandBuffer handle, co
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
    VkResult result = genX(BeginCommandBuffer)(handle, info);
+   anv_wddm_emit_context_workarounds(cmd);
    vk_command_buffer_begin(&cmd->vk, info);
    return result != VK_SUCCESS ? result : cmd->batch.status;
 }
@@ -245,6 +280,12 @@ int anv_wddm_execute_command(struct anv_cmd_buffer *cmd)
    }
    for (uint32_t c = 0; c < cmd->wddm->chunk_count; ++c) {
       const uint8_t *tail = (const uint8_t *)cmd->wddm->chunks[c].bo->map + command_bytes - guard_bytes;
+      if (!c && anv_wddm_dump_registers()) {
+         static bool printed;
+         if (!printed) { printed = true; const uint32_t *values = (const uint32_t *)tail;
+            for (unsigned i = 0; i < ARRAY_SIZE(anv_wddm_dumped_registers); ++i) fprintf(stderr, "WDDM context register 0x%04x = 0x%08x\n", anv_wddm_dumped_registers[i], values[i]); }
+         continue;
+      }
       for (unsigned i = 0; i < guard_bytes; ++i) if ((c || i < 192 || i >= 200) && tail[i] != 0x6d) return -1;
    }
    ++w->command_batches_completed;

@@ -1,11 +1,11 @@
 ﻿{
     "schema":  1,
-    "testedUtc":  "2026-11-16T21:49:15.2743457Z",
+    "testedUtc":  "2026-11-17T11:03:14.0404334Z",
     "hardware":  "8086:162b",
     "driverVersion":  "20.19.15.5171",
-    "icdSha256":  "731cb6821e338eaafb37cbc3a5f1782bda9005732dc86561835a0d51cc4edac0",
-    "clientSha256":  "c3503c073799dd7c1cebc8c61eb3e651d17bf284fcef8e9766a9d4943cb76227",
-    "reportSha256":  "38fd3717f9a13914312e8c538b2d8b5a9a5787cac8b1a0cacabd7c9e3b4d95fd",
+    "icdSha256":  "81420bbed47b70f2a14ef73e4a836020b5a813fffb9c6bde8c126ac2f4969e2f",
+    "clientSha256":  "e5464016e16683799fd19f9ae64733af3e0f3df04935c946088a1233e0802149",
+    "reportSha256":  "7fb361786f2deacf28182220032c61bcd336c61697b966986306d12553c34a00",
     "triangleCases":  6,
     "textureUniformSamplerDepthCases":  12,
     "offscreenVulkanGraphicsValidated":  true,
@@ -21,7 +21,7 @@
     "transferImageCases":  2,
     "bufferAndImageTransferCommandsValidated":  true,
     "formatRoundTrips":  47,
-    "imageShapeRoundTrips":  4,
+    "imageShapeRoundTrips":  6,
     "unsupportedOptionalFormats":  [
 
                                    ],

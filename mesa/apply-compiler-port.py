@@ -32,7 +32,7 @@ names = {
     'src/intel/compiler/elk/elk_compiler.h',
     'src/intel/common/intel_measure.h', 'src/intel/blorp/blorp_clear.c',
     'src/intel/blorp/blorp_blit.c',
-    'src/intel/isl/isl_priv.h', 'src/intel/isl/isl_drm.c',
+    'src/intel/isl/isl_priv.h', 'src/intel/isl/isl_drm.c', 'src/intel/isl/isl_gfx8.c',
     'src/vulkan/wsi/wsi_common_win32.cpp', 'src/vulkan/wsi/meson.build',
     'src/vulkan/wsi/wsi_common.c',
     'src/intel/vulkan_hasvk/anv_private.h',
@@ -211,6 +211,14 @@ for function in ['anv_graphics_pipeline_init', 'anv_graphics_pipeline_create', '
     body = pipeline_original[match.start() + 1:end]
     pipeline_replacements.append((body, '#if !defined(_WIN32) || defined(HASVK_WDDM_GRAPHICS)\n' + body + '\n#endif'))
 edit(pipeline_name, pipeline_replacements)
+# Upstream HasVK images almost always get HALIGN_16 because they may own an
+# auxiliary surface. This port disables aux for every image, which selects
+# HALIGN_4; on Broadwell the sampler then returns permuted texels for mip levels
+# of 8/16-bit formats that do not start on a 16-byte column (CTS
+# api.image_clearing 200x180). Keep the alignment upstream effectively uses.
+edit('src/intel/isl/isl_gfx8.c', [
+    ('   uint32_t halign = 4;\n', '#ifdef _WIN32\n   uint32_t halign = 16;\n#else\n   uint32_t halign = 4;\n#endif\n'),
+])
 edit('src/intel/vulkan_hasvk/anv_pipeline_cache.c', [
     ('   uint64_t shader_data_addr = INSTRUCTION_STATE_POOL_MIN_ADDRESS +',
      '#ifdef _WIN32\n   uint64_t shader_data_addr = device->instruction_state_pool.block_pool.start_address -\n                               device->instruction_state_pool.start_offset +\n#else\n   uint64_t shader_data_addr = INSTRUCTION_STATE_POOL_MIN_ADDRESS +\n#endif'),

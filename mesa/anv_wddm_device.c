@@ -606,7 +606,10 @@ PUBLIC int hasvk_wddm_icd_has_entrypoint(VkDevice handle, const char *name)
    ANV_FROM_HANDLE(anv_device, device, handle);
    if (!device || !name) return -1;
    if (vk_device_get_proc_addr(&device->vk, name)) return 1;
-   return vk_instance_get_proc_addr_unchecked(&device->physical->instance->vk, name) != NULL;
+   /* Not the generic instance lookup: it hands out trampolines for device commands. */
+   struct anv_physical_device *physical = device->physical;
+   return vk_instance_dispatch_table_get(&physical->instance->vk.dispatch_table, name) != NULL ||
+          vk_physical_device_dispatch_table_get(&physical->vk.dispatch_table, name) != NULL;
 }
 PUBLIC int hasvk_wddm_icd_query_memory(VkDevice handle, uint64_t *bytes, uint32_t *count)
 {

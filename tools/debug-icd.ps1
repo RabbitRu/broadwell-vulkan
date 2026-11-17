@@ -1,4 +1,5 @@
-param([Parameter(Mandatory)][string]$Executable, [string[]]$Arguments = @(), [switch]$Validate, [string]$LayerPath = 'C:\VulkanSDK-local\Bin', [int]$Frames = 12)
+param([Parameter(Mandatory)][string]$Executable, [string[]]$Arguments = @(), [switch]$Validate, [string]$LayerPath = 'C:\VulkanSDK-local\Bin', [int]$Frames = 12, [string]$WorkingDirectory)
+# -WorkingDirectory: where the client must run (deqp-vk needs its own data directory).
 # Runs a client through the local ICD under lldb (batch mode) and prints the
 # symbolized stack of the first crash. Addresses inside the ICD and the client
 # are resolved with llvm-symbolizer because lldb does not load their PDBs.
@@ -14,7 +15,7 @@ try {
     Set-TaskEnv 'PYTHONHOME' (Join-Path $taskRoot '.tools\python310-debug')
     Set-TaskEnv 'PATH' ($taskPackage+';'+(Join-Path $taskRoot '.tools\python310-debug')+';'+$env:PATH)
     if ($Validate) { Set-TaskEnv 'VK_LAYER_PATH' $LayerPath; Set-TaskEnv 'VK_INSTANCE_LAYERS' 'VK_LAYER_KHRONOS_validation' }
-    Push-Location $taskPackage
+    Push-Location $(if ($WorkingDirectory) { $WorkingDirectory } else { $taskPackage })
     try {
         $ErrorActionPreference='Continue'   # Windows PowerShell turns native stderr into errors
         $taskOutput=& (Join-Path $taskRoot '.tools\llvm\bin\lldb.exe') --batch -o run -k "bt $Frames" -k 'image list -o -f' -k quit -- $Executable @Arguments 2>$null

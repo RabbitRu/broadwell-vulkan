@@ -46,6 +46,10 @@ def generate_graphics_sources(originals):
     common += function(device, 'static void\nanv_device_init_border_colors(').replace(
         'static void\nanv_device_init_border_colors(', 'void\nanv_wddm_init_border_colors(')
     common += function(device, 'void anv_DestroySampler(')
+    # Events: a word in the dynamic state pool, read and written by CPU and GPU.
+    for signature in ['VkResult anv_CreateEvent(', 'void anv_DestroyEvent(', 'VkResult anv_GetEventStatus(',
+                      'VkResult anv_SetEvent(', 'VkResult anv_ResetEvent(']:
+        common += function(device, signature)
 
     hardware = read('genX_cmd_buffer.c').replace('#include "anv_private.h"', '#include "anv_wddm.h"')
     # Begin/End/ExecuteCommands stay upstream; the Windows command-buffer file

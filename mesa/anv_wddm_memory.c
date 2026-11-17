@@ -234,6 +234,7 @@ anv_CreateBuffer(VkDevice handle, const VkBufferCreateInfo *info,
    if (info->flags || !info->size || info->size > ANV_WDDM_MAX_BO_BYTES) return VK_ERROR_FEATURE_NOT_PRESENT;
    const VkBufferUsageFlags allowed = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+      VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
       VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
    if (info->usage & ~allowed) return VK_ERROR_FEATURE_NOT_PRESENT;
    struct anv_buffer *buffer = vk_buffer_create(&device->vk, info, allocator, sizeof(*buffer));
@@ -327,5 +328,32 @@ PUBLIC int hasvk_wddm_icd_read_image(VkImage handle, void *rgba, uint64_t bytes,
       isl_memcpy_tiled_to_linear(0, width * pixel_bytes, 0, height, rgba, source, width * pixel_bytes, surf->row_pitch_B, false, surf->tiling, ISL_MEMCPY);
    }
    *tiling = surf->tiling;
+   return 0;
+}
+/* Diagnostics: CPU read of one mip level/layer of an uncompressed single-plane
+ * image, located by ISL's layout. Reports where ISL places the level. */
+PUBLIC int hasvk_wddm_icd_read_image_level(VkImage handle, uint32_t level, uint32_t layer, void *out, uint64_t bytes, uint32_t *position)
+{
+   ANV_FROM_HANDLE(anv_image, image, handle);
+   if (!image || !out || !position || image->planes[0].aux_usage != ISL_AUX_USAGE_NONE) return -1;
+   const struct anv_surface *surface = &image->planes[0].primary_surface;
+   const struct isl_surf *surf = &surface->isl;
+   const struct isl_format_layout *layout = isl_format_get_layout(surf->format);
+   if (layout->bw != 1 || layout->bh != 1 || level >= surf->levels || layer >= surf->logical_level0_px.array_len) return -1;
+   const uint32_t texel = layout->bpb / 8, width = u_minify(surf->logical_level0_px.width, level), height = u_minify(surf->logical_level0_px.height, level);
+   const struct anv_address address = anv_image_address(image, &surface->memory_range);
+   if (!address.bo || bytes != (uint64_t)width * height * texel) return -1;
+   uint32_t x, y, z, array;
+   isl_surf_get_image_offset_el(surf, level, layer, 0, &x, &y, &z, &array);
+   if (z || array) return -1;
+   position[0] = x; position[1] = y; position[2] = surf->row_pitch_B; position[3] = surf->tiling;
+   position[4] = surf->image_alignment_el.width; position[5] = surf->image_alignment_el.height; position[6] = (uint32_t)surf->size_B;
+   const char *source = (const char *)address.bo->map + address.offset;
+   if (surf->tiling == ISL_TILING_LINEAR) {
+      for (uint32_t row = 0; row < height; ++row)
+         memcpy((char *)out + row * width * texel, source + (size_t)(y + row) * surf->row_pitch_B + x * texel, width * texel);
+   } else {
+      isl_memcpy_tiled_to_linear(x * texel, (x + width) * texel, y, y + height, out, source, width * texel, surf->row_pitch_B, false, surf->tiling, ISL_MEMCPY);
+   }
    return 0;
 }

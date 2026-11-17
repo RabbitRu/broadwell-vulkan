@@ -582,6 +582,20 @@
  VkResult anv_GetPipelineExecutablePropertiesKHR(
      VkDevice                                    device,
      const VkPipelineInfoKHR*                    pPipelineInfo,
+--- a/src/intel/isl/isl_gfx8.c
++++ b/src/intel/isl/isl_gfx8.c
+@@ -157,7 +157,11 @@
+     * many formats. Depending on the format's block size, we may need to
+     * increase halign to 8.
+     */
++#ifdef _WIN32
++   uint32_t halign = 16;
++#else
+    uint32_t halign = 4;
++#endif
+ 
+    if (!(info->usage & ISL_SURF_USAGE_DISABLE_AUX_BIT)) {
+       /* From the Broadwell PRM, Volume 2d "Command Reference: Structures",
 --- a/src/intel/vulkan_hasvk/anv_pipeline_cache.c
 +++ b/src/intel/vulkan_hasvk/anv_pipeline_cache.c
 @@ -109,7 +109,12 @@
@@ -1202,7 +1216,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,636 @@
+@@ -0,0 +1,639 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -1811,7 +1825,10 @@
 +   ANV_FROM_HANDLE(anv_device, device, handle);
 +   if (!device || !name) return -1;
 +   if (vk_device_get_proc_addr(&device->vk, name)) return 1;
-+   return vk_instance_get_proc_addr_unchecked(&device->physical->instance->vk, name) != NULL;
++   /* Not the generic instance lookup: it hands out trampolines for device commands. */
++   struct anv_physical_device *physical = device->physical;
++   return vk_instance_dispatch_table_get(&physical->instance->vk.dispatch_table, name) != NULL ||
++          vk_physical_device_dispatch_table_get(&physical->vk.dispatch_table, name) != NULL;
 +}
 +PUBLIC int hasvk_wddm_icd_query_memory(VkDevice handle, uint64_t *bytes, uint32_t *count)
 +{
@@ -1901,7 +1918,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_memory.c
-@@ -0,0 +1,331 @@
+@@ -0,0 +1,359 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -2138,6 +2155,7 @@
 +   if (info->flags || !info->size || info->size > ANV_WDDM_MAX_BO_BYTES) return VK_ERROR_FEATURE_NOT_PRESENT;
 +   const VkBufferUsageFlags allowed = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
 +      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
++      VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
 +      VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 +   if (info->usage & ~allowed) return VK_ERROR_FEATURE_NOT_PRESENT;
 +   struct anv_buffer *buffer = vk_buffer_create(&device->vk, info, allocator, sizeof(*buffer));
@@ -2231,6 +2249,33 @@
 +      isl_memcpy_tiled_to_linear(0, width * pixel_bytes, 0, height, rgba, source, width * pixel_bytes, surf->row_pitch_B, false, surf->tiling, ISL_MEMCPY);
 +   }
 +   *tiling = surf->tiling;
++   return 0;
++}
++/* Diagnostics: CPU read of one mip level/layer of an uncompressed single-plane
++ * image, located by ISL's layout. Reports where ISL places the level. */
++PUBLIC int hasvk_wddm_icd_read_image_level(VkImage handle, uint32_t level, uint32_t layer, void *out, uint64_t bytes, uint32_t *position)
++{
++   ANV_FROM_HANDLE(anv_image, image, handle);
++   if (!image || !out || !position || image->planes[0].aux_usage != ISL_AUX_USAGE_NONE) return -1;
++   const struct anv_surface *surface = &image->planes[0].primary_surface;
++   const struct isl_surf *surf = &surface->isl;
++   const struct isl_format_layout *layout = isl_format_get_layout(surf->format);
++   if (layout->bw != 1 || layout->bh != 1 || level >= surf->levels || layer >= surf->logical_level0_px.array_len) return -1;
++   const uint32_t texel = layout->bpb / 8, width = u_minify(surf->logical_level0_px.width, level), height = u_minify(surf->logical_level0_px.height, level);
++   const struct anv_address address = anv_image_address(image, &surface->memory_range);
++   if (!address.bo || bytes != (uint64_t)width * height * texel) return -1;
++   uint32_t x, y, z, array;
++   isl_surf_get_image_offset_el(surf, level, layer, 0, &x, &y, &z, &array);
++   if (z || array) return -1;
++   position[0] = x; position[1] = y; position[2] = surf->row_pitch_B; position[3] = surf->tiling;
++   position[4] = surf->image_alignment_el.width; position[5] = surf->image_alignment_el.height; position[6] = (uint32_t)surf->size_B;
++   const char *source = (const char *)address.bo->map + address.offset;
++   if (surf->tiling == ISL_TILING_LINEAR) {
++      for (uint32_t row = 0; row < height; ++row)
++         memcpy((char *)out + row * width * texel, source + (size_t)(y + row) * surf->row_pitch_B + x * texel, width * texel);
++   } else {
++      isl_memcpy_tiled_to_linear(x * texel, (x + width) * texel, y, y + height, out, source, width * texel, surf->row_pitch_B, false, surf->tiling, ISL_MEMCPY);
++   }
 +   return 0;
 +}
 --- /dev/null
@@ -2512,7 +2557,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_command.c
-@@ -0,0 +1,269 @@
+@@ -0,0 +1,310 @@
 +/* Windows lifetime and submission backing for HasVK command buffers.
 + * Packet emission, descriptor binding and push packing use upstream HasVK.
 + *
@@ -2553,6 +2598,7 @@
 +   uint32_t *jump = batch->next;
 +   struct GENX(MI_BATCH_BUFFER_START) start = { GENX(MI_BATCH_BUFFER_START_header),
 +      .AddressSpaceIndicator = ASI_PPGTT, .BatchBufferStartAddress = (struct anv_address){bo, 0} };
++   batch->end = (char *)batch->end + chain_bytes;   /* the packer checks that the location is inside the batch */
 +   GENX(MI_BATCH_BUFFER_START_pack)(batch, jump, &start);
 +   jump[GENX(MI_BATCH_BUFFER_START_length)] = 0; /* MI_NOOP */
 +   s->chunks[s->chunk_count++] = (struct anv_wddm_cmd_chunk){bo, 0};
@@ -2648,6 +2694,17 @@
 +const struct vk_command_buffer_ops anv_cmd_buffer_ops = {
 +   .create = create_command, .reset = anv_cmd_buffer_reset, .destroy = destroy_command,
 +};
++/* HASVK_WDDM_DUMP_REGISTERS=1 prints these context registers after each submission. */
++static const uint32_t anv_wddm_dumped_registers[] = {0x7004 /* CACHE_MODE_1 */, 0x7000 /* CACHE_MODE_0 */, 0x7008 /* GT_MODE */,
++   0x7300 /* HDC_CHICKEN0 */, 0x7010 /* HIZ_CHICKEN */, 0x7014 /* COMMON_SLICE_CHICKEN2 */, 0xe184 /* HALF_SLICE_CHICKEN3 */,
++   0xe4f0 /* ROW_CHICKEN */, 0xe4f4 /* ROW_CHICKEN2 */, 0x20c0 /* INSTPM */, 0xe180 /* HALF_SLICE_CHICKEN2 */, 0x7018 /* SLICE_COMMON_ECO_CHICKEN1 */,
++   0x7034 /* GEN8_L3CNTLREG */, 0xb100 /* GEN8_L3SQCREG1 */, 0xb118 /* GEN8_L3SQCREG4 */, 0xb010 /* L3 LRA */, 0x2358 /* TIMESTAMP, control */};
++static bool anv_wddm_dump_registers(void)
++{
++   static int enabled = -1;
++   if (enabled < 0) enabled = getenv("HASVK_WDDM_DUMP_REGISTERS") != NULL;
++   return enabled;
++}
 +/* End of recording. A primary buffer flushes its caches and writes the
 + * completion marker that the submit path checks; a secondary just ends. */
 +void anv_cmd_buffer_end_batch_buffer(struct anv_cmd_buffer *cmd)
@@ -2660,6 +2717,13 @@
 +      anv_add_pending_pipe_bits(cmd, ANV_PIPE_DATA_CACHE_FLUSH_BIT | ANV_PIPE_CS_STALL_BIT | ANV_PIPE_END_OF_PIPE_SYNC_BIT,
 +         "command buffer completion");
 +      genX(cmd_buffer_apply_pipe_flushes)(cmd);
++      if (anv_wddm_dump_registers()) {   /* diagnostics: context register values into the guard region */
++         for (unsigned i = 0; i < ARRAY_SIZE(anv_wddm_dumped_registers); ++i)
++            anv_batch_emit(&cmd->batch, GENX(MI_STORE_REGISTER_MEM), store) {
++               store.RegisterAddress = anv_wddm_dumped_registers[i];
++               store.MemoryAddress = (struct anv_address){cmd->wddm->bo, command_bytes - guard_bytes + 4 * i};
++            }
++      }
 +      anv_batch_emit(&cmd->batch, GENX(PIPE_CONTROL), flush) {
 +         flush.DCFlushEnable = true; flush.CommandStreamerStallEnable = true;
 +         flush.PostSyncOperation = WriteImmediateData;
@@ -2671,6 +2735,21 @@
 +   s->chunks[s->chunk_count - 1].length = (uint32_t)((char *)cmd->batch.next - (char *)cmd->batch.start);
 +}
 +#ifdef HASVK_WDDM_GRAPHICS
++/* Context workarounds that the i915 kernel driver applies to every Broadwell
++ * context and that nothing sets for a context created through WDDM without
++ * Intel's user-mode driver. Masked registers: only the named bits change.
++ *
++ * Wa4x4STCOptimizationDisable:bdw - CACHE_MODE_1 bit 6. Without it the sampler
++ * returns texels permuted inside 4x4 blocks of a Y-tile column for some small
++ * mip levels of 8/16-bit formats (seen with CTS api.image_clearing and the
++ * 200x180 mip-chain round trip). */
++static void anv_wddm_emit_context_workarounds(struct anv_cmd_buffer *cmd)
++{
++   anv_batch_emit(&cmd->batch, GENX(MI_LOAD_REGISTER_IMM), lri) {
++      lri.RegisterOffset = 0x7004; /* CACHE_MODE_1 */
++      lri.DataDWord = (1u << (16 + 6)) | (1u << 6);
++   }
++}
 +/* vkCmdExecuteCommands: commands only reference pinned addresses, so the
 + * secondary's chunks are copied into the primary without their chain jumps. */
 +void anv_cmd_buffer_add_secondary(struct anv_cmd_buffer *primary, struct anv_cmd_buffer *secondary)
@@ -2689,6 +2768,7 @@
 +{
 +   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
 +   VkResult result = genX(BeginCommandBuffer)(handle, info);
++   anv_wddm_emit_context_workarounds(cmd);
 +   vk_command_buffer_begin(&cmd->vk, info);
 +   return result != VK_SUCCESS ? result : cmd->batch.status;
 +}
@@ -2760,6 +2840,12 @@
 +   }
 +   for (uint32_t c = 0; c < cmd->wddm->chunk_count; ++c) {
 +      const uint8_t *tail = (const uint8_t *)cmd->wddm->chunks[c].bo->map + command_bytes - guard_bytes;
++      if (!c && anv_wddm_dump_registers()) {
++         static bool printed;
++         if (!printed) { printed = true; const uint32_t *values = (const uint32_t *)tail;
++            for (unsigned i = 0; i < ARRAY_SIZE(anv_wddm_dumped_registers); ++i) fprintf(stderr, "WDDM context register 0x%04x = 0x%08x\n", anv_wddm_dumped_registers[i], values[i]); }
++         continue;
++      }
 +      for (unsigned i = 0; i < guard_bytes; ++i) if ((c || i < 192 || i >= 200) && tail[i] != 0x6d) return -1;
 +   }
 +   ++w->command_batches_completed;
@@ -2784,7 +2870,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm_compiler/vulkan_hasvk_wddm.def
-@@ -0,0 +1,15 @@
+@@ -0,0 +1,16 @@
 +LIBRARY vulkan_hasvk_wddm
 +EXPORTS
 +    vk_icdGetInstanceProcAddr
@@ -2800,6 +2886,7 @@
 +    hasvk_wddm_icd_read_image
 +    hasvk_wddm_icd_has_entrypoint
 +    hasvk_wddm_icd_query_command_chunks
++    hasvk_wddm_icd_read_image_level
 --- /dev/null
 +++ b/src/intel/wddm_compiler/elk_compile_probe.c
 @@ -0,0 +1,137 @@
@@ -9060,7 +9147,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_common.c
-@@ -0,0 +1,866 @@
+@@ -0,0 +1,942 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -9925,6 +10012,82 @@
 +   }
 +
 +   vk_object_free(&device->vk, pAllocator, sampler);
++}
++
++VkResult anv_CreateEvent(
++    VkDevice                                    _device,
++    const VkEventCreateInfo*                    pCreateInfo,
++    const VkAllocationCallbacks*                pAllocator,
++    VkEvent*                                    pEvent)
++{
++   ANV_FROM_HANDLE(anv_device, device, _device);
++   struct anv_event *event;
++
++   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_EVENT_CREATE_INFO);
++
++   event = vk_object_alloc(&device->vk, pAllocator, sizeof(*event),
++                           VK_OBJECT_TYPE_EVENT);
++   if (event == NULL)
++      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++   event->state = anv_state_pool_alloc(&device->dynamic_state_pool,
++                                       sizeof(uint64_t), 8);
++   *(uint64_t *)event->state.map = VK_EVENT_RESET;
++
++   *pEvent = anv_event_to_handle(event);
++
++   return VK_SUCCESS;
++}
++
++void anv_DestroyEvent(
++    VkDevice                                    _device,
++    VkEvent                                     _event,
++    const VkAllocationCallbacks*                pAllocator)
++{
++   ANV_FROM_HANDLE(anv_device, device, _device);
++   ANV_FROM_HANDLE(anv_event, event, _event);
++
++   if (!event)
++      return;
++
++   anv_state_pool_free(&device->dynamic_state_pool, event->state);
++
++   vk_object_free(&device->vk, pAllocator, event);
++}
++
++VkResult anv_GetEventStatus(
++    VkDevice                                    _device,
++    VkEvent                                     _event)
++{
++   ANV_FROM_HANDLE(anv_device, device, _device);
++   ANV_FROM_HANDLE(anv_event, event, _event);
++
++   if (vk_device_is_lost(&device->vk))
++      return VK_ERROR_DEVICE_LOST;
++
++   return *(uint64_t *)event->state.map;
++}
++
++VkResult anv_SetEvent(
++    VkDevice                                    _device,
++    VkEvent                                     _event)
++{
++   ANV_FROM_HANDLE(anv_event, event, _event);
++
++   *(uint64_t *)event->state.map = VK_EVENT_SET;
++
++   return VK_SUCCESS;
++}
++
++VkResult anv_ResetEvent(
++    VkDevice                                    _device,
++    VkEvent                                     _event)
++{
++   ANV_FROM_HANDLE(anv_event, event, _event);
++
++   *(uint64_t *)event->state.map = VK_EVENT_RESET;
++
++   return VK_SUCCESS;
 +}
 +
 --- /dev/null

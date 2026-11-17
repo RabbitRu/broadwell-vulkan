@@ -13,7 +13,7 @@ static json test_formats(VkPhysicalDevice physical, PFN_vkGetPhysicalDeviceForma
    API(vkBeginCommandBuffer); API(vkEndCommandBuffer); API(vkCmdPipelineBarrier);
    API(vkCreateFence); API(vkDestroyFence); API(vkQueueSubmit); API(vkWaitForFences);
    API(vkCreateBuffer); API(vkDestroyBuffer); API(vkGetBufferMemoryRequirements); API(vkBindBufferMemory);
-   API(vkCmdCopyBufferToImage); API(vkCmdCopyImageToBuffer);
+   API(vkCmdCopyBufferToImage); API(vkCmdCopyImageToBuffer); API(vkCmdClearColorImage);
 #undef API
    enum Kind { Colour, Depth, Stencil };
    struct Format { VkFormat format; const char *name; uint32_t bytes; Kind kind; bool mandatory; bool filter; bool render; };
@@ -133,6 +133,33 @@ static json test_formats(VkPhysicalDevice physical, PFN_vkGetPhysicalDeviceForma
          for (uint64_t i = 0; i < expected.size(); ++i) if (readback.map[i] != expected[i]) {
             std::cerr << f.name << ' ' << shape.name << ": first difference at byte " << static_cast<int64_t>(i) - 4096 << " of " << offset
                << " expected=" << int(expected[i]) << " actual=" << int(readback.map[i]) << '\n'; break; }
+         std::ofstream(fs::path("diagnostics") / "format-expected.bin", std::ios::binary).write(reinterpret_cast<const char *>(expected.data() + 4096), offset);
+         std::ofstream(fs::path("diagnostics") / "format-readback.bin", std::ios::binary).write(reinterpret_cast<const char *>(readback.map + 4096), offset);
+         /* Where is the data wrong: in image memory (upload) or only in the read-back (download)? */
+         using ReadLevel = int (*)(VkImage, uint32_t, uint32_t, void *, uint64_t, uint32_t *);
+         auto read_level = reinterpret_cast<ReadLevel>(GetProcAddress(GetModuleHandleW(L"vulkan_hasvk_wddm.dll"), "hasvk_wddm_icd_read_image_level"));
+         if (read_level && aspect == VK_IMAGE_ASPECT_COLOR_BIT) for (const VkBufferImageCopy &r : regions) {
+            const uint64_t region_bytes = uint64_t(r.imageExtent.width) * r.imageExtent.height * f.bytes; if (r.imageExtent.depth != 1) continue;
+            std::vector<uint8_t> memory_copy(region_bytes); uint32_t position[7]{};
+            if (read_level(image, r.imageSubresource.mipLevel, r.imageSubresource.baseArrayLayer, memory_copy.data(), region_bytes, position)) continue;
+            uint64_t memory_wrong = 0, readback_wrong = 0;
+            for (uint64_t i = 0; i < region_bytes; ++i) { memory_wrong += memory_copy[i] != expected[4096 + r.bufferOffset + i]; readback_wrong += readback.map[4096 + r.bufferOffset + i] != expected[4096 + r.bufferOffset + i]; }
+            std::cerr << "  level " << r.imageSubresource.mipLevel << " layer " << r.imageSubresource.baseArrayLayer << " " << r.imageExtent.width << "x" << r.imageExtent.height
+               << " at el (" << position[0] << "," << position[1] << ") pitch " << position[2] << " tiling " << position[3] << " align " << position[4] << "x" << position[5]
+               << " size " << position[6] << ": wrong bytes in image memory " << memory_wrong << ", in read-back " << readback_wrong << "\n";
+         }
+         /* Differing byte ranges, mapped to (level, x, y) of the first region they fall into. */
+         unsigned printed = 0;
+         for (uint64_t i = 4096; i < 4096 + offset && printed < 12; ++i) if (readback.map[i] != expected[i]) {
+            uint64_t end = i; while (end + 1 < 4096 + offset && readback.map[end + 1] != expected[end + 1]) ++end;
+            for (const VkBufferImageCopy &r : regions) {
+               const uint64_t region_begin = 4096 + r.bufferOffset, region_bytes = uint64_t(r.imageExtent.width) * r.imageExtent.height * r.imageExtent.depth * f.bytes;
+               if (i >= region_begin && i < region_begin + region_bytes) { const uint64_t texel = (i - region_begin) / f.bytes;
+                  std::cerr << "  bytes " << i - 4096 << ".." << end - 4096 << ": level " << r.imageSubresource.mipLevel << " layer " << r.imageSubresource.baseArrayLayer
+                     << " x=" << texel % r.imageExtent.width << " y=" << texel / r.imageExtent.width << " of " << r.imageExtent.width << "x" << r.imageExtent.height << "\n"; break; }
+            }
+            i = end; ++printed;
+         }
          throw std::runtime_error(std::string(f.name) + " " + shape.name + ": upload/read-back round trip differs");
       }
       require(!memcmp(staging.map, expected.data(), expected.size()), "Format staging buffer or guards changed");
@@ -140,6 +167,18 @@ static json test_formats(VkPhysicalDevice physical, PFN_vkGetPhysicalDeviceForma
       return offset;
    };
    const Shape mipped{"2D 37x19, 3 levels, 2 layers", VK_IMAGE_TYPE_2D, 0, {37, 19, 1}, 3, 2};
+   if (GetEnvironmentVariableA("HASVK_TEST_MIP_GEOMETRY", nullptr, 0)) {   /* experiment: which mip-chain geometries read back wrong */
+      const Format *r8 = &formats[2], *r16 = &formats[21], *rgba8 = &formats[10];
+      struct Probe { const Format *format; Shape shape; };
+      for (const Probe &probe : {Probe{r8, {"R8 200x180 x8", VK_IMAGE_TYPE_2D, 0, {200, 180, 1}, 8, 1}}, Probe{r8, {"R8 200x180 x4", VK_IMAGE_TYPE_2D, 0, {200, 180, 1}, 4, 1}},
+                                 Probe{r8, {"R8 100x90 x7", VK_IMAGE_TYPE_2D, 0, {100, 90, 1}, 7, 1}}, Probe{r8, {"R8 400x360 x9", VK_IMAGE_TYPE_2D, 0, {400, 360, 1}, 9, 1}},
+                                 Probe{r8, {"R8 256x256 x9", VK_IMAGE_TYPE_2D, 0, {256, 256, 1}, 9, 1}}, Probe{r8, {"R8 208x180 x8", VK_IMAGE_TYPE_2D, 0, {208, 180, 1}, 8, 1}},
+                                 Probe{r16, {"R16 200x180 x8", VK_IMAGE_TYPE_2D, 0, {200, 180, 1}, 8, 1}}, Probe{rgba8, {"RGBA8 200x180 x8", VK_IMAGE_TYPE_2D, 0, {200, 180, 1}, 8, 1}},
+                                 Probe{rgba8, {"RGBA8 50x45 x6", VK_IMAGE_TYPE_2D, 0, {50, 45, 1}, 6, 1}}, Probe{r8, {"R8 200x180 x8 again", VK_IMAGE_TYPE_2D, 0, {200, 180, 1}, 8, 1}}}) {
+         std::cerr << "Geometry " << probe.shape.name << ": ";
+         try { round_trip(*probe.format, probe.shape); std::cerr << "ok\n"; } catch (const std::exception &error) { std::cerr << "FAILED " << error.what() << "\n"; }
+      }
+   }
    json cases = json::array(); json unsupported = json::array();
    for (const Format &f : formats) {
       VkFormatProperties properties{}; format_properties(physical, f.format, &properties);
@@ -167,6 +206,72 @@ static json test_formats(VkPhysicalDevice physical, PFN_vkGetPhysicalDeviceForma
                               Shape{"2D 200x150, full mip chain", VK_IMAGE_TYPE_2D, 0, {200, 150, 1}, 8, 1}}) {
       std::cerr << "Shape " << shape.name << '\n';
       shapes.push_back({{"shape", shape.name}, {"roundTripBytes", round_trip(rgba, shape)}});
+   }
+   /* Narrow texels at a size where the tiled surface spans several tiles (CTS image_clearing uses 200x180). */
+   const Shape wide{"2D 200x180, full mip chain", VK_IMAGE_TYPE_2D, 0, {200, 180, 1}, 8, 1};
+   for (const Format &f : formats) if (f.format == VK_FORMAT_R8_UNORM) {
+      std::cerr << "Shape " << wide.name << " " << f.name << '\n';
+      shapes.push_back({{"shape", wide.name}, {"format", f.name}, {"roundTripBytes", round_trip(f, wide)}});
+   }
+   /* vkCmdClearColorImage over a full mip chain, read back level by level
+    * (as CTS api.image_clearing does). */
+   auto clear_check = [&](VkFormat format, const char *name, uint32_t texel_bytes, const uint8_t *texel, VkClearColorValue value, VkExtent3D extent, uint32_t levels) {
+      VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; ii.imageType = VK_IMAGE_TYPE_2D; ii.format = format; ii.extent = extent;
+      ii.mipLevels = levels; ii.arrayLayers = 1; ii.samples = VK_SAMPLE_COUNT_1_BIT; ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+      ii.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+      VkImage image{}; check(vkCreateImage(device, &ii, nullptr, &image), name);
+      VkMemoryRequirements mr{}; vkGetImageMemoryRequirements(device, image, &mr);
+      VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; ai.allocationSize = mr.size;
+      VkDeviceMemory memory{}; check(vkAllocateMemory(device, &ai, nullptr, &memory), name);
+      check(vkBindImageMemory(device, image, memory, 0), name);
+      std::vector<VkBufferImageCopy> regions; uint64_t offset = 0;
+      for (uint32_t level = 0; level < levels; ++level) {
+         VkBufferImageCopy r{}; r.bufferOffset = offset; r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+         r.imageExtent = {(std::max)(1u, extent.width >> level), (std::max)(1u, extent.height >> level), 1};
+         offset += (uint64_t(r.imageExtent.width) * r.imageExtent.height * texel_bytes + 3) & ~3ull; regions.push_back(r);
+      }
+      require(offset <= buffer_bytes, "Clear test image does not fit the read-back buffer");
+      memset(readback.map, 0x5c, buffer_bytes + 2 * 4096);
+      VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; ca.commandPool = pool; ca.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ca.commandBufferCount = 1;
+      VkCommandBuffer command{}; check(vkAllocateCommandBuffers(device, &ca, &command), "Allocate clear command buffer");
+      VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; check(vkBeginCommandBuffer(command, &begin), "Begin clear command buffer");
+      const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1};
+      VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER}; b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.image = image; b.subresourceRange = range;
+      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+      vkCmdClearColorImage(command, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &range);
+      b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+      vkCmdCopyImageToBuffer(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.buffer, static_cast<uint32_t>(regions.size()), regions.data());
+      VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+      check(vkEndCommandBuffer(command), name);
+      VkFenceCreateInfo fc{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; VkFence fence{}; check(vkCreateFence(device, &fc, nullptr, &fence), "Create clear fence");
+      VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &command;
+      check(vkQueueSubmit(queue, 1, &submit, fence), name); check(vkWaitForFences(device, 1, &fence, VK_TRUE, 15000000000ull), name);
+      vkDestroyFence(device, fence, nullptr); vkFreeCommandBuffers(device, pool, 1, &command);
+      uint64_t wrong = 0;
+      for (const VkBufferImageCopy &r : regions) {
+         const uint8_t *data = readback.map + 4096 + r.bufferOffset; uint64_t level_wrong = 0; int64_t first = -1;
+         const uint64_t texels = uint64_t(r.imageExtent.width) * r.imageExtent.height;
+         for (uint64_t i = 0; i < texels; ++i) if (memcmp(data + i * texel_bytes, texel, texel_bytes)) { if (first < 0) first = static_cast<int64_t>(i); ++level_wrong; }
+         if (level_wrong) std::cerr << name << " clear: level " << r.imageSubresource.mipLevel << " (" << r.imageExtent.width << 'x' << r.imageExtent.height << ") has "
+            << level_wrong << " wrong texels of " << texels << ", first at x=" << first % r.imageExtent.width << " y=" << first / r.imageExtent.width
+            << " value=" << int(data[first * texel_bytes]) << '\n';
+         wrong += level_wrong;
+      }
+      vkDestroyImage(device, image, nullptr); vkFreeMemory(device, memory, nullptr);
+      if (wrong) throw std::runtime_error(std::string(name) + ": vkCmdClearColorImage result differs");
+      return offset;
+   };
+   {
+      VkClearColorValue ints{}; ints.uint32[0] = 25; ints.uint32[1] = 127; ints.uint32[2] = 76; ints.uint32[3] = 229;
+      const uint8_t r8[1] = {25}, rgba8[4] = {25, 127, 76, 229}; const uint16_t r16 = 25;
+      json clears = json::array();
+      clears.push_back({{"format", "R8G8B8A8_UINT"}, {"bytes", clear_check(VK_FORMAT_R8G8B8A8_UINT, "R8G8B8A8_UINT 200x180", 4, rgba8, ints, {200, 180, 1}, 8)}});
+      clears.push_back({{"format", "R8_UINT"}, {"bytes", clear_check(VK_FORMAT_R8_UINT, "R8_UINT 200x180", 1, r8, ints, {200, 180, 1}, 8)}});
+      clears.push_back({{"format", "R16_UINT"}, {"bytes", clear_check(VK_FORMAT_R16_UINT, "R16_UINT 200x180", 2, reinterpret_cast<const uint8_t *>(&r16), ints, {200, 180, 1}, 8)}});
+      shapes.push_back({{"shape", "clear 200x180, 8 levels"}, {"clears", clears}});
    }
    for (Guarded *g : {&staging, &readback}) { vkUnmapMemory(device, g->memory); vkDestroyBuffer(device, g->buffer, nullptr); vkFreeMemory(device, g->memory, nullptr); }
    vkDestroyCommandPool(device, pool, nullptr);

@@ -13,3 +13,4 @@ EXPORTS
     hasvk_wddm_icd_read_image
     hasvk_wddm_icd_has_entrypoint
     hasvk_wddm_icd_query_command_chunks
+    hasvk_wddm_icd_read_image_level

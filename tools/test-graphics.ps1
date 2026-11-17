@@ -14,7 +14,7 @@ if (-not $taskReport.passed -or -not $taskReport.forbiddenModulesAbsent -or $tas
     $taskReport.texturedDepthCases.Count -ne 12 -or $taskReport.queryCases.Count -ne 6 -or
     $taskReport.drawCases.Count -ne 11 -or $taskReport.computeCases.Count -ne 3 -or -not $taskReport.largeMemory.allReturned -or @($taskReport.drawCases | Where-Object {-not $_.guardsIntact -or $_.quads -ne 7}).Count -or
     $taskReport.transfer.imageCases.Count -ne 2 -or -not $taskReport.transfer.bufferCommands.copyRegions -or
-    $taskReport.formatCoverage.formats.Count -lt 42 -or $taskReport.formatCoverage.shapes.Count -ne 4 -or
+    $taskReport.formatCoverage.formats.Count -lt 42 -or $taskReport.formatCoverage.shapes.Count -ne 6 -or
     $taskReport.missingCoreCommands.Count -gt 1 -or
     @($taskReport.queryCases | Where-Object {-not $_.guardsIntact -or -not $_.gpuCopy64And32Verified -or -not $_.resetReuseVerified -or
         $_.samplesPassed -lt 400 -or $_.twoDraws -ne 2*$_.samplesPassed -or $_.statistics.iaVertices -ne 3}).Count -or
