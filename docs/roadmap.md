@@ -1,6 +1,6 @@
 # План реализации Vulkan для Iris 6100 (Broadwell) под Windows
 
-Состояние на 2026-11-17, коммит `aea7ea3` и последующие. Цель — ICD на основе Mesa HasVK
+Состояние на 2026-11-17, коммит `e075b50` и последующие. Цель — ICD на основе Mesa HasVK
 поверх WDDM-драйвера Intel `20.19.15.5171`, без Intel UMD и D3D12.
 
 Обозначения:
@@ -10,7 +10,7 @@
 - **[ ]** — не сделано.
 
 Ориентир «полноценной реализации»: upstream HasVK для Gen8 объявляет
-Vulkan 1.3 (`anv_device.c`, ветка `use_softpin`). Сейчас ICD объявляет 1.1.
+Vulkan 1.3 (`anv_device.c`, ветка `use_softpin`). Сейчас ICD объявляет 1.2.
 Дорога делится на три рубежа: **A** — корректный Vulkan 1.0, **B** — паритет
 с HasVK (1.1–1.3 и расширения), **C** — пригодность для реальных приложений.
 
@@ -29,8 +29,8 @@ Vulkan 1.3 (`anv_device.c`, ветка `use_softpin`). Сейчас ICD объя
 | WSI / swapchain | [x] Win32, BGRA8, FIFO, вывод через CPU/GDI |
 | Стандартные приложения | [x] `vkcube` 10 минут с resize/minimize |
 | Validation layers | [x] пробы и vkcube без ошибок |
-| CTS | [~] выборка ~2700 тестов из 22 групп на 1.1: 1093 Pass, 1 Fail (TDR); остальное NotSupported |
-| Vulkan 1.1–1.3, расширения | [~] 1.1 и 19 расширений; 1.2/1.3 — нет |
+| CTS | [~] выборка ~2660 тестов из 22 групп на 1.2: 1384 Pass, 0 Fail; остальное NotSupported |
+| Vulkan 1.1–1.3, расширения | [~] 1.2 и 47 расширений; 1.3 — нет |
 | Системная регистрация ICD, игры | [ ] |
 
 ## 1. Что уже сделано
@@ -122,9 +122,12 @@ Vulkan 1.3 (`anv_device.c`, ветка `use_softpin`). Сейчас ICD объя
   mip-уровней HALIGN, адресация push-буфера, события, texel-буферы, сцепление
   командных BO). Повторный срез: 791 Pass, 0 Fail
   (`native/artifacts/cts-sample.json`).
-- [~] Известная проблема: `tessellation.misc_draw.tess_factor_barrier_bug`
-  сбрасывает GPU — вероятно, превышает 2-секундный таймаут Windows TDR
-  (полмиллиона инстансов с атомарными операциями); не доказано.
+- [~] Нестабильный тест: `tessellation.misc_draw.tess_factor_barrier_bug`
+  дважды сбросил GPU (срезы 1.0 и 1.1) и прошёл в срезе 1.2 — похоже на работу
+  на грани 2-секундного таймаута Windows TDR; не доказано.
+- [~] Ошибка CTS 1.4.5.5: на устройстве 1.1 не запрашивается
+  `shaderDrawParameters` (фильтр `"core_feature"` против метки `"core_features"`);
+  на 1.2 не проявляется.
 - [ ] Полный (а не выборочный) прогон mustpass Vulkan 1.0.
 - [ ] Попиксельная проверка кадра swapchain.
 
@@ -201,11 +204,21 @@ validation layers не дают ошибок на тестах проекта и
   `driver_properties`, `host_query_reset`, `sampler_mirror_clamp_to_edge`.
   Манифест ICD объявляет `api_version` 1.1.0 — с 1.0.0 loader скрывал от
   приложений все структуры features 1.1. Срез CTS: 1093 Pass вместо 791.
-- [ ] Следующие расширения HasVK по числу зависящих тестов: `maintenance4/5`,
-  `scalar_block_layout`, `timeline_semaphore` (нужна эмуляция timeline на
-  бинарных sync), `dynamic_rendering`, `multi_draw`, `synchronization2`.
+- [x] Вторая партия: 24 расширения HasVK без новой инфраструктуры (хранение
+  8/16 бит, раскладки, float controls, SPIR-V 1.4, memory model, renderpass2,
+  resolve, imageless framebuffer, copy_commands2, multi_draw, extended dynamic
+  state, maintenance4 и др.); CTS по их группам: 1180 Pass, 0 Fail.
+- [x] Timeline-семафоры через эмуляцию Mesa поверх бинарного WDDM sync;
+  свой тест на 5 сценариев, CTS 729 Pass.
+- [x] `dynamic_rendering` и `synchronization2`; признак «внутри рендеринга» для
+  событий — `gfx.layer_count`. CTS 733 Pass.
+- [x] Vulkan 1.2: проверки CTS свойств/лимитов/форматов 2607 Pass. Одно
+  выделение памяти теперь до 1 ГиБ (минимум спецификации), бюджет 3 ГиБ.
 - [ ] YCbCr и многоплоскостные изображения.
-- [ ] Поднять `apiVersion` до 1.2, затем 1.3 по мере прохождения CTS.
+- [ ] Vulkan 1.3: нужны `bufferDeviceAddress` (адреса A64 буферов),
+  `maintenance5`, `inline_uniform_block`, `pipeline_creation_cache_control`,
+  `private_data`, `subgroup_size_control`, `texel_buffer_alignment`,
+  `zero_initialize_workgroup_memory` и проверка обязательных features.
 - [ ] Внешняя память и семафоры для Windows (`external_memory_win32`) —
   в HasVK этого нет, решать отдельно, если понадобится приложениям.
 - [ ] Обобщить профиль WDDM-выделений: другие версии драйвера Intel и другие
@@ -243,11 +256,9 @@ validation layers не дают ошибок на тестах проекта и
 
 ## 6. Ближайшие шаги
 
-1. B: партия расширений HasVK без новой инфраструктуры (`maintenance4`,
-   `scalar_block_layout`, `uniform_buffer_standard_layout`, `8bit_storage`,
-   `create_renderpass2`, `image_format_list`, `multi_draw` и т. п.) с
-   проверкой срезом CTS.
-2. B: timeline-семафоры через эмуляцию Mesa поверх бинарного sync.
-3. B: `dynamic_rendering`, `synchronization2`, затем Vulkan 1.2.
-4. A1: полный прогон mustpass Vulkan 1.0/1.1 по группам.
-5. A3: асинхронная отправка команд; потокобезопасность.
+1. B: Vulkan 1.3 — расширения из списка выше, затем `apiVersion` 1.3 и
+   проверка обязательных features и лимитов CTS.
+2. B: YCbCr и многоплоскостные изображения.
+3. A1: полный прогон mustpass по группам (параллельный запуск CTS ускорит).
+4. A3: асинхронная отправка команд; потокобезопасность.
+5. A4: `VK_ERROR_OUT_OF_DATE_KHR`, `oldSwapchain`, режим IMMEDIATE.
