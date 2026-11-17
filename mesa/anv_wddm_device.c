@@ -153,6 +153,8 @@ static const char *const verified_device_extensions[] = {
    "VK_EXT_multi_draw", "VK_EXT_extended_dynamic_state", "VK_EXT_extended_dynamic_state2", "VK_KHR_maintenance4",
    /* emulated on the binary WDDM sync type */
    "VK_KHR_timeline_semaphore",
+   /* waits inside rendering are detected by gfx.layer_count (anv_wddm_command.c) */
+   "VK_KHR_dynamic_rendering", "VK_KHR_synchronization2",
 };
 /* Limits, features and extensions as upstream HasVK reports them for Gen8
  * (anv_device.c, built as anv_wddm_capabilities.c), then the limits of this

@@ -384,3 +384,17 @@ anv_GetDeviceBufferMemoryRequirements(VkDevice handle, const VkDeviceBufferMemor
       }
    }
 }
+
+/* Vulkan 1.2 core entry points for buffer-device-address capture/replay. Only
+ * valid with bufferDeviceAddressCaptureReplay, which this port does not
+ * expose (no fixed client addresses across processes). */
+VKAPI_ATTR uint64_t VKAPI_CALL
+anv_GetBufferOpaqueCaptureAddress(VkDevice handle, const VkBufferDeviceAddressInfo *info)
+{
+   (void)handle; (void)info; return 0;
+}
+VKAPI_ATTR uint64_t VKAPI_CALL
+anv_GetDeviceMemoryOpaqueCaptureAddress(VkDevice handle, const VkDeviceMemoryOpaqueCaptureAddressInfo *info)
+{
+   (void)handle; (void)info; return 0;
+}

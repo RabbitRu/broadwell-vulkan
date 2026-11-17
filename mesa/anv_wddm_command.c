@@ -198,7 +198,10 @@ static void command_add_wait(struct anv_cmd_buffer *cmd, struct anv_address resu
  * after all preceding work, and resumes once the CPU has seen every event set. */
 void anv_wddm_cmd_wait_events(struct anv_cmd_buffer *cmd, uint32_t count, const VkEvent *handles)
 {
-   if (!count || cmd->vk.render_pass || (cmd->usage_flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT)) return;
+   /* Inside rendering: legacy render passes also go through CmdBeginRendering,
+    * which sets layer_count; CmdEndRendering resets it to 0. */
+   if (!count || cmd->vk.render_pass || cmd->state.gfx.layer_count ||
+       (cmd->usage_flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT)) return;
    struct anv_event *events[16]; struct anv_event **list = events;
    if (count > ARRAY_SIZE(events)) {
       list = vk_alloc(&cmd->vk.pool->alloc, count * sizeof(*list), 8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);

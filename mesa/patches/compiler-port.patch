@@ -1216,7 +1216,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,717 @@
+@@ -0,0 +1,719 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -1372,6 +1372,8 @@
 +   "VK_EXT_multi_draw", "VK_EXT_extended_dynamic_state", "VK_EXT_extended_dynamic_state2", "VK_KHR_maintenance4",
 +   /* emulated on the binary WDDM sync type */
 +   "VK_KHR_timeline_semaphore",
++   /* waits inside rendering are detected by gfx.layer_count (anv_wddm_command.c) */
++   "VK_KHR_dynamic_rendering", "VK_KHR_synchronization2",
 +};
 +/* Limits, features and extensions as upstream HasVK reports them for Gen8
 + * (anv_device.c, built as anv_wddm_capabilities.c), then the limits of this
@@ -2678,7 +2680,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_command.c
-@@ -0,0 +1,382 @@
+@@ -0,0 +1,385 @@
 +/* Windows lifetime and submission backing for HasVK command buffers.
 + * Packet emission, descriptor binding and push packing use upstream HasVK.
 + *
@@ -2879,7 +2881,10 @@
 + * after all preceding work, and resumes once the CPU has seen every event set. */
 +void anv_wddm_cmd_wait_events(struct anv_cmd_buffer *cmd, uint32_t count, const VkEvent *handles)
 +{
-+   if (!count || cmd->vk.render_pass || (cmd->usage_flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT)) return;
++   /* Inside rendering: legacy render passes also go through CmdBeginRendering,
++    * which sets layer_count; CmdEndRendering resets it to 0. */
++   if (!count || cmd->vk.render_pass || cmd->state.gfx.layer_count ||
++       (cmd->usage_flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT)) return;
 +   struct anv_event *events[16]; struct anv_event **list = events;
 +   if (count > ARRAY_SIZE(events)) {
 +      list = vk_alloc(&cmd->vk.pool->alloc, count * sizeof(*list), 8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
