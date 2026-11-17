@@ -14,6 +14,7 @@
 #include <d3dkmthk.h>
 #include <GL/gl.h>
 #include <psapi.h>
+#include <dwmapi.h>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -55,6 +56,15 @@ void dump(const char *label, const void *data, size_t bytes, size_t cap = 8192)
    if (copy.size() < bytes) fprintf(out, "      ... truncated at %zu\n", copy.size());
 }
 template <class T> bool read(T &value, const void *p) { return safe_copy(&value, p, sizeof(T)); }
+/* GPU VA -> CPU pointer of the ICD's own allocations, to dump submitted batches. */
+struct Mapping { D3DKMT_HANDLE allocation; uint64_t va, bytes; uint8_t *cpu; };
+std::vector<Mapping> mappings;
+const uint8_t *cpu_of(uint64_t va, uint64_t bytes)
+{
+   for (const Mapping &m : mappings)
+      if (m.cpu && va >= m.va && va + bytes <= m.va + m.bytes) return m.cpu + (va - m.va);
+   return nullptr;
+}
 
 void decode_pre(const char *name, void *data)
 {
@@ -98,14 +108,54 @@ void decode_pre(const char *name, void *data)
       fprintf(out, "    hAdapter=%#x VidPnSource=%u\n", g.hAdapter, g.VidPnSourceId);
    } else if (!strcmp(name, "QueryResourceInfo") || !strcmp(name, "OpenResource")) {
       dump("args(in)", data, 96, 96);
-   } else if (!strcmp(name, "SetVidPnSourceOwner") || !strcmp(name, "CreateContextVirtual") || !strcmp(name, "CreateContext") ||
+   } else if (!strcmp(name, "SubmitCommand")) {
+      D3DKMT_SUBMITCOMMAND s; if (!read(s, data)) return;
+      struct { UINT Value; } flags; memcpy(&flags.Value, &s.Flags, 4);
+      fprintf(out, "    Commands=%#llx Length=%#x Flags=%#x Token=%#llx Broadcast=%u ctx0=%#x PrivateDriverDataSize=%u WrittenPrimaries=%u\n",
+         (unsigned long long)s.Commands, s.CommandLength, flags.Value, (unsigned long long)s.PresentHistoryToken, s.BroadcastContextCount,
+         s.BroadcastContext[0], s.PrivateDriverDataSize, s.NumPrimaries);
+      dump("SubmitPrivateDriverData", s.pPrivateDriverData, s.PrivateDriverDataSize, 1024);
+      if (s.Flags.PresentRedirected) {
+         const uint8_t *batch = cpu_of(s.Commands, s.CommandLength);
+         if (!batch) fprintf(out, "    batch: no CPU mapping known for %#llx\n", (unsigned long long)s.Commands);
+         else {
+            fprintf(out, "    batch dwords:\n");
+            std::vector<uint32_t> dw(s.CommandLength / 4);
+            if (safe_copy(dw.data(), batch, dw.size() * 4))
+               for (size_t i = 0; i < dw.size(); i += 8) {
+                  fprintf(out, "      %04zx:", i * 4);
+                  for (size_t j = i; j < i + 8 && j < dw.size(); ++j) fprintf(out, " %08x", dw[j]);
+                  fprintf(out, "\n");
+               }
+         }
+      }
+      if (s.NumPrimaries) dump("WrittenPrimaries", s.WrittenPrimaries, s.NumPrimaries * sizeof(D3DKMT_HANDLE));
+   } else if (!strcmp(name, "CreateContextVirtual")) {
+      D3DKMT_CREATECONTEXTVIRTUAL c; if (!read(c, data)) return;
+      fprintf(out, "    hDevice=%#x Node=%u Affinity=%#x Flags=%#x ClientHint=%d\n", c.hDevice, c.NodeOrdinal, c.EngineAffinity, c.Flags.Value, (int)c.ClientHint);
+      dump("ContextPrivateDriverData", c.pPrivateDriverData, c.PrivateDriverDataSize, 512);
+   } else if (!strcmp(name, "SetVidPnSourceOwner") || !strcmp(name, "CreateContext") ||
               !strcmp(name, "Lock2") || !strcmp(name, "SignalSynchronizationObject2") || !strcmp(name, "WaitForSynchronizationObject2") ||
-              !strcmp(name, "CreateSynchronizationObject2") || !strcmp(name, "OpenSynchronizationObject") || !strcmp(name, "SubmitCommand")) {
+              !strcmp(name, "CreateSynchronizationObject2") || !strcmp(name, "OpenSynchronizationObject")) {
       dump("args(in)", data, 96, 96);
    }
 }
 void decode_post(const char *name, void *data)
 {
+   if (!strcmp(name, "MapGpuVirtualAddress")) {
+      D3DDDI_MAPGPUVIRTUALADDRESS m; if (!read(m, data)) return;
+      bool found = false;
+      for (Mapping &x : mappings) if (x.allocation == m.hAllocation) { x.va = m.VirtualAddress; x.bytes = m.SizeInPages * 4096; found = true; }
+      if (!found) mappings.push_back({m.hAllocation, m.VirtualAddress, m.SizeInPages * 4096, nullptr});
+      fprintf(out, "    -> hAllocation=%#x VA=%#llx pages=%llu\n", m.hAllocation, (unsigned long long)m.VirtualAddress, (unsigned long long)m.SizeInPages);
+      return;
+   }
+   if (!strcmp(name, "Lock2")) {
+      D3DKMT_LOCK2 l; if (!read(l, data)) return;
+      bool found = false;
+      for (Mapping &x : mappings) if (x.allocation == l.hAllocation) { x.cpu = static_cast<uint8_t *>(l.pData); found = true; }
+      if (!found) mappings.push_back({l.hAllocation, 0, 0, static_cast<uint8_t *>(l.pData)});
+   }
    if (!strcmp(name, "CreateAllocation")) {
       D3DKMT_CREATEALLOCATION a; if (!read(a, data)) return;
       fprintf(out, "    -> hResource=%#x hGlobalShare=%#x", a.hResource, a.hGlobalShare);
@@ -312,12 +362,15 @@ int main(int argc, char **argv)
    if (argc < 2) { fprintf(stderr, "usage: GlPresentTrace <log> [frames]\n"); return 2; }
    const int frames = argc > 2 ? atoi(argv[2]) : 4;
    if (fopen_s(&out, argv[1], "w") || !out) return 3;
+   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);   // physical screen coordinates
+   SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);            // a sleeping display makes every present "occluded"
+   Sleep(1500);
    if (!install_hooks()) return 4;
    HINSTANCE instance = GetModuleHandleW(nullptr);
    WNDCLASSW wc{}; wc.style = CS_OWNDC; wc.lpfnWndProc = window_proc; wc.hInstance = instance; wc.lpszClassName = L"GlPresentTrace";
    RegisterClassW(&wc);
    phase = "window"; light_enabled = true;
-   HWND window = CreateWindowExW(0, wc.lpszClassName, L"GL present trace", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 100, 100, 320, 240,
+   HWND window = CreateWindowExW(WS_EX_TOPMOST, wc.lpszClassName, L"GL present trace", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 100, 100, 320, 240,
                                  nullptr, nullptr, instance, nullptr);
    if (!window) return 5;
    pump();
@@ -339,7 +392,19 @@ int main(int argc, char **argv)
    for (int f = 0; f < frames && f < 8; ++f) {
       phase = frame_names[f];
       glClearColor(f & 1 ? 1.f : 0.f, f & 2 ? 1.f : 0.f, 0.5f, 1.f); glClear(GL_COLOR_BUFFER_BIT);
-      SwapBuffers(dc); pump(); Sleep(30);
+      SwapBuffers(dc); pump(); DwmFlush(); Sleep(150); DwmFlush(); pump();
+      {  /* Control for present_redirect_probe: the composed pixel at the client centre. */
+         RECT r; GetClientRect(window, &r); POINT c{(r.right) / 2, (r.bottom) / 2}; ClientToScreen(window, &c);
+         HDC desktop = GetDC(nullptr); const COLORREF s = GetPixel(desktop, c.x, c.y); ReleaseDC(nullptr, desktop);
+         RECT w; GetWindowRect(window, &w);
+         HDC memory = CreateCompatibleDC(dc); HBITMAP bitmap = CreateCompatibleBitmap(dc, w.right - w.left, w.bottom - w.top);
+         HGDIOBJ old = SelectObject(memory, bitmap); PrintWindow(window, memory, 2 /* PW_RENDERFULLCONTENT */);
+         const COLORREF p = GetPixel(memory, c.x - w.left, c.y - w.top);
+         SelectObject(memory, old); DeleteObject(bitmap); DeleteDC(memory);
+         std::lock_guard<std::mutex> lock(gate);
+         fprintf(out, "SCREEN after frame %d: screen=%02x%02x%02x printwindow=%02x%02x%02x (cleared to %02x%02x80)\n", f,
+                 GetRValue(s), GetGValue(s), GetBValue(s), GetRValue(p), GetGValue(p), GetBValue(p), f & 1 ? 0xff : 0, f & 2 ? 0xff : 0); fflush(out);
+      }
    }
    light_enabled = false;
    phase = "finish"; glFinish();

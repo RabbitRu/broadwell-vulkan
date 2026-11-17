@@ -27,7 +27,8 @@ uint64_t canonical(uint64_t address)
    return address & (1ull << 47) ? address | 0xffff000000000000ull : address;
 }
 
-Device::Device()
+Device::Device() : Device(4 /* D3DKMT_CLIENTHINT_VULKAN */, {}) {}
+Device::Device(uint32_t client_hint, std::vector<uint8_t> context_private)
 {
    try {
       ComPtr<IDXGIFactory1> factory;
@@ -70,7 +71,11 @@ Device::Device()
       check(D3DKMTCreatePagingQueue(&paging_), "CreatePagingQueue");
       D3DKMT_CREATECONTEXTVIRTUAL context{};
       context.hDevice = device_;
-      context.ClientHint = static_cast<D3DKMT_CLIENTHINT>(4); // Vulkan
+      context.ClientHint = static_cast<D3DKMT_CLIENTHINT>(client_hint);
+      if (!context_private.empty()) {
+         context.pPrivateDriverData = context_private.data();
+         context.PrivateDriverDataSize = static_cast<UINT>(context_private.size());
+      }
       check(D3DKMTCreateContextVirtual(&context), "CreateContextVirtual");
       context_ = context.hContext;
       completed_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -92,12 +97,13 @@ void Device::wait_paging(uint64_t fence, DWORD timeout_ms)
 }
 
 void Device::submit_and_wait(uint64_t commands, uint32_t bytes,
-                             const std::vector<uint8_t> &header, DWORD timeout_ms)
+                             const std::vector<uint8_t> &header, DWORD timeout_ms, uint64_t present_token)
 {
    if (lost_) throw std::runtime_error("Device/context is lost");
    uint32_t signature = 0;
    if (header.size() == 80) memcpy(&signature, header.data(), 4);
-   if (signature != 0x00171433 || !bytes || bytes > 8180 || (bytes & 7))
+   /* 0x00141433: header variant of the Intel OpenGL ICD (present experiments). */
+   if ((signature != 0x00171433 && signature != 0x00141433) || !bytes || bytes > 8180 || (bytes & 7))
       throw std::runtime_error("Unsupported stage-2 submission/header");
    D3DKMT_SUBMITCOMMAND submit{};
    submit.Commands = commands;
@@ -106,6 +112,7 @@ void Device::submit_and_wait(uint64_t commands, uint32_t bytes,
    submit.BroadcastContext[0] = context_;
    submit.pPrivateDriverData = const_cast<uint8_t *>(header.data());
    submit.PrivateDriverDataSize = static_cast<UINT>(header.size());
+   if (present_token) { submit.Flags.PresentRedirected = 1; submit.PresentHistoryToken = present_token; }
    // From this point allocations must not be destroyed until completion or
    // context cancellation. Every error path first destroys the context.
    try {

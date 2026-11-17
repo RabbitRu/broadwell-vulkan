@@ -9,7 +9,7 @@ New-Item -ItemType Directory -Path $taskOut -Force | Out-Null
 Push-Location $taskOut
 try {
     & cl.exe /nologo /std:c++17 /EHsc /MT /O2 /Zi /utf-8 /W4 /D_WIN32_WINNT=0x0A00 (Join-Path $taskRoot 'native\tests\gl_present_trace.cpp') `
-        /Fe:GlPresentTrace.exe /link opengl32.lib user32.lib gdi32.lib psapi.lib
+        /Fe:GlPresentTrace.exe /link opengl32.lib user32.lib gdi32.lib psapi.lib dwmapi.lib
     if ($LASTEXITCODE) { throw 'GL present trace build failed' }
     $taskLog = Join-Path $taskOut 'calls.log'
     $taskProcess = Start-Process -FilePath (Join-Path $taskOut 'GlPresentTrace.exe') -ArgumentList @($taskLog, $Frames) -PassThru -NoNewWindow

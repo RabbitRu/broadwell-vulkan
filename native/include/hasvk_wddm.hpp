@@ -32,12 +32,19 @@ std::vector<uint8_t> command_header_8192();
 class Device {
 public:
    Device();
+   /* Experiments: context client hint and private data other than Vulkan's. */
+   Device(uint32_t client_hint, std::vector<uint8_t> context_private);
    ~Device();
    Device(const Device &) = delete;
    Device &operator=(const Device &) = delete;
    void wait_paging(uint64_t fence, DWORD timeout_ms = 15000);
+   /* present_token != 0: the submission is a redirected present
+    * (D3DKMT_SUBMITCOMMANDFLAGS::PresentRedirected) with this present history
+    * token, (0x80000000 | HWND) << 32 | shared surface handle, as the Intel
+    * OpenGL ICD submits it. */
    void submit_and_wait(uint64_t commands, uint32_t bytes,
-                        const std::vector<uint8_t> &header, DWORD timeout_ms = 15000);
+                        const std::vector<uint8_t> &header, DWORD timeout_ms = 15000,
+                        uint64_t present_token = 0);
    uint64_t reserve_va(uint64_t bytes, uint64_t requested_address = 0);
    void free_va(uint64_t address, uint64_t bytes);
    void shutdown();
