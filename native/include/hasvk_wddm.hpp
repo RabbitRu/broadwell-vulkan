@@ -48,6 +48,8 @@ public:
    uint32_t execution_state();
    LUID adapter_luid() const { return luid_; }
    std::wstring adapter_name;
+   /* Profiling counters (QueryPerformanceCounter ticks, bytes). */
+   uint64_t flush_ticks = 0, kernel_ticks = 0, flushed_bytes = 0;
 private:
    friend class Buffer;
    friend class VaRange;
@@ -87,9 +89,15 @@ public:
    void *cpu() const { return cpu_; }
    uint64_t address() const { return address_; }
    uint64_t size() const { return bytes_; }
+   /* Whether the CPU may have touched this buffer since its last flush. Only
+    * such buffers are flushed around submissions (all of them by default). */
+   bool cpu_tracked() const { return cpu_tracked_; }
+   void set_cpu_tracked(bool tracked) { cpu_tracked_ = tracked; }
+   void flush() const;   // write back and invalidate the CPU cache lines of the whole buffer
 private:
    void close() noexcept;
    Device &device_;
+   bool cpu_tracked_ = true;
    D3DKMT_HANDLE allocation_ = 0;
    void *cpu_ = nullptr;
    uint64_t address_ = 0, bytes_ = 0;

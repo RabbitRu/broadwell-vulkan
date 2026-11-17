@@ -113,10 +113,10 @@ void Device::submit_and_wait(uint64_t commands, uint32_t bytes,
       // The private allocation profile does not establish a documented CPU
       // cache policy. Publish CPU writes explicitly instead of assuming KMT
       // Lock2 mappings and every GPU access path are mutually snooped.
-      for (const Buffer *buffer : buffers_)
-         for (uint64_t offset = 0; offset < buffer->size(); offset += 64)
-            _mm_clflush(static_cast<const char *>(buffer->cpu()) + offset);
+      LARGE_INTEGER t0, t1, t2, t3; QueryPerformanceCounter(&t0);
+      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracked()) { buffer->flush(); flushed_bytes += buffer->size(); }
       _mm_mfence();
+      QueryPerformanceCounter(&t1);
       check(D3DKMTSubmitCommand(&submit), "SubmitCommand");
       D3DKMT_SIGNALSYNCHRONIZATIONOBJECT2 signal{};
       signal.hContext = context_;
@@ -129,11 +129,17 @@ void Device::submit_and_wait(uint64_t commands, uint32_t bytes,
       const uint32_t state = execution_state();
       if (state != D3DKMT_DEVICEEXECUTION_ACTIVE)
          throw std::runtime_error("WDDM device is not active after submission (execution state " + std::to_string(state) + ")");
-      for (const Buffer *buffer : buffers_)
-         for (uint64_t offset = 0; offset < buffer->size(); offset += 64)
-            _mm_clflush(static_cast<const char *>(buffer->cpu()) + offset);
+      QueryPerformanceCounter(&t2);
+      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracked()) { buffer->flush(); flushed_bytes += buffer->size(); }
       _mm_mfence();
+      QueryPerformanceCounter(&t3);
+      flush_ticks += (t1.QuadPart - t0.QuadPart) + (t3.QuadPart - t2.QuadPart); kernel_ticks += t2.QuadPart - t1.QuadPart;
    } catch (...) { abort_context(); throw; }
+}
+void Buffer::flush() const
+{
+   for (uint64_t offset = 0; offset < bytes_; offset += 64) _mm_clflush(static_cast<const char *>(cpu_) + offset);
+   _mm_mfence();
 }
 uint32_t Device::execution_state()
 {

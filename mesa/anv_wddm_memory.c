@@ -170,6 +170,12 @@ anv_AllocateMemory(VkDevice handle, const VkMemoryAllocateInfo *info,
    VkResult result = anv_device_alloc_bo(device, "user", info->allocationSize,
       ANV_BO_ALLOC_MAPPED, 0, &mem->bo);
    if (result != VK_SUCCESS) { vk_object_free(&device->vk, allocator, mem); return result; }
+   /* The CPU reaches application memory only through vkMapMemory: while it is
+    * not mapped, submissions do not need to flush its cache lines. */
+   if (hasvk_wddm_bo_set_cpu_tracking(mem->bo->wddm_bo, 0)) {
+      anv_device_release_bo(device, mem->bo); vk_object_free(&device->vk, allocator, mem);
+      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+   }
    mem->type = &device->physical->memory.types[0];
    mem->wddm_allocation_size = info->allocationSize;
    const VkMemoryDedicatedAllocateInfo *dedicated = vk_find_struct_const(info->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
@@ -200,6 +206,10 @@ anv_MapMemory(VkDevice handle, VkDeviceMemory memory, VkDeviceSize offset,
    if (size == VK_WHOLE_SIZE) size = mem->wddm_allocation_size - offset;
    if (!size || size > mem->wddm_allocation_size - offset)
       return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+   /* Drop lines the CPU may still hold from before; from now on every
+    * submission flushes this BO (HOST_COHERENT semantics). */
+   if (hasvk_wddm_bo_flush(mem->bo->wddm_bo) || hasvk_wddm_bo_set_cpu_tracking(mem->bo->wddm_bo, 1))
+      return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
    mem->map = mem->bo->map; mem->map_size = size; mem->map_delta = offset;
    *out = (char *)mem->map + offset;
    return VK_SUCCESS;
@@ -209,7 +219,11 @@ VKAPI_ATTR void VKAPI_CALL
 anv_UnmapMemory(VkDevice handle, VkDeviceMemory memory)
 {
    (void)handle; ANV_FROM_HANDLE(anv_device_memory, mem, memory);
-   if (mem) { mem->map = NULL; mem->map_size = mem->map_delta = 0; }
+   if (!mem) return;
+   /* Write back what the CPU wrote, then stop flushing this BO per submission. */
+   hasvk_wddm_bo_flush(mem->bo->wddm_bo);
+   hasvk_wddm_bo_set_cpu_tracking(mem->bo->wddm_bo, 0);
+   mem->map = NULL; mem->map_size = mem->map_delta = 0;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -331,6 +345,7 @@ PUBLIC int hasvk_wddm_icd_read_image(VkImage handle, void *rgba, uint64_t bytes,
    const uint32_t pixel_bytes = image->vk.format == VK_FORMAT_D16_UNORM ? 2 : 4;
    if (!address.bo || bytes != (uint64_t)width * height * pixel_bytes || address.offset > address.bo->size ||
        surf->size_B > address.bo->size - address.offset) return -1;
+   hasvk_wddm_bo_flush(address.bo->wddm_bo);   /* CPU read without vkMapMemory */
    const char *source = (const char *)address.bo->map + address.offset;
    if (surf->tiling == ISL_TILING_LINEAR) {
       for (uint32_t y = 0; y < height; ++y) memcpy((char *)rgba + y * width * pixel_bytes, source + y * surf->row_pitch_B, width * pixel_bytes);
@@ -358,6 +373,7 @@ PUBLIC int hasvk_wddm_icd_read_image_level(VkImage handle, uint32_t level, uint3
    if (z || array) return -1;
    position[0] = x; position[1] = y; position[2] = surf->row_pitch_B; position[3] = surf->tiling;
    position[4] = surf->image_alignment_el.width; position[5] = surf->image_alignment_el.height; position[6] = (uint32_t)surf->size_B;
+   hasvk_wddm_bo_flush(address.bo->wddm_bo);   /* CPU read without vkMapMemory */
    const char *source = (const char *)address.bo->map + address.offset;
    if (surf->tiling == ISL_TILING_LINEAR) {
       for (uint32_t row = 0; row < height; ++row)

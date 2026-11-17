@@ -27,6 +27,11 @@ int hasvk_wddm_bo_destroy(struct hasvk_wddm_bo *bo);
 void *hasvk_wddm_bo_map(struct hasvk_wddm_bo *bo);
 uint64_t hasvk_wddm_bo_address(const struct hasvk_wddm_bo *bo);
 uint64_t hasvk_wddm_bo_size(const struct hasvk_wddm_bo *bo);
+/* CPU-cache tracking. A tracked BO (the default) is flushed before and after
+ * every submission. Untracked BOs are skipped: the caller guarantees that the
+ * CPU does not access them, and calls bo_flush when that changes. */
+int hasvk_wddm_bo_set_cpu_tracking(struct hasvk_wddm_bo *bo, int tracked);
+int hasvk_wddm_bo_flush(struct hasvk_wddm_bo *bo);
 int hasvk_wddm_submit_wait(struct hasvk_wddm_device *device, struct hasvk_wddm_bo *commands,
                           uint32_t offset, uint32_t bytes);
 /* Stable contiguous CPU shadow for GPU-read-only state/instruction pools.
