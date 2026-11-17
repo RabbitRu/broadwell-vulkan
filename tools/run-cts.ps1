@@ -78,11 +78,11 @@ while ($taskNext -lt $taskCases.Count -and $taskCrashes -le $MaxCrashes) {
     [IO.File]::WriteAllLines($listFile, [string[]]$remaining, [Text.ASCIIEncoding]::new())
     $run=Start-Deqp @('--deqp-caselist-file='+$listFile, '--deqp-log-filename='+$qpa, '--deqp-visibility=hidden', '--deqp-log-images=disable',
         '--deqp-log-shader-sources=disable', '--deqp-log-flush=enable') ([Math]::Max($CaseSeconds, [Math]::Min(36000, $CaseSeconds*$remaining.Count))) ("run-{0:d3}" -f $taskRun)
-    $current=$null; $finished=0
+    $current=$null; $finished=0; $last=$null
     if (Test-Path -LiteralPath $qpa) {
         foreach ($line in [IO.File]::ReadLines($qpa)) {
             if ($line.StartsWith('#beginTestCaseResult ')) { $current=$line.Substring(21).Trim() }
-            elseif ($current -and $line -match '<Result StatusCode="([^"]+)"') { $taskResults[$current]=$Matches[1]; $current=$null; ++$finished }
+            elseif ($current -and $line -match '<Result StatusCode="([^"]+)"') { $taskResults[$current]=$Matches[1]; $last=$current; $current=$null; ++$finished }
         }
     }
     if ($current) {     # the process died or hung inside this case
@@ -90,6 +90,8 @@ while ($taskNext -lt $taskCases.Count -and $taskCrashes -le $MaxCrashes) {
         $taskNext=[Array]::IndexOf($taskCases, $current)+1
     } elseif ($finished -eq 0 -and ($run.exitCode -or $run.timedOut)) {
         $taskResults[$remaining[0]]=$(if ($run.timedOut) { 'Timeout' } else { 'Crash' }); ++$taskCrashes; ++$taskNext
+    } elseif ($run.exitCode -or $run.timedOut) {   # died between cases (e.g. after a DeviceLost result)
+        $taskNext=[Array]::IndexOf($taskCases, $last)+1
     } else { $taskNext=$taskCases.Count }
     ++$taskRun
 }

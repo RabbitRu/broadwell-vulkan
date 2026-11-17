@@ -46,10 +46,6 @@ def generate_graphics_sources(originals):
     common += function(device, 'static void\nanv_device_init_border_colors(').replace(
         'static void\nanv_device_init_border_colors(', 'void\nanv_wddm_init_border_colors(')
     common += function(device, 'void anv_DestroySampler(')
-    # Events: a word in the dynamic state pool, read and written by CPU and GPU.
-    for signature in ['VkResult anv_CreateEvent(', 'void anv_DestroyEvent(', 'VkResult anv_GetEventStatus(',
-                      'VkResult anv_SetEvent(', 'VkResult anv_ResetEvent(']:
-        common += function(device, signature)
 
     hardware = read('genX_cmd_buffer.c').replace('#include "anv_private.h"', '#include "anv_wddm.h"')
     # Begin/End/ExecuteCommands stay upstream; the Windows command-buffer file
@@ -66,6 +62,17 @@ def generate_graphics_sources(originals):
     old = 'sba.GeneralStateBaseAddress = (struct anv_address) { NULL, 0 };'
     assert hardware.count(old) == 1
     hardware = hardware.replace(old, 'sba.GeneralStateBaseAddress = (struct anv_address) { NULL, intel_canonical_address(device->wddm->origin) };')
+    # Events live in their own BO (anv_wddm_device.c): the dynamic state pool is
+    # refreshed from a CPU shadow at every submit and its GPU addresses are not
+    # block_pool.bo + offset in this port.
+    hardware, count = re.subn(r'\(struct anv_address\) \{\s*cmd_buffer->device->dynamic_state_pool\.block_pool\.bo,\s*event->state\.offset\s*\}',
+                              'anv_wddm_event_address(cmd_buffer->device, event)', hardware)
+    assert count == 3, count
+    # MI_SEMAPHORE_WAIT never completes in a WDDM context (tested: it hangs on an
+    # event the host had already set), so waits split the batch instead.
+    hardware, count = re.subn(r'#if GFX_VER >= 8\n   for \(uint32_t i = 0; i < eventCount; i\+\+\) \{.*?#else\n   anv_finishme\("Implement events on gfx7"\);\n#endif\n',
+                              '   anv_wddm_cmd_wait_events(cmd_buffer, eventCount, pEvents);\n', hardware, flags=re.S)
+    assert count == 1, count
     # Modifier images are explicitly rejected by the Windows image path.
     hardware = hardware.replace('image->vk.drm_format_mod', 'DRM_FORMAT_MOD_INVALID')
     state = read('genX_state.c').replace('#include <unistd.h>', '')

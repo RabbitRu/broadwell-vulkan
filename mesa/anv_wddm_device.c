@@ -152,6 +152,13 @@ static VkResult enumerate(struct vk_instance *base)
    if (!physical->compiler) { physical_destroy(&physical->vk); return VK_ERROR_OUT_OF_HOST_MEMORY; }
    physical->compiler->shader_debug_log = compiler_log;
    physical->compiler->shader_perf_log = compiler_log;
+   /* As upstream without context isolation: INSTPM "CONSTANT_BUFFER Address
+    * Offset Disable" is not set in a WDDM context (read back as 0x6080), so the
+    * hardware adds the dynamic state base to push buffer 0. Without this, a UBO
+    * range promoted to buffer 0 is read from the wrong address (CTS
+    * binding_model.shader_access ... multiple_descriptor_sets in graphics stages). */
+   physical->compiler->constant_buffer_0_is_relative = true;
+   physical->compiler->supports_shader_constants = true;
    isl_device_init(&physical->isl_dev, &physical->info);
    physical->supports_48bit_addresses = physical->use_softpin = true;
    physical->gtt_size = 16ull << 30;
@@ -531,6 +538,8 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle
    if (!device->internal_cache) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_state; }
    anv_device_init_blorp(device);
    anv_wddm_init_border_colors(device);
+   result = anv_device_alloc_bo(device, "events", ANV_WDDM_EVENT_SLOTS * 8, ANV_BO_ALLOC_MAPPED, 0, &w->event_bo);
+   if (result != VK_SUCCESS) goto fail_state;
 #endif
    device->queues = vk_zalloc(&device->vk.alloc, sizeof(*device->queues), 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
    if (!device->queues) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_state; }
@@ -556,6 +565,7 @@ fail_state:
 #endif
    anv_scratch_pool_finish(device, &device->scratch_pool);
    anv_device_release_bo(device, device->workaround_bo);
+   anv_device_release_bo(device, w->event_bo);
    anv_wddm_pools_finish(device);
    state_finish(w); device->wddm = NULL;
 fail_base:
@@ -573,10 +583,63 @@ VKAPI_ATTR void VKAPI_CALL anv_DestroyDevice(VkDevice handle, const VkAllocation
 #endif
    anv_scratch_pool_finish(device, &device->scratch_pool);
    anv_device_release_bo(device, device->workaround_bo);
+   anv_device_release_bo(device, device->wddm->event_bo);
    anv_wddm_pools_finish(device);
    state_finish(device->wddm);
    vk_device_finish(&device->vk); vk_free(&device->vk.alloc, device);
 }
+#ifdef HASVK_WDDM_GRAPHICS
+/* Events: one 8-byte slot each in a device BO, written by the host directly and
+ * by the GPU with PIPE_CONTROL, polled by MI_SEMAPHORE_WAIT (genX_cmd_buffer.c). */
+struct anv_address anv_wddm_event_address(struct anv_device *device, const struct anv_event *event)
+{
+   return (struct anv_address){device->wddm->event_bo, (uint32_t)event->state.offset};
+}
+VKAPI_ATTR VkResult VKAPI_CALL anv_CreateEvent(VkDevice handle, const VkEventCreateInfo *info,
+   const VkAllocationCallbacks *allocator, VkEvent *out)
+{
+   (void)info; ANV_FROM_HANDLE(anv_device, device, handle);
+   struct anv_wddm_device_state *w = device->wddm;
+   struct anv_event *event = vk_object_zalloc(&device->vk, allocator, sizeof(*event), VK_OBJECT_TYPE_EVENT);
+   if (!event) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   uint32_t slot = UINT32_MAX;
+   mtx_lock(&w->mutex);
+   for (uint32_t i = 0; i < ANV_WDDM_EVENT_SLOTS; ++i)
+      if (!BITSET_TEST(w->event_slots, i)) { BITSET_SET(w->event_slots, i); slot = i; break; }
+   mtx_unlock(&w->mutex);
+   if (slot == UINT32_MAX) { vk_object_free(&device->vk, allocator, event); return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY); }
+   event->state = (struct anv_state){.offset = (int32_t)(slot * 8), .alloc_size = 8, .map = (char *)w->event_bo->map + slot * 8};
+   *(volatile uint64_t *)event->state.map = VK_EVENT_RESET;
+   *out = anv_event_to_handle(event);
+   return VK_SUCCESS;
+}
+VKAPI_ATTR void VKAPI_CALL anv_DestroyEvent(VkDevice handle, VkEvent event_handle, const VkAllocationCallbacks *allocator)
+{
+   ANV_FROM_HANDLE(anv_device, device, handle); ANV_FROM_HANDLE(anv_event, event, event_handle);
+   if (!event) return;
+   mtx_lock(&device->wddm->mutex); BITSET_CLEAR(device->wddm->event_slots, event->state.offset / 8); mtx_unlock(&device->wddm->mutex);
+   vk_object_free(&device->vk, allocator, event);
+}
+VKAPI_ATTR VkResult VKAPI_CALL anv_GetEventStatus(VkDevice handle, VkEvent event_handle)
+{
+   ANV_FROM_HANDLE(anv_device, device, handle); ANV_FROM_HANDLE(anv_event, event, event_handle);
+   if (vk_device_is_lost(&device->vk)) return VK_ERROR_DEVICE_LOST;
+   MemoryBarrier();
+   return (VkResult)*(volatile uint64_t *)event->state.map;
+}
+VKAPI_ATTR VkResult VKAPI_CALL anv_SetEvent(VkDevice handle, VkEvent event_handle)
+{
+   (void)handle; ANV_FROM_HANDLE(anv_event, event, event_handle);
+   *(volatile uint64_t *)event->state.map = VK_EVENT_SET; MemoryBarrier();
+   return VK_SUCCESS;
+}
+VKAPI_ATTR VkResult VKAPI_CALL anv_ResetEvent(VkDevice handle, VkEvent event_handle)
+{
+   (void)handle; ANV_FROM_HANDLE(anv_event, event, event_handle);
+   *(volatile uint64_t *)event->state.map = VK_EVENT_RESET; MemoryBarrier();
+   return VK_SUCCESS;
+}
+#endif
 #ifndef HASVK_WDDM_GRAPHICS
 VKAPI_ATTR VkResult VKAPI_CALL anv_CreateGraphicsPipelines(VkDevice device, VkPipelineCache cache, uint32_t count,
    const VkGraphicsPipelineCreateInfo *infos, const VkAllocationCallbacks *allocator, VkPipeline *out)

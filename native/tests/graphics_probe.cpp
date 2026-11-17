@@ -22,6 +22,7 @@ static void check(VkResult result, const char *message) {
 #include "icd_copy_test.hpp"
 #include "icd_format_test.hpp"
 #include "icd_compute_test.hpp"
+#include "icd_event_test.hpp"
 int wmain(int argc, wchar_t **argv)
 {
    if (argc != 2) return 2;
@@ -76,6 +77,7 @@ int wmain(int argc, wchar_t **argv)
          report["coreCommands"] = sizeof(core) / sizeof(core[0]); report["missingCoreCommands"] = missing;
       }
       report["texturedDepthCases"] = test_graphics(device, queue, vkGetDeviceProcAddr, true);
+      report["eventCases"] = test_events(device, queue, vkGetDeviceProcAddr);
       report["computeCases"] = test_compute(device, queue, vkGetDeviceProcAddr);
       report["formatCoverage"] = test_formats(physical, vkGetPhysicalDeviceFormatProperties, device, queue, vkGetDeviceProcAddr);
       report["largeMemory"] = test_large_memory(device, queue, vkGetDeviceProcAddr);

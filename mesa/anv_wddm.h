@@ -10,6 +10,7 @@
 #define ANV_WDDM_MAX_BO_BYTES (128ull << 20)
 #define ANV_WDDM_HEAP_BYTES (2ull << 30)
 #define ANV_WDDM_MAX_BOS 65536u
+#define ANV_WDDM_EVENT_SLOTS 4096u   /* 8 bytes each in one BO */
 
 struct anv_wddm_device_state {
    struct hasvk_wddm_device *transport;
@@ -28,6 +29,8 @@ struct anv_wddm_device_state {
     * rather than growing with every allocation the device ever made. */
    BITSET_WORD *bo_ids;
    uint32_t bo_id_hint;
+   struct anv_bo *event_bo;
+   BITSET_WORD event_slots[BITSET_WORDS(ANV_WDDM_EVENT_SLOTS)];
    uint64_t command_batches_completed;
 };
 
@@ -39,15 +42,26 @@ struct anv_wddm_cmd_chunk {
    struct anv_bo *bo;
    uint32_t length;
 };
+/* vkCmdWaitEvents outside a render pass ends the batch there; the queue thread
+ * waits for the events on the CPU and resumes the batch at resume. */
+struct anv_wddm_wait {
+   struct anv_address resume;
+   uint32_t event_count;
+   struct anv_event **events;
+};
 struct anv_wddm_cmd_state {
    struct anv_bo *bo;
    struct anv_wddm_cmd_chunk *chunks;
    uint32_t chunk_count, chunk_capacity;
+   struct anv_wddm_wait *waits;
+   uint32_t wait_count, wait_capacity;
 };
 int anv_wddm_execute_command(struct anv_cmd_buffer *cmd);
 #ifdef HASVK_WDDM_GRAPHICS
 void anv_wddm_cmd_state_finish(struct anv_cmd_buffer *cmd);
 void anv_wddm_init_border_colors(struct anv_device *device);
+struct anv_address anv_wddm_event_address(struct anv_device *device, const struct anv_event *event);
+void anv_wddm_cmd_wait_events(struct anv_cmd_buffer *cmd, uint32_t count, const VkEvent *events);
 #endif
 
 static inline struct anv_wddm_device_state *
