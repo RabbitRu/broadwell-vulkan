@@ -1216,7 +1216,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,719 @@
+@@ -0,0 +1,729 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -1374,6 +1374,8 @@
 +   "VK_KHR_timeline_semaphore",
 +   /* waits inside rendering are detected by gfx.layer_count (anv_wddm_command.c) */
 +   "VK_KHR_dynamic_rendering", "VK_KHR_synchronization2",
++   /* A64 buffer access on pinned BO addresses */
++   "VK_KHR_buffer_device_address",
 +};
 +/* Limits, features and extensions as upstream HasVK reports them for Gen8
 + * (anv_device.c, built as anv_wddm_capabilities.c), then the limits of this
@@ -1407,6 +1409,8 @@
 +   struct vk_features *f = &physical->vk.supported_features;
 +   f->samplerYcbcrConversion = false;   /* multi-planar images not verified on this port yet */
 +   f->protectedMemory = false;
++   /* No address that stays valid across processes or runs. */
++   f->bufferDeviceAddressCaptureReplay = false;
 +   f->sparseBinding = f->sparseResidencyBuffer = f->sparseResidencyImage2D = f->sparseResidencyImage3D = false;
 +   f->sparseResidencyAliased = false;
 +   struct vk_device_extension_table *e = &physical->vk.supported_extensions;
@@ -1456,6 +1460,11 @@
 +   physical->compiler->supports_shader_constants = true;
 +   isl_device_init(&physical->isl_dev, &physical->info);
 +   physical->supports_48bit_addresses = physical->use_softpin = true;
++#ifdef HASVK_WDDM_GRAPHICS
++   /* Every BO has a fixed GPU address, as with softpin upstream: A64 buffer
++    * access (buffer device addresses, bindless SSBO addresses) works. */
++   physical->has_a64_buffer_access = true;
++#endif
 +   physical->gtt_size = 16ull << 30;
 +   physical->memory.heap_count = physical->memory.type_count = 1;
 +   physical->memory.heaps[0] = (struct anv_memory_heap){.size = ANV_WDDM_HEAP_BYTES, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
@@ -1481,7 +1490,8 @@
 +   memcpy(p->deviceLUID, &adapter.luid_low, 4); memcpy(p->deviceLUID + 4, &adapter.luid_high, 4);
 +   p->deviceLUIDValid = true; p->deviceNodeMask = 1;
 +   snprintf(p->deviceName, sizeof(p->deviceName), "Intel Iris 6100 HasVK/WDDM experimental compute");
-+   memcpy(p->pipelineCacheUUID, "HASVK-WDDM-00001", VK_UUID_SIZE);
++   /* Bump when shader/descriptor ABI changes (00002: A64 buffer access). */
++   memcpy(p->pipelineCacheUUID, "HASVK-WDDM-00002", VK_UUID_SIZE);
 +   p->maxMemoryAllocationCount = 4096;
 +   p->maxStorageBufferRange = 128u << 20;
 +   p->minMemoryMapAlignment = 4096; p->nonCoherentAtomSize = 64; p->bufferImageGranularity = 4096;
@@ -2014,7 +2024,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_memory.c
-@@ -0,0 +1,400 @@
+@@ -0,0 +1,402 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -2167,9 +2177,10 @@
 +         const VkMemoryDedicatedAllocateInfo *dedicated = (const void *)ext;
 +         if (dedicated->image && dedicated->buffer) return VK_ERROR_FEATURE_NOT_PRESENT;
 +      } else if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO) {
-+         /* Vulkan 1.1 device groups: one device, mask 1. No device addresses yet. */
++         /* Device groups: one device, mask 1. Device addresses: every BO is pinned.
++          * Capture/replay addresses are not supported. */
 +         const VkMemoryAllocateFlagsInfo *flags = (const void *)ext;
-+         if ((flags->flags & ~VK_MEMORY_ALLOCATE_DEVICE_MASK_BIT) ||
++         if ((flags->flags & ~(VK_MEMORY_ALLOCATE_DEVICE_MASK_BIT | VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT)) ||
 +             ((flags->flags & VK_MEMORY_ALLOCATE_DEVICE_MASK_BIT) && flags->deviceMask != 1))
 +            return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
 +      } else if (ext->sType == VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO) {
@@ -2260,7 +2271,8 @@
 +   const VkBufferUsageFlags allowed = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
 +      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
 +      VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
-+      VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
++      VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
++      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 +   if (info->usage & ~allowed) return VK_ERROR_FEATURE_NOT_PRESENT;
 +   struct anv_buffer *buffer = vk_buffer_create(&device->vk, info, allocator, sizeof(*buffer));
 +   if (!buffer) return VK_ERROR_OUT_OF_HOST_MEMORY;

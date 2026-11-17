@@ -373,7 +373,7 @@ int wmain(int argc, wchar_t **argv)
             "VK_KHR_descriptor_update_template", "VK_KHR_device_group", "VK_KHR_draw_indirect_count", "VK_KHR_driver_properties",
             "VK_KHR_external_memory", "VK_KHR_external_semaphore", "VK_KHR_format_feature_flags2",
             "VK_KHR_get_memory_requirements2", "VK_KHR_image_format_list", "VK_KHR_imageless_framebuffer", "VK_KHR_maintenance1",
-            "VK_KHR_maintenance2", "VK_KHR_maintenance3", "VK_KHR_maintenance4", "VK_KHR_timeline_semaphore", "VK_KHR_dynamic_rendering", "VK_KHR_synchronization2", "VK_KHR_multiview",
+            "VK_KHR_maintenance2", "VK_KHR_maintenance3", "VK_KHR_maintenance4", "VK_KHR_timeline_semaphore", "VK_KHR_dynamic_rendering", "VK_KHR_synchronization2", "VK_KHR_buffer_device_address", "VK_KHR_multiview",
             "VK_KHR_relaxed_block_layout", "VK_KHR_sampler_mirror_clamp_to_edge", "VK_KHR_separate_depth_stencil_layouts",
             "VK_KHR_shader_draw_parameters", "VK_KHR_shader_float_controls", "VK_KHR_shader_float16_int8",
             "VK_KHR_shader_subgroup_extended_types", "VK_KHR_spirv_1_4", "VK_KHR_storage_buffer_storage_class",

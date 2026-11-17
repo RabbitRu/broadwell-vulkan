@@ -150,9 +150,10 @@ anv_AllocateMemory(VkDevice handle, const VkMemoryAllocateInfo *info,
          const VkMemoryDedicatedAllocateInfo *dedicated = (const void *)ext;
          if (dedicated->image && dedicated->buffer) return VK_ERROR_FEATURE_NOT_PRESENT;
       } else if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO) {
-         /* Vulkan 1.1 device groups: one device, mask 1. No device addresses yet. */
+         /* Device groups: one device, mask 1. Device addresses: every BO is pinned.
+          * Capture/replay addresses are not supported. */
          const VkMemoryAllocateFlagsInfo *flags = (const void *)ext;
-         if ((flags->flags & ~VK_MEMORY_ALLOCATE_DEVICE_MASK_BIT) ||
+         if ((flags->flags & ~(VK_MEMORY_ALLOCATE_DEVICE_MASK_BIT | VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT)) ||
              ((flags->flags & VK_MEMORY_ALLOCATE_DEVICE_MASK_BIT) && flags->deviceMask != 1))
             return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
       } else if (ext->sType == VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO) {
@@ -243,7 +244,8 @@ anv_CreateBuffer(VkDevice handle, const VkBufferCreateInfo *info,
    const VkBufferUsageFlags allowed = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
       VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
-      VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+      VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
    if (info->usage & ~allowed) return VK_ERROR_FEATURE_NOT_PRESENT;
    struct anv_buffer *buffer = vk_buffer_create(&device->vk, info, allocator, sizeof(*buffer));
    if (!buffer) return VK_ERROR_OUT_OF_HOST_MEMORY;

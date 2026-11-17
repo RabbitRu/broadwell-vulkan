@@ -155,6 +155,8 @@ static const char *const verified_device_extensions[] = {
    "VK_KHR_timeline_semaphore",
    /* waits inside rendering are detected by gfx.layer_count (anv_wddm_command.c) */
    "VK_KHR_dynamic_rendering", "VK_KHR_synchronization2",
+   /* A64 buffer access on pinned BO addresses */
+   "VK_KHR_buffer_device_address",
 };
 /* Limits, features and extensions as upstream HasVK reports them for Gen8
  * (anv_device.c, built as anv_wddm_capabilities.c), then the limits of this
@@ -188,6 +190,8 @@ static void apply_upstream_capabilities(struct anv_physical_device *physical)
    struct vk_features *f = &physical->vk.supported_features;
    f->samplerYcbcrConversion = false;   /* multi-planar images not verified on this port yet */
    f->protectedMemory = false;
+   /* No address that stays valid across processes or runs. */
+   f->bufferDeviceAddressCaptureReplay = false;
    f->sparseBinding = f->sparseResidencyBuffer = f->sparseResidencyImage2D = f->sparseResidencyImage3D = false;
    f->sparseResidencyAliased = false;
    struct vk_device_extension_table *e = &physical->vk.supported_extensions;
@@ -237,6 +241,11 @@ static VkResult enumerate(struct vk_instance *base)
    physical->compiler->supports_shader_constants = true;
    isl_device_init(&physical->isl_dev, &physical->info);
    physical->supports_48bit_addresses = physical->use_softpin = true;
+#ifdef HASVK_WDDM_GRAPHICS
+   /* Every BO has a fixed GPU address, as with softpin upstream: A64 buffer
+    * access (buffer device addresses, bindless SSBO addresses) works. */
+   physical->has_a64_buffer_access = true;
+#endif
    physical->gtt_size = 16ull << 30;
    physical->memory.heap_count = physical->memory.type_count = 1;
    physical->memory.heaps[0] = (struct anv_memory_heap){.size = ANV_WDDM_HEAP_BYTES, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
@@ -262,7 +271,8 @@ static VkResult enumerate(struct vk_instance *base)
    memcpy(p->deviceLUID, &adapter.luid_low, 4); memcpy(p->deviceLUID + 4, &adapter.luid_high, 4);
    p->deviceLUIDValid = true; p->deviceNodeMask = 1;
    snprintf(p->deviceName, sizeof(p->deviceName), "Intel Iris 6100 HasVK/WDDM experimental compute");
-   memcpy(p->pipelineCacheUUID, "HASVK-WDDM-00001", VK_UUID_SIZE);
+   /* Bump when shader/descriptor ABI changes (00002: A64 buffer access). */
+   memcpy(p->pipelineCacheUUID, "HASVK-WDDM-00002", VK_UUID_SIZE);
    p->maxMemoryAllocationCount = 4096;
    p->maxStorageBufferRange = 128u << 20;
    p->minMemoryMapAlignment = 4096; p->nonCoherentAtomSize = 64; p->bufferImageGranularity = 4096;
