@@ -27,7 +27,9 @@ uint64_t canonical(uint64_t address)
    return address & (1ull << 47) ? address | 0xffff000000000000ull : address;
 }
 
-Device::Device() : Device(4 /* D3DKMT_CLIENTHINT_VULKAN */, {}, true) {}
+/* HASVK_WDDM_PLAIN_CONTEXT=1: context without the presentable private data
+ * (redirected present then shows black; for measurements). */
+Device::Device() : Device(4 /* D3DKMT_CLIENTHINT_VULKAN */, {}, GetEnvironmentVariableA("HASVK_WDDM_PLAIN_CONTEXT", nullptr, 0) == 0) {}
 Device::Device(uint32_t client_hint, std::vector<uint8_t> context_private, bool presentable_context)
 {
    try {

@@ -118,6 +118,7 @@ int wmain(int argc, wchar_t **argv)
          report["laterCoreCommands"] = later;
       }
       report["texturedDepthCases"] = test_graphics(device, queue, vkGetDeviceProcAddr, true);
+      report["submitOrder"] = test_submit_order(device, queue, vkGetDeviceProcAddr);
       report["submitCost"] = test_submit_cost(device, queue, vkGetDeviceProcAddr);
       report["timelineCases"] = test_timelines(device, queue, vkGetDeviceProcAddr);
       report["eventCases"] = test_events(device, queue, vkGetDeviceProcAddr);

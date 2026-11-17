@@ -474,22 +474,20 @@ static VkResult submit(struct vk_queue *queue, struct vk_queue_submit *work)
    if (vk_queue_submit_has_bind(work)) return VK_ERROR_FEATURE_NOT_PRESENT;
    VkResult result = vk_sync_wait_many(&device->vk, work->wait_count, work->waits, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
    if (result != VK_SUCCESS) return result;
+   /* Completion write at entry + 64: MI_STORE_DATA_IMM of the serial, then
+    * MI_BATCH_BUFFER_END. The last command buffer jumps there, so a
+    * vkQueueSubmit costs one kernel submission unless event waits or a
+    * repeated command buffer split it. */
    mtx_lock(&w->submit_mutex);
-   for (uint32_t i = 0; i < work->command_buffer_count; ++i) {
-      struct anv_cmd_buffer *cmd = container_of(work->command_buffers[i], struct anv_cmd_buffer, vk);
-      if (anv_wddm_execute_command(cmd, 0)) {
-         mtx_unlock(&w->submit_mutex);
-         return queue_lost(queue, "HasVK command buffer submission/completion failed");
-      }
-   }
    uint32_t serial = (uint32_t)(w->completed + 1);
    uint64_t target = intel_canonical_address(hasvk_wddm_bo_address(w->completion));
-   uint32_t *batch = hasvk_wddm_bo_map(w->entry);
+   uint32_t *batch = (uint32_t *)hasvk_wddm_bo_map(w->entry) + 16;
    batch[0] = 0x10000002; batch[1] = (uint32_t)target; batch[2] = target >> 32; batch[3] = serial;
    batch[4] = 0x05000000; batch[5] = 0;
-   const int submitted = hasvk_wddm_submit_wait(w->transport, w->entry, 0, 24);
+   const int failed = anv_wddm_execute_commands(device, work->command_buffers, work->command_buffer_count,
+                                                hasvk_wddm_bo_address(w->entry) + 64, 0);
    mtx_unlock(&w->submit_mutex);
-   if (submitted) return queue_lost(queue, hasvk_wddm_error());
+   if (failed) return queue_lost(queue, "HasVK command buffer submission/completion failed");
    const uint32_t *actual = hasvk_wddm_bo_map(w->completion);
    if (actual[0] != serial) return queue_lost(queue, "GPU completion counter mismatch");
    for (unsigned i = 1; i < 1024; ++i) if (actual[i] != 0x39393939) return queue_lost(queue, "GPU guard corrupted");

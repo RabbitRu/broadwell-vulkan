@@ -35,6 +35,7 @@ struct anv_wddm_device_state {
    struct anv_bo *event_bo;
    BITSET_WORD event_slots[BITSET_WORDS(ANV_WDDM_EVENT_SLOTS)];
    uint64_t command_batches_completed;
+   uint64_t runs;   /* kernel submissions of command buffers, for chaining */
 };
 
 VkResult anv_wddm_pools_init(struct anv_device *device);
@@ -58,10 +59,22 @@ struct anv_wddm_cmd_state {
    uint32_t chunk_count, chunk_capacity;
    struct anv_wddm_wait *waits;
    uint32_t wait_count, wait_capacity;
+   /* Last 16 bytes of a recorded primary: MI_BATCH_BUFFER_END, patched at
+    * submission into a jump to the next command buffer of the same kernel
+    * submission or to the queue's completion write. */
+   uint32_t *tail;
+   /* Kernel submission ("run") this buffer's final segment last joined. */
+   uint64_t run;
 };
-/* present_token != 0: the last kernel submission is a redirected present
- * (see hasvk_wddm_submit_present); the command buffer may be executable
- * rather than pending (driver-internal use). Caller holds submit_mutex. */
+/* Executes command buffers in order, chaining them into as few kernel
+ * submissions as their event waits and repetitions allow. The last one jumps
+ * to completion (a batch ending in MI_BATCH_BUFFER_END), or ends there if
+ * completion is 0. present_token != 0: the last kernel submission is a
+ * redirected present (hasvk_wddm_submit_present) and executable (not only
+ * pending) command buffers are accepted (driver-internal use).
+ * Caller holds submit_mutex. */
+int anv_wddm_execute_commands(struct anv_device *device, struct vk_command_buffer *const *commands, uint32_t count,
+                              uint64_t completion, uint64_t present_token);
 int anv_wddm_execute_command(struct anv_cmd_buffer *cmd, uint64_t present_token);
 VkResult anv_wddm_alloc_window_surface_bo(struct anv_device *device, uint32_t width, uint32_t height,
                                           struct anv_bo **out, uint32_t *share, uint64_t *pitch);

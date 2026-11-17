@@ -13,6 +13,19 @@
 enum { command_bytes = 65536, guard_bytes = 256, chain_bytes = 16,
        usable_bytes = command_bytes - guard_bytes - chain_bytes, marker_offset = command_bytes - 64 };
 
+/* 16 bytes: MI_BATCH_BUFFER_START to next (jump) or MI_BATCH_BUFFER_END, padded with MI_NOOP. */
+static void write_tail(uint32_t *tail, struct anv_address next, bool jump)
+{
+   memset(tail, 0, 16);
+   if (jump) {
+      struct GENX(MI_BATCH_BUFFER_START) start = { GENX(MI_BATCH_BUFFER_START_header),
+         .AddressSpaceIndicator = ASI_PPGTT, .BatchBufferStartAddress = next };
+      GENX(MI_BATCH_BUFFER_START_pack)(NULL, tail, &start);
+   } else {
+      struct GENX(MI_BATCH_BUFFER_END) end = { GENX(MI_BATCH_BUFFER_END_header) };
+      GENX(MI_BATCH_BUFFER_END_pack)(NULL, tail, &end);
+   }
+}
 static void command_use_bo(struct anv_cmd_buffer *cmd, struct anv_bo *bo)
 {
    memset((char *)bo->map + command_bytes - guard_bytes, 0x6d, guard_bytes);
@@ -62,6 +75,7 @@ static void command_resources_finish(struct anv_cmd_buffer *cmd)
    for (uint32_t i = 0; i < cmd->wddm->wait_count; ++i) vk_free(&cmd->vk.pool->alloc, cmd->wddm->waits[i].events);
    cmd->wddm->wait_count = 0;
    cmd->wddm->chunk_count = 1; cmd->wddm->chunks[0].length = 0;
+   cmd->wddm->tail = NULL;
 }
 static void command_resources_init(struct anv_cmd_buffer *cmd)
 {
@@ -171,7 +185,8 @@ void anv_cmd_buffer_end_batch_buffer(struct anv_cmd_buffer *cmd)
          flush.PostSyncOperation = WriteImmediateData;
          flush.Address = (struct anv_address){cmd->wddm->bo, marker_offset}; flush.ImmediateData = 1;
       }
-      anv_batch_emit(&cmd->batch, GENX(MI_BATCH_BUFFER_END), end);
+      uint32_t *tail = anv_batch_emit_dwords(&cmd->batch, 4);
+      if (tail) { cmd->wddm->tail = tail; write_tail(tail, ANV_NULL_ADDRESS, false); }
    }
    struct anv_wddm_cmd_state *s = cmd->wddm;
    s->chunks[s->chunk_count - 1].length = (uint32_t)((char *)cmd->batch.next - (char *)cmd->batch.start);
@@ -319,48 +334,92 @@ VKAPI_ATTR void VKAPI_CALL anv_CmdPipelineBarrier2(VkCommandBuffer handle, const
       "conservative compute memory barrier");
    genX(cmd_buffer_apply_pipe_flushes)(cmd);
 }
-int anv_wddm_execute_command(struct anv_cmd_buffer *cmd, uint64_t present_token)
+/* One kernel submission: the entry batch jumps to start; wait for the GPU. */
+static int submit_run(struct anv_wddm_device_state *w, struct anv_address start, uint64_t present_token)
 {
-   struct anv_wddm_device_state *w = cmd->device->wddm;
-   const bool runnable = cmd->vk.state == MESA_VK_COMMAND_BUFFER_STATE_PENDING ||
-      (present_token && cmd->vk.state == MESA_VK_COMMAND_BUFFER_STATE_EXECUTABLE);
-   if (!runnable || cmd->batch.status != VK_SUCCESS ||
-       cmd->vk.level != VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
-      fprintf(stderr, "WDDM command rejected: runtime state=%u, batch status=%d\n", cmd->vk.state, cmd->batch.status);
+   write_tail(hasvk_wddm_bo_map(w->entry), start, true);
+   if (present_token ? hasvk_wddm_submit_present(w->transport, w->entry, 0, 16, present_token)
+                     : hasvk_wddm_submit_wait(w->transport, w->entry, 0, 16)) {
+      fprintf(stderr, "WDDM command submission: %s\n", hasvk_wddm_error());
       return -1;
    }
-   uint64_t *marker = (uint64_t *)((char *)cmd->wddm->bo->map + marker_offset); *marker = 0;
-   /* Command BOs are not flushed by the transport: write back exactly this
-    * command buffer's chunks now, and re-read the marker line after each segment. */
-   for (uint32_t c = 0; c < cmd->wddm->chunk_count; ++c)
-      if (hasvk_wddm_bo_flush(cmd->wddm->chunks[c].bo->wddm_bo)) return -1;
-   if (anv_wddm_flush_state_pools(cmd->device)) return -1;
-   struct anv_address start = {cmd->wddm->bo, 0};
-   for (uint32_t segment = 0;; ++segment) {
-      struct anv_batch entry = {.start = hasvk_wddm_bo_map(w->entry), .next = hasvk_wddm_bo_map(w->entry),
-         .end = (char *)hasvk_wddm_bo_map(w->entry) + 8192, .alloc = &cmd->device->vk.alloc, .relocs = cmd->batch.relocs};
-      anv_batch_emit(&entry, GENX(MI_BATCH_BUFFER_START), jump) {
-         jump.AddressSpaceIndicator = ASI_PPGTT; jump.BatchBufferStartAddress = start;
-      }
-      anv_batch_emit(&entry, GENX(MI_NOOP), noop);
-      const bool present = present_token && segment == cmd->wddm->wait_count;
-      if (entry.status != VK_SUCCESS || (present ? hasvk_wddm_submit_present(w->transport, w->entry, 0, 16, present_token)
-                                                 : hasvk_wddm_submit_wait(w->transport, w->entry, 0, 16))) {
-         fprintf(stderr, "WDDM command segment %u: %s\n", segment, hasvk_wddm_error());
+   ++w->runs;
+   return 0;
+}
+static struct anv_cmd_buffer *command_at(struct vk_command_buffer *const *commands, uint32_t i)
+{
+   return container_of(commands[i], struct anv_cmd_buffer, vk);
+}
+static int check_completed(struct anv_cmd_buffer *cmd);
+int anv_wddm_execute_commands(struct anv_device *device, struct vk_command_buffer *const *commands, uint32_t count,
+                              uint64_t completion, uint64_t present_token)
+{
+   struct anv_wddm_device_state *w = device->wddm;
+   for (uint32_t i = 0; i < count; ++i) {
+      const struct anv_cmd_buffer *cmd = command_at(commands, i);
+      const bool runnable = cmd->vk.state == MESA_VK_COMMAND_BUFFER_STATE_PENDING ||
+         (present_token && cmd->vk.state == MESA_VK_COMMAND_BUFFER_STATE_EXECUTABLE);
+      if (!runnable || cmd->batch.status != VK_SUCCESS || cmd->vk.level != VK_COMMAND_BUFFER_LEVEL_PRIMARY || !cmd->wddm->tail) {
+         fprintf(stderr, "WDDM command rejected: runtime state=%u, batch status=%d\n", cmd->vk.state, cmd->batch.status);
          return -1;
       }
-      if (hasvk_wddm_bo_flush_range(cmd->wddm->bo->wddm_bo, marker_offset & ~63u, 64)) return -1;
-      if (segment == cmd->wddm->wait_count) break;
-      const struct anv_wddm_wait *wait = &cmd->wddm->waits[segment];
-      for (uint32_t e = 0; e < wait->event_count; ++e)
-         while (*(volatile uint64_t *)wait->events[e]->state.map != VK_EVENT_SET) {
-            if (vk_device_is_lost_no_report(&cmd->device->vk)) return -1;
-            Sleep(0);
-         }
-      start = wait->resume;
    }
-   if (*marker != 1) {
-      fprintf(stderr, "WDDM command completion: marker=%llu; %s\n", (unsigned long long)*marker, hasvk_wddm_error());
+   if (!count && !completion) return 0;
+   if (count && anv_wddm_flush_state_pools(device)) return -1;
+   const struct anv_address done = {NULL, completion};
+   /* The pending kernel submission is run number w->runs + 1. A buffer is
+    * chained to its successor unless the successor's final segment is already
+    * part of that run (a repeated buffer has only one tail). */
+   struct anv_address start = count ? (struct anv_address){command_at(commands, 0)->wddm->bo, 0} : done;
+   uint32_t first = 0;   /* first command buffer not yet verified */
+   for (uint32_t i = 0; i < count; ++i) {
+      struct anv_cmd_buffer *cmd = command_at(commands, i);
+      struct anv_wddm_cmd_state *s = cmd->wddm;
+      struct anv_cmd_buffer *next = i + 1 < count ? command_at(commands, i + 1) : NULL;
+      /* After its event waits this buffer's final segment starts a run of its own. */
+      const bool chain = next && next != cmd && (s->wait_count || next->wddm->run != w->runs + 1);
+      if (next) write_tail(s->tail, (struct anv_address){next->wddm->bo, 0}, chain);
+      else write_tail(s->tail, done, completion != 0);
+      *(uint64_t *)((char *)s->bo->map + marker_offset) = 0;
+      /* Command BOs are not flushed by the transport: write back exactly this
+       * command buffer's chunks (with its tail and marker) now. */
+      for (uint32_t c = 0; c < s->chunk_count; ++c)
+         if (hasvk_wddm_bo_flush(s->chunks[c].bo->wddm_bo)) return -1;
+      s->run = w->runs + 1;
+      for (uint32_t k = 0; k < s->wait_count; ++k) {
+         if (submit_run(w, start, 0)) return -1;
+         for (; first < i; ++first) if (check_completed(command_at(commands, first))) return -1;
+         const struct anv_wddm_wait *wait = &s->waits[k];
+         for (uint32_t e = 0; e < wait->event_count; ++e)
+            while (*(volatile uint64_t *)wait->events[e]->state.map != VK_EVENT_SET) {
+               if (vk_device_is_lost_no_report(&device->vk)) return -1;
+               Sleep(0);
+            }
+         start = wait->resume; s->run = w->runs + 1;
+      }
+      if (next && !chain) {
+         if (submit_run(w, start, 0)) return -1;
+         for (; first <= i; ++first) if (check_completed(command_at(commands, first))) return -1;
+         start = (struct anv_address){next->wddm->bo, 0};
+      }
+   }
+   if (submit_run(w, start, present_token)) return -1;
+   for (; first < count; ++first) if (check_completed(command_at(commands, first))) return -1;
+   return 0;
+}
+int anv_wddm_execute_command(struct anv_cmd_buffer *cmd, uint64_t present_token)
+{
+   struct vk_command_buffer *one = &cmd->vk;
+   return anv_wddm_execute_commands(cmd->device, &one, 1, 0, present_token);
+}
+/* After the GPU ran a command buffer to its end: completion marker and guards. */
+static int check_completed(struct anv_cmd_buffer *cmd)
+{
+   struct anv_wddm_device_state *w = cmd->device->wddm;
+   if (hasvk_wddm_bo_flush_range(cmd->wddm->bo->wddm_bo, marker_offset & ~63u, 64)) return -1;
+   const uint64_t marker = *(volatile uint64_t *)((char *)cmd->wddm->bo->map + marker_offset);
+   if (marker != 1) {
+      fprintf(stderr, "WDDM command completion: marker=%llu; %s\n", (unsigned long long)marker, hasvk_wddm_error());
       return -1;
    }
    for (uint32_t c = 0; c < cmd->wddm->chunk_count; ++c) {
