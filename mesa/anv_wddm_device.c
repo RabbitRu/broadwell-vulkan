@@ -265,6 +265,9 @@ static VkResult enumerate(struct vk_instance *base)
    f->shaderClipDistance = f->shaderCullDistance = true;
    f->shaderFloat64 = physical->info.has_64bit_float; f->shaderInt64 = f->shaderInt16 = true;
    f->variableMultisampleRate = f->inheritedQueries = true;
+   /* As upstream: image stores need scalar VS and GS (not vec4). */
+   f->vertexPipelineStoresAndAtomics = physical->compiler->scalar_stage[MESA_SHADER_VERTEX] &&
+      physical->compiler->scalar_stage[MESA_SHADER_GEOMETRY];
    /* PS_DEPTH_COUNT gives exact sample counts (HasVK genX_query.c). */
    physical->vk.supported_features.occlusionQueryPrecise = true;
    physical->vk.supported_features.pipelineStatisticsQuery = true;

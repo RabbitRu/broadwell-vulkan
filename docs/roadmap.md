@@ -1,6 +1,6 @@
 # План реализации Vulkan для Iris 6100 (Broadwell) под Windows
 
-Состояние на 2026-11-17, коммит `07e13fe` и последующие. Цель — ICD на основе Mesa HasVK
+Состояние на 2026-11-17, коммит `2a746b8` и последующие. Цель — ICD на основе Mesa HasVK
 поверх WDDM-драйвера Intel `20.19.15.5171`, без Intel UMD и D3D12.
 
 Обозначения:
@@ -29,7 +29,7 @@ Vulkan 1.3 (`anv_device.c`, ветка `use_softpin`). Сейчас ICD объя
 | WSI / swapchain | [x] Win32, BGRA8, FIFO, вывод через CPU/GDI |
 | Стандартные приложения | [x] `vkcube` 10 минут с resize/minimize |
 | Validation layers | [x] пробы и vkcube без ошибок |
-| CTS | [~] сборка `deqp-vk` в процессе, прогонов ещё не было |
+| CTS | [~] выборка ~2700 тестов из 22 групп: 791 Pass, 0 Fail; остальное NotSupported (нужен рубеж B) |
 | Vulkan 1.1–1.3, расширения | [ ] |
 | Системная регистрация ICD, игры | [ ] |
 
@@ -41,7 +41,8 @@ Vulkan 1.3 (`anv_device.c`, ветка `use_softpin`). Сейчас ICD объя
 - [x] Раскладка адресного пространства HasVK (окно 16 ГиБ, пулы состояния по
   фиксированным адресам), переходы между командными BO.
 - [~] Профиль 1096-байтного описателя выделения подобран под одну пару
-  GPU/драйвер. Размер BO ограничен 128 МиБ, проверено до 4 МиБ.
+  GPU/драйвер. Одно выделение до 128 МиБ, бюджет устройства 2 ГиБ; проверено
+  12 живых выделений по 64 МиБ.
 - [~] Каждая отправка синхронная: очередь ждёт GPU после каждого command buffer.
 
 ### Ядро ICD
@@ -56,6 +57,11 @@ Vulkan 1.3 (`anv_device.c`, ветка `use_softpin`). Сейчас ICD объя
 - [x] Все 137 команд Vulkan 1.0 разрешаются в реальные функции (кроме глобальной
   `vkEnumerateInstanceLayerProperties`, её обслуживает loader).
 - [~] Barriers делают полный flush.
+- [x] Events: отдельный BO, установка/сброс хостом и GPU. `MI_SEMAPHORE_WAIT` в
+  WDDM-контексте не завершается никогда, поэтому `vkCmdWaitEvents` вне render
+  pass разрезает командный буфер, и поток очереди ждёт события на CPU.
+- [x] Push-буфер 0 адресуется относительно dynamic state base: бит `INSTPM`
+  «CONSTANT_BUFFER Address Offset Disable» в WDDM-контексте сброшен.
 
 ### Compute
 - [x] 342 случая на железе: 12 SPIR-V-модулей, группы 1/7/32/64, до 16 381
@@ -108,10 +114,18 @@ Vulkan 1.3 (`anv_device.c`, ветка `use_softpin`). Сейчас ICD объя
 - [x] `tools/test-validation.ps1`: обе пробы и vkcube под
   `VK_LAYER_KHRONOS_validation` (SDK 1.4.363.1 в `C:\VulkanSDK-local`, без
   регистрации в системе), отрицательный контроль через `--force_errors`.
-- [~] `tools/build-cts.ps1` собирает `deqp-vk` (CTS 1.4.5.5) в
-  `C:\VulkanCTS-local`; сборка занимает часы. Выборочный запуск и сохранение
-  результатов (`dEQP-VK.info.*`, `api.smoke.*`, `wsi.win32.*`) — следующий шаг.
-- [ ] Завести список ожидаемых отказов CTS и сокращать его по разделам.
+- [x] `tools/build-cts.ps1` собирает `deqp-vk` (CTS 1.4.5.5) в
+  `C:\VulkanCTS-local` (около 5 часов). `tools/run-cts.ps1` запускает тесты без
+  окон и диалогов, переживает падения и зависания, умеет выборку `-Every` и
+  повтор списка `-CaseFile`; `tools/run-cts-sample.ps1` — срез по 22 группам.
+- [x] Первый срез нашёл 13 отказов; все разобраны и исправлены (раскладка
+  mip-уровней HALIGN, адресация push-буфера, события, texel-буферы, сцепление
+  командных BO). Повторный срез: 791 Pass, 0 Fail
+  (`native/artifacts/cts-sample.json`).
+- [~] Известная проблема: `tessellation.misc_draw.tess_factor_barrier_bug`
+  сбрасывает GPU — вероятно, превышает 2-секундный таймаут Windows TDR
+  (полмиллиона инстансов с атомарными операциями); не доказано.
+- [ ] Полный (а не выборочный) прогон mustpass Vulkan 1.0.
 - [ ] Попиксельная проверка кадра swapchain.
 
 ### A2. Обязательные возможности 1.0
@@ -132,17 +146,18 @@ Vulkan 1.3 (`anv_device.c`, ветка `use_softpin`). Сейчас ICD объя
   проверены. Без тестов: остальные режимы blending, топологии кроме
   triangle list, culling, polygon mode, depth bias, несколько render target,
   несколько subpass, input attachments.
-- [ ] Push constants, texel buffers, массивы дескрипторов, несколько descriptor
-  sets — код upstream, тестов нет.
-- [ ] Геометрические и тесселяционные шейдеры: объявлены, тестов нет.
+- [~] Push constants, texel buffers, массивы дескрипторов, несколько descriptor
+  sets — покрыты выборкой CTS (`binding_model`, `ubo`, `ssbo`), своих тестов нет.
+- [~] Геометрические и тесселяционные шейдеры: выборки CTS `geometry` (85 Pass) и
+  `tessellation` проходят, кроме проблемы с TDR выше.
 - [x] Secondary command buffers и `vkCmdExecuteCommands`.
 - [x] Командные буферы больше 64 КиБ.
-- [ ] Events (`vkCreateEvent`, `vkCmdSetEvent`, `vkCmdWaitEvents`): точки входа
-  есть, поведение не проверено.
+- [x] Events: свой тест на 5 сценариев, CTS `synchronization.basic.event` и
+  выборка `synchronization.op.single_queue.event` проходят.
 - [ ] Sparse-память не обязательна — оставлена выключенной.
 ### A3. Память и синхронизация
-- [ ] Несколько типов памяти и куч с честным бюджетом; выделения больше
-  128 МиБ; проверка на больших объёмах.
+- [~] Бюджет 2 ГиБ, проверено 768 МиБ живых выделений. Несколько типов памяти
+  и одно выделение больше 128 МиБ — нет.
 - [ ] Асинхронная отправка: не ждать GPU на каждом submit, сигнализировать
   fence/semaphore по событию завершения. Сейчас это главное ограничение скорости.
 - [ ] Точные barriers вместо полного flush.
@@ -215,11 +230,11 @@ validation layers не дают ошибок на тестах проекта и
 
 ## 6. Ближайшие шаги
 
-1. A1: дождаться сборки `deqp-vk`, первый прогон `info`, `api.smoke`,
-   `wsi.win32`; завести список отказов.
-2. A2: тесты на оставшееся состояние конвейера, push constants и типы
-   дескрипторов — либо сразу по результатам CTS.
-3. A3: асинхронная отправка команд, несколько типов памяти, выделения больше
-   128 МиБ.
+1. B: включать расширения HasVK по убыванию числа зависящих от них тестов CTS
+   (по срезу): `maintenance1–6`, `dedicated_allocation`,
+   `external_semaphore_capabilities`, `get_memory_requirements2`,
+   `bind_memory2`, `host_query_reset`, `timeline_semaphore`, затем Vulkan 1.1.
+2. A1: полный прогон mustpass Vulkan 1.0 по группам (ночные прогоны).
+3. A3: асинхронная отправка команд, несколько типов памяти.
 4. A3: потокобезопасность записи command buffers.
 5. A4: `VK_ERROR_OUT_OF_DATE_KHR`, `oldSwapchain`, режим IMMEDIATE.
