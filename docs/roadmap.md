@@ -1,6 +1,6 @@
 # План реализации Vulkan для Iris 6100 (Broadwell) под Windows
 
-Состояние на 2026-11-17, коммит `2a746b8` и последующие. Цель — ICD на основе Mesa HasVK
+Состояние на 2026-11-17, коммит `aea7ea3` и последующие. Цель — ICD на основе Mesa HasVK
 поверх WDDM-драйвера Intel `20.19.15.5171`, без Intel UMD и D3D12.
 
 Обозначения:
@@ -10,7 +10,7 @@
 - **[ ]** — не сделано.
 
 Ориентир «полноценной реализации»: upstream HasVK для Gen8 объявляет
-Vulkan 1.3 (`anv_device.c`, ветка `use_softpin`). Сейчас ICD объявляет 1.0.
+Vulkan 1.3 (`anv_device.c`, ветка `use_softpin`). Сейчас ICD объявляет 1.1.
 Дорога делится на три рубежа: **A** — корректный Vulkan 1.0, **B** — паритет
 с HasVK (1.1–1.3 и расширения), **C** — пригодность для реальных приложений.
 
@@ -29,8 +29,8 @@ Vulkan 1.3 (`anv_device.c`, ветка `use_softpin`). Сейчас ICD объя
 | WSI / swapchain | [x] Win32, BGRA8, FIFO, вывод через CPU/GDI |
 | Стандартные приложения | [x] `vkcube` 10 минут с resize/minimize |
 | Validation layers | [x] пробы и vkcube без ошибок |
-| CTS | [~] выборка ~2700 тестов из 22 групп: 791 Pass, 0 Fail; остальное NotSupported (нужен рубеж B) |
-| Vulkan 1.1–1.3, расширения | [ ] |
+| CTS | [~] выборка ~2700 тестов из 22 групп на 1.1: 1093 Pass, 1 Fail (TDR); остальное NotSupported |
+| Vulkan 1.1–1.3, расширения | [~] 1.1 и 19 расширений; 1.2/1.3 — нет |
 | Системная регистрация ICD, игры | [ ] |
 
 ## 1. Что уже сделано
@@ -192,7 +192,20 @@ validation layers не дают ошибок на тестах проекта и
     host query reset, расширенный dynamic state;
   - сжатые текстуры BC1–BC7, анизотропная фильтрация, sample shading,
     depth clamp, dual-source blending, wide lines, large points.
-- [ ] Поднять `apiVersion` до 1.1, затем 1.2 и 1.3 по мере прохождения CTS.
+- [x] Возможности устройства — штатные `get_device_extensions`/`get_features`/
+  `get_properties` HasVK (`anv_wddm_capabilities.c`) с ограничениями порта:
+  выделение до 128 МиБ, без внешних дескрипторов, без sparse, YCbCr выключен,
+  `conformanceVersion` = 0.
+- [x] Vulkan 1.1: все команды 1.1 разрешаются; расширения по белому списку
+  (`verified_device_extensions` в `anv_wddm_device.c`): вошедшие в ядро 1.1 и
+  `driver_properties`, `host_query_reset`, `sampler_mirror_clamp_to_edge`.
+  Манифест ICD объявляет `api_version` 1.1.0 — с 1.0.0 loader скрывал от
+  приложений все структуры features 1.1. Срез CTS: 1093 Pass вместо 791.
+- [ ] Следующие расширения HasVK по числу зависящих тестов: `maintenance4/5`,
+  `scalar_block_layout`, `timeline_semaphore` (нужна эмуляция timeline на
+  бинарных sync), `dynamic_rendering`, `multi_draw`, `synchronization2`.
+- [ ] YCbCr и многоплоскостные изображения.
+- [ ] Поднять `apiVersion` до 1.2, затем 1.3 по мере прохождения CTS.
 - [ ] Внешняя память и семафоры для Windows (`external_memory_win32`) —
   в HasVK этого нет, решать отдельно, если понадобится приложениям.
 - [ ] Обобщить профиль WDDM-выделений: другие версии драйвера Intel и другие
@@ -230,11 +243,11 @@ validation layers не дают ошибок на тестах проекта и
 
 ## 6. Ближайшие шаги
 
-1. B: включать расширения HasVK по убыванию числа зависящих от них тестов CTS
-   (по срезу): `maintenance1–6`, `dedicated_allocation`,
-   `external_semaphore_capabilities`, `get_memory_requirements2`,
-   `bind_memory2`, `host_query_reset`, `timeline_semaphore`, затем Vulkan 1.1.
-2. A1: полный прогон mustpass Vulkan 1.0 по группам (ночные прогоны).
-3. A3: асинхронная отправка команд, несколько типов памяти.
-4. A3: потокобезопасность записи command buffers.
-5. A4: `VK_ERROR_OUT_OF_DATE_KHR`, `oldSwapchain`, режим IMMEDIATE.
+1. B: партия расширений HasVK без новой инфраструктуры (`maintenance4`,
+   `scalar_block_layout`, `uniform_buffer_standard_layout`, `8bit_storage`,
+   `create_renderpass2`, `image_format_list`, `multi_draw` и т. п.) с
+   проверкой срезом CTS.
+2. B: timeline-семафоры через эмуляцию Mesa поверх бинарного sync.
+3. B: `dynamic_rendering`, `synchronization2`, затем Vulkan 1.2.
+4. A1: полный прогон mustpass Vulkan 1.0/1.1 по группам.
+5. A3: асинхронная отправка команд; потокобезопасность.

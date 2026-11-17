@@ -34,7 +34,7 @@ int wmain(int argc, wchar_t **argv)
       auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(loader, "vkGetInstanceProcAddr"));
       require(gipa != nullptr, "Loader entry point missing");
       auto create = reinterpret_cast<PFN_vkCreateInstance>(gipa(VK_NULL_HANDLE, "vkCreateInstance"));
-      VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO}; app.apiVersion = VK_API_VERSION_1_0;
+      VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO}; app.apiVersion = VK_API_VERSION_1_1;
       VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO}; ci.pApplicationInfo = &app;
       VkInstance instance{}; check(create(&ci, nullptr, &instance), "Create instance");
 #define INSTANCE(name) auto name = reinterpret_cast<PFN_##name>(gipa(instance, #name)); require(name != nullptr, "Missing " #name)
@@ -51,6 +51,22 @@ int wmain(int argc, wchar_t **argv)
       VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}; qi.queueCount = 1; qi.pQueuePriorities = &priority;
       VkDeviceCreateInfo di{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO}; di.queueCreateInfoCount = 1; di.pQueueCreateInfos = &qi;
       VkPhysicalDeviceFeatures supported{}; vkGetPhysicalDeviceFeatures(physical, &supported);
+      {  /* Vulkan 1.1 feature structures as an application queries them. */
+         auto features2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(gipa(instance, "vkGetPhysicalDeviceFeatures2"));
+         require(features2 != nullptr, "Missing vkGetPhysicalDeviceFeatures2");
+         VkPhysicalDeviceMultiviewFeatures multiview{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES};
+         VkPhysicalDevice16BitStorageFeatures storage16{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES}; storage16.pNext = &multiview;
+         VkPhysicalDeviceVariablePointersFeatures pointers{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES}; pointers.pNext = &storage16;
+         VkPhysicalDeviceShaderDrawParametersFeatures draw{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES}; draw.pNext = &pointers;
+         VkPhysicalDeviceFeatures2 all{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2}; all.pNext = &draw;
+         features2(physical, &all);
+         report["vulkan11Features"] = {{"multiview", multiview.multiview != 0}, {"storageBuffer16BitAccess", storage16.storageBuffer16BitAccess != 0},
+            {"variablePointersStorageBuffer", pointers.variablePointersStorageBuffer != 0}, {"shaderDrawParameters", draw.shaderDrawParameters != 0}};
+         /* All false when the ICD manifest declares 1.0: the loader then emulates
+          * vkGetPhysicalDeviceFeatures2 and leaves pNext untouched. */
+         require(multiview.multiview && storage16.storageBuffer16BitAccess && pointers.variablePointersStorageBuffer && draw.shaderDrawParameters,
+            "Vulkan 1.1 features not visible through the loader");
+      }
       require(supported.occlusionQueryPrecise == VK_TRUE && supported.pipelineStatisticsQuery == VK_TRUE, "Query features not advertised");
       uint32_t families = 1; VkQueueFamilyProperties family{}; vkGetPhysicalDeviceQueueFamilyProperties(physical, &families, &family);
       require(families == 1 && family.timestampValidBits >= 32 && family.timestampValidBits < 64 && properties.limits.timestampComputeAndGraphics == VK_TRUE &&

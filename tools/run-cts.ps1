@@ -32,6 +32,7 @@ function Start-Deqp([string[]]$Arguments, [int]$Seconds, [string]$LogName) {
     $start.FileName=$taskExe; $start.WorkingDirectory=$taskWork; $start.UseShellExecute=$false; $start.CreateNoWindow=$true
     # deqp's own command-line parser does not strip quotes; all paths here are space-free.
     $start.Arguments=$Arguments -join ' '
+    [IO.File]::WriteAllText((Join-Path $taskOut ($LogName+'.cmdline.txt')), $start.Arguments, [Text.UTF8Encoding]::new($false))
     $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true
     $start.EnvironmentVariables['VK_DRIVER_FILES']=Join-Path $taskPackage 'intel_hasvk_wddm_icd.json'
     $start.EnvironmentVariables.Remove('VK_ICD_FILENAMES'); $start.EnvironmentVariables.Remove('VK_ADD_DRIVER_FILES')
@@ -52,7 +53,9 @@ $taskListCache=Join-Path $Root 'results\caselist.txt'   # depends on the CTS bui
 if (-not (Test-Path -LiteralPath $taskListCache)) {
     $generated=Join-Path $taskWork 'dEQP-VK-cases.txt'
     if (Test-Path -LiteralPath $generated) { Remove-Item -LiteralPath $generated -Confirm:$false }
-    $list=Start-Deqp @('--deqp-runmode=txt-caselist', '--deqp-visibility=hidden', '--deqp-log-filename='+(Join-Path $taskOut 'caselist.qpa')) 1800 'caselist'
+    # Build the argument first: inside the array literal '+(Join-Path ...)' became a separate element.
+    $logArgument='--deqp-log-filename='+(Join-Path $taskOut 'caselist.qpa')
+    $list=Start-Deqp @('--deqp-runmode=txt-caselist', '--deqp-visibility=hidden', $logArgument) 1800 'caselist'
     if ($list.exitCode -or $list.timedOut -or -not (Test-Path -LiteralPath $generated)) { throw "deqp-vk could not enumerate its cases (exit $($list.exitCode)); see $taskOut\caselist.stderr.log" }
     Move-Item -LiteralPath $generated -Destination $taskListCache -Force
 }
