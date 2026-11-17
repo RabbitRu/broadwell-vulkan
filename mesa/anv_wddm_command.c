@@ -316,13 +316,15 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_EndCommandBuffer(VkCommandBuffer handle)
    return vk_command_buffer_end(&cmd->vk);
 }
 #endif
+/* Graphics build: upstream HasVK's barrier (flush and invalidate bits from the
+ * stage and access masks, image layout transitions). The compute-only build
+ * keeps a conservative full flush. */
 VKAPI_ATTR void VKAPI_CALL anv_CmdPipelineBarrier2(VkCommandBuffer handle, const VkDependencyInfo *info)
 {
-   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
 #ifdef HASVK_WDDM_GRAPHICS
-   anv_add_pending_pipe_bits(cmd, ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT | ANV_PIPE_DEPTH_CACHE_FLUSH_BIT,
-      "graphics memory barrier");
-#endif
+   genX(CmdPipelineBarrier2)(handle, info);
+#else
+   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
    for (uint32_t i = 0; i < info->imageMemoryBarrierCount; ++i) {
       ANV_FROM_HANDLE(anv_image, image, info->pImageMemoryBarriers[i].image);
       if (image->planes[0].aux_usage != ISL_AUX_USAGE_NONE) {
@@ -333,6 +335,7 @@ VKAPI_ATTR void VKAPI_CALL anv_CmdPipelineBarrier2(VkCommandBuffer handle, const
       ANV_PIPE_STATE_CACHE_INVALIDATE_BIT | ANV_PIPE_CONSTANT_CACHE_INVALIDATE_BIT | ANV_PIPE_TEXTURE_CACHE_INVALIDATE_BIT,
       "conservative compute memory barrier");
    genX(cmd_buffer_apply_pipe_flushes)(cmd);
+#endif
 }
 /* A free slot of the entry ring (its previous submission completed). */
 static int take_slot(struct anv_wddm_device_state *w, uint32_t *slot)

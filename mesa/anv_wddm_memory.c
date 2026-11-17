@@ -103,7 +103,9 @@ anv_device_alloc_bo(struct anv_device *device, const char *name, uint64_t size,
    int tracking = HASVK_WDDM_FLUSH_BEFORE | HASVK_WDDM_FLUSH_AFTER;
    if ((name_length > 5 && !strcmp(name + name_length - 5, " pool")) || !strcmp(name, "command")) tracking = 0;
    if (tracking != (HASVK_WDDM_FLUSH_BEFORE | HASVK_WDDM_FLUSH_AFTER) && hasvk_wddm_bo_set_cpu_tracking(bo->wddm_bo, tracking)) {
-      mtx_lock(&w->mutex); hasvk_wddm_bo_destroy(bo->wddm_bo); util_vma_heap_free(heap, address, size); mtx_unlock(&w->mutex);
+      /* w->mutex is still held here. */
+      hasvk_wddm_bo_destroy(bo->wddm_bo); util_vma_heap_free(heap, address, size); BITSET_CLEAR(w->bo_ids, id);
+      mtx_unlock(&w->mutex);
       vk_free(&device->vk.alloc, bo); return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    }
    w->allocated_bytes += size; ++w->allocation_count;

@@ -2248,7 +2248,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_memory.c
-@@ -0,0 +1,477 @@
+@@ -0,0 +1,479 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -2354,7 +2354,9 @@
 +   int tracking = HASVK_WDDM_FLUSH_BEFORE | HASVK_WDDM_FLUSH_AFTER;
 +   if ((name_length > 5 && !strcmp(name + name_length - 5, " pool")) || !strcmp(name, "command")) tracking = 0;
 +   if (tracking != (HASVK_WDDM_FLUSH_BEFORE | HASVK_WDDM_FLUSH_AFTER) && hasvk_wddm_bo_set_cpu_tracking(bo->wddm_bo, tracking)) {
-+      mtx_lock(&w->mutex); hasvk_wddm_bo_destroy(bo->wddm_bo); util_vma_heap_free(heap, address, size); mtx_unlock(&w->mutex);
++      /* w->mutex is still held here. */
++      hasvk_wddm_bo_destroy(bo->wddm_bo); util_vma_heap_free(heap, address, size); BITSET_CLEAR(w->bo_ids, id);
++      mtx_unlock(&w->mutex);
 +      vk_free(&device->vk.alloc, bo); return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 +   }
 +   w->allocated_bytes += size; ++w->allocation_count;
@@ -3028,7 +3030,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_command.c
-@@ -0,0 +1,503 @@
+@@ -0,0 +1,506 @@
 +/* Windows lifetime and submission backing for HasVK command buffers.
 + * Packet emission, descriptor binding and push packing use upstream HasVK.
 + *
@@ -3347,13 +3349,15 @@
 +   return vk_command_buffer_end(&cmd->vk);
 +}
 +#endif
++/* Graphics build: upstream HasVK's barrier (flush and invalidate bits from the
++ * stage and access masks, image layout transitions). The compute-only build
++ * keeps a conservative full flush. */
 +VKAPI_ATTR void VKAPI_CALL anv_CmdPipelineBarrier2(VkCommandBuffer handle, const VkDependencyInfo *info)
 +{
-+   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
 +#ifdef HASVK_WDDM_GRAPHICS
-+   anv_add_pending_pipe_bits(cmd, ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT | ANV_PIPE_DEPTH_CACHE_FLUSH_BIT,
-+      "graphics memory barrier");
-+#endif
++   genX(CmdPipelineBarrier2)(handle, info);
++#else
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
 +   for (uint32_t i = 0; i < info->imageMemoryBarrierCount; ++i) {
 +      ANV_FROM_HANDLE(anv_image, image, info->pImageMemoryBarriers[i].image);
 +      if (image->planes[0].aux_usage != ISL_AUX_USAGE_NONE) {
@@ -3364,6 +3368,7 @@
 +      ANV_PIPE_STATE_CACHE_INVALIDATE_BIT | ANV_PIPE_CONSTANT_CACHE_INVALIDATE_BIT | ANV_PIPE_TEXTURE_CACHE_INVALIDATE_BIT,
 +      "conservative compute memory barrier");
 +   genX(cmd_buffer_apply_pipe_flushes)(cmd);
++#endif
 +}
 +/* A free slot of the entry ring (its previous submission completed). */
 +static int take_slot(struct anv_wddm_device_state *w, uint32_t *slot)
