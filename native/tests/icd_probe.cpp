@@ -365,17 +365,26 @@ int wmain(int argc, wchar_t **argv)
       require(memory.memoryTypeCount == 1 && memory.memoryHeapCount == 1, "Invalid memory configuration");
       uint32_t extension_count = 0; check(vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, nullptr), "Device extensions");
       {  /* Exactly the extensions this port has verified (anv_wddm_device.c verified_device_extensions). */
-         static const char *const expected[] = {"VK_EXT_host_query_reset", "VK_KHR_16bit_storage", "VK_KHR_bind_memory2",
-            "VK_KHR_dedicated_allocation", "VK_KHR_descriptor_update_template", "VK_KHR_device_group", "VK_KHR_driver_properties",
-            "VK_KHR_external_memory", "VK_KHR_external_semaphore", "VK_KHR_get_memory_requirements2", "VK_KHR_maintenance1",
-            "VK_KHR_maintenance2", "VK_KHR_maintenance3", "VK_KHR_multiview", "VK_KHR_relaxed_block_layout",
-            "VK_KHR_sampler_mirror_clamp_to_edge", "VK_KHR_shader_draw_parameters", "VK_KHR_storage_buffer_storage_class",
-            "VK_KHR_swapchain", "VK_KHR_variable_pointers"};
+         static const char *const expected[] = {"VK_EXT_4444_formats", "VK_EXT_extended_dynamic_state",
+            "VK_EXT_extended_dynamic_state2", "VK_EXT_host_query_reset", "VK_EXT_index_type_uint8", "VK_EXT_multi_draw",
+            "VK_EXT_scalar_block_layout", "VK_EXT_separate_stencil_usage", "VK_EXT_shader_viewport_index_layer",
+            "VK_KHR_16bit_storage", "VK_KHR_8bit_storage", "VK_KHR_bind_memory2", "VK_KHR_copy_commands2",
+            "VK_KHR_create_renderpass2", "VK_KHR_dedicated_allocation", "VK_KHR_depth_stencil_resolve",
+            "VK_KHR_descriptor_update_template", "VK_KHR_device_group", "VK_KHR_draw_indirect_count", "VK_KHR_driver_properties",
+            "VK_KHR_external_memory", "VK_KHR_external_semaphore", "VK_KHR_format_feature_flags2",
+            "VK_KHR_get_memory_requirements2", "VK_KHR_image_format_list", "VK_KHR_imageless_framebuffer", "VK_KHR_maintenance1",
+            "VK_KHR_maintenance2", "VK_KHR_maintenance3", "VK_KHR_maintenance4", "VK_KHR_timeline_semaphore", "VK_KHR_multiview",
+            "VK_KHR_relaxed_block_layout", "VK_KHR_sampler_mirror_clamp_to_edge", "VK_KHR_separate_depth_stencil_layouts",
+            "VK_KHR_shader_draw_parameters", "VK_KHR_shader_float_controls", "VK_KHR_shader_float16_int8",
+            "VK_KHR_shader_subgroup_extended_types", "VK_KHR_spirv_1_4", "VK_KHR_storage_buffer_storage_class",
+            "VK_KHR_swapchain", "VK_KHR_uniform_buffer_standard_layout", "VK_KHR_variable_pointers",
+            "VK_KHR_vulkan_memory_model"};
          std::vector<VkExtensionProperties> extensions(extension_count);
          check(vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, extensions.data()), "Query device extensions");
          std::vector<std::string> names; for (const auto &extension : extensions) names.push_back(extension.extensionName);
          std::sort(names.begin(), names.end());
-         require(names == std::vector<std::string>(std::begin(expected), std::end(expected)), "Device extensions differ from the verified list");
+         std::vector<std::string> wanted(std::begin(expected), std::end(expected)); std::sort(wanted.begin(), wanted.end());
+         require(names == wanted, "Device extensions differ from the verified list");
          report["deviceExtensions"] = names;
       }
       require(VK_API_VERSION_MAJOR(properties.apiVersion) == 1 && VK_API_VERSION_MINOR(properties.apiVersion) == 1, "ICD must report Vulkan 1.1");

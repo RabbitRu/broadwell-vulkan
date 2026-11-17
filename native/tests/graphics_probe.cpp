@@ -23,6 +23,7 @@ static void check(VkResult result, const char *message) {
 #include "icd_format_test.hpp"
 #include "icd_compute_test.hpp"
 #include "icd_event_test.hpp"
+#include "icd_timeline_test.hpp"
 int wmain(int argc, wchar_t **argv)
 {
    if (argc != 2) return 2;
@@ -72,6 +73,10 @@ int wmain(int argc, wchar_t **argv)
       require(families == 1 && family.timestampValidBits >= 32 && family.timestampValidBits < 64 && properties.limits.timestampComputeAndGraphics == VK_TRUE &&
          properties.limits.timestampPeriod > 0, "Timestamps not advertised");
       VkPhysicalDeviceFeatures enabled{}; enabled.occlusionQueryPrecise = enabled.pipelineStatisticsQuery = VK_TRUE; di.pEnabledFeatures = &enabled;
+      static const char *const device_extensions[] = {"VK_KHR_timeline_semaphore"};
+      di.enabledExtensionCount = 1; di.ppEnabledExtensionNames = device_extensions;
+      VkPhysicalDeviceTimelineSemaphoreFeatures timeline_features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
+      timeline_features.timelineSemaphore = VK_TRUE; di.pNext = &timeline_features;
       VkDevice device{}; check(vkCreateDevice(physical, &di, nullptr, &device), "Create hardware device");
       auto get_queue = reinterpret_cast<PFN_vkGetDeviceQueue>(vkGetDeviceProcAddr(device, "vkGetDeviceQueue"));
       auto destroy = reinterpret_cast<PFN_vkDestroyDevice>(vkGetDeviceProcAddr(device, "vkDestroyDevice"));
@@ -112,6 +117,7 @@ int wmain(int argc, wchar_t **argv)
          report["laterCoreCommands"] = later;
       }
       report["texturedDepthCases"] = test_graphics(device, queue, vkGetDeviceProcAddr, true);
+      report["timelineCases"] = test_timelines(device, queue, vkGetDeviceProcAddr);
       report["eventCases"] = test_events(device, queue, vkGetDeviceProcAddr);
       report["computeCases"] = test_compute(device, queue, vkGetDeviceProcAddr);
       report["formatCoverage"] = test_formats(physical, vkGetPhysicalDeviceFormatProperties, device, queue, vkGetDeviceProcAddr);

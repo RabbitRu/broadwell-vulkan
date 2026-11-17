@@ -8,6 +8,7 @@
 #include "util/os_time.h"
 #undef NSEC_PER_SEC
 #include "util/timespec.h"
+#include "vk_sync_timeline.h"
 #include <stdarg.h>
 
 struct anv_wddm_sync {
@@ -75,6 +76,13 @@ static const struct vk_sync_type wddm_sync_type = {
    .init = sync_init, .finish = sync_finish, .signal = sync_signal, .reset = sync_reset,
    .move = sync_move, .wait_many = sync_wait_many,
 };
+#ifdef HASVK_WDDM_GRAPHICS
+/* Timeline semaphores: Mesa's emulation on top of the binary WDDM sync type
+ * (as upstream HasVK without kernel timelines). The threaded queue waits for
+ * timeline points and vk_queue_submit_final turns them into binary syncs. */
+static struct vk_sync_timeline_type wddm_timeline_type;
+static const struct vk_sync_type *wddm_sync_types[3];
+#endif
 static void compiler_log(void *data, unsigned *id, const char *format, ...)
 {
    (void)data; (void)id;
@@ -136,6 +144,15 @@ static const char *const verified_device_extensions[] = {
    "VK_KHR_shader_draw_parameters", "VK_KHR_storage_buffer_storage_class", "VK_KHR_variable_pointers",
    /* small, self-contained */
    "VK_KHR_driver_properties", "VK_EXT_host_query_reset", "VK_KHR_sampler_mirror_clamp_to_edge",
+   /* second batch: upstream code paths, no new port infrastructure (CTS-checked) */
+   "VK_KHR_8bit_storage", "VK_KHR_shader_float16_int8", "VK_KHR_uniform_buffer_standard_layout", "VK_EXT_scalar_block_layout",
+   "VK_KHR_shader_float_controls", "VK_KHR_spirv_1_4", "VK_KHR_vulkan_memory_model", "VK_KHR_shader_subgroup_extended_types",
+   "VK_EXT_shader_viewport_index_layer", "VK_KHR_image_format_list", "VK_KHR_format_feature_flags2", "VK_EXT_separate_stencil_usage",
+   "VK_EXT_4444_formats", "VK_EXT_index_type_uint8", "VK_KHR_create_renderpass2", "VK_KHR_depth_stencil_resolve",
+   "VK_KHR_separate_depth_stencil_layouts", "VK_KHR_imageless_framebuffer", "VK_KHR_copy_commands2", "VK_KHR_draw_indirect_count",
+   "VK_EXT_multi_draw", "VK_EXT_extended_dynamic_state", "VK_EXT_extended_dynamic_state2", "VK_KHR_maintenance4",
+   /* emulated on the binary WDDM sync type */
+   "VK_KHR_timeline_semaphore",
 };
 /* Limits, features and extensions as upstream HasVK reports them for Gen8
  * (anv_device.c, built as anv_wddm_capabilities.c), then the limits of this
@@ -227,8 +244,14 @@ static VkResult enumerate(struct vk_instance *base)
    };
    physical->queue.family_count = 1;
    physical->queue.families[0] = (struct anv_queue_family){queue_flags(), 1, INTEL_ENGINE_CLASS_RENDER};
+#ifdef HASVK_WDDM_GRAPHICS
+   wddm_timeline_type = vk_sync_timeline_get_type(&wddm_sync_type);
+   wddm_sync_types[0] = &wddm_sync_type; wddm_sync_types[1] = &wddm_timeline_type.sync; wddm_sync_types[2] = NULL;
+   physical->vk.supported_sync_types = wddm_sync_types;
+#else
    physical->sync_types[0] = &wddm_sync_type;
    physical->vk.supported_sync_types = physical->sync_types;
+#endif
    physical->vk.pipeline_cache_import_ops = anv_cache_import_ops;
    struct vk_properties *p = &physical->vk.properties;
    p->apiVersion = VK_API_VERSION_1_0;

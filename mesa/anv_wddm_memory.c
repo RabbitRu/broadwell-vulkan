@@ -365,3 +365,22 @@ PUBLIC int hasvk_wddm_icd_read_image_level(VkImage handle, uint32_t level, uint3
    }
    return 0;
 }
+
+/* VK_KHR_maintenance4 / Vulkan 1.3: requirements of a buffer that is not created. */
+VKAPI_ATTR void VKAPI_CALL
+anv_GetDeviceBufferMemoryRequirements(VkDevice handle, const VkDeviceBufferMemoryRequirements *info,
+                                      VkMemoryRequirements2 *requirements)
+{
+   (void)handle;
+   const VkBufferCreateInfo *create = info->pCreateInfo;
+   requirements->memoryRequirements = (VkMemoryRequirements){
+      .size = create->size, .alignment = (create->usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ? ANV_UBO_ALIGNMENT : 16,
+      .memoryTypeBits = 1,
+   };
+   vk_foreach_struct(ext, requirements->pNext) {
+      if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
+         VkMemoryDedicatedRequirements *dedicated = (void *)ext;
+         dedicated->prefersDedicatedAllocation = dedicated->requiresDedicatedAllocation = false;
+      }
+   }
+}
