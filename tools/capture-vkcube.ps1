@@ -1,6 +1,10 @@
 param([int]$Frames = 600, [int[]]$CaptureAfterMs = @(2500, 4000), [string]$OutputDirectory, [int]$DeadlineSeconds = 120,
     [string[]]$ExtraArguments = @(), [int]$ExerciseSeconds = 0, [int]$ExerciseIntervalMs = 1500,
-    [switch]$Validate, [string]$LayerPath = 'C:\VulkanSDK-local\Bin')
+    [switch]$Validate, [string]$LayerPath = 'C:\VulkanSDK-local\Bin',
+    [ValidateSet('redirect', 'gdi')][string]$Present = 'redirect')
+# -Present gdi: force the old CPU-copy/GDI presentation (HASVK_WDDM_PRESENT=gdi).
+# The display is kept on during the run: while it sleeps every present is
+# "occluded" and the ICD falls back to GDI.
 # -Validate: run under VK_LAYER_KHRONOS_validation; messages go to validation.log.
 # -ExerciseSeconds N: run for N seconds with periodic resize/minimize/restore and
 # finish with WM_CLOSE (pass a large -Frames so vkcube does not stop by itself).
@@ -30,6 +34,8 @@ public static class CubeWindow {
   [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hgt, uint flags);
   [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
   [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+  [DllImport("kernel32.dll")] static extern uint SetThreadExecutionState(uint flags);
+  public static void KeepDisplayOn(bool on){ SetThreadExecutionState(on ? 0x80000003u /* CONTINUOUS|SYSTEM|DISPLAY */ : 0x80000000u); }
   // Moved to the screen origin: GDI presentation only paints the on-screen part of a window.
   public static void Resize(IntPtr h, int w, int hgt){ SetWindowPos(h, IntPtr.Zero, 0, 0, w, hgt, 0x14 /* NOZORDER|NOACTIVATE */); }
   public static void Show(IntPtr h, int cmd){ ShowWindow(h, cmd); }
@@ -65,6 +71,9 @@ $taskStart.EnvironmentVariables['VK_DRIVER_FILES']=Join-Path $taskPackage 'intel
 $taskStart.EnvironmentVariables.Remove('VK_ICD_FILENAMES'); $taskStart.EnvironmentVariables.Remove('VK_ADD_DRIVER_FILES')
 $taskStart.EnvironmentVariables['VK_LOADER_LAYERS_DISABLE']='~implicit~'
 $taskStart.EnvironmentVariables['PATH']=$taskPackage+';'+$env:PATH
+if ($Present -eq 'gdi') { $taskStart.EnvironmentVariables['HASVK_WDDM_PRESENT']='gdi' } else { $taskStart.EnvironmentVariables.Remove('HASVK_WDDM_PRESENT') }
+$taskStart.EnvironmentVariables['HASVK_WDDM_PRESENT_STATS']='1'
+[CubeWindow]::KeepDisplayOn($true); Start-Sleep -Milliseconds 1000
 if ($Validate) {
     if (-not (Test-Path -LiteralPath (Join-Path $LayerPath 'VkLayer_khronos_validation.json'))) { throw "Validation layer not found in $LayerPath" }
     $taskValidationLog=Join-Path (Resolve-Path -LiteralPath $OutputDirectory).Path 'validation.log'
@@ -134,7 +143,14 @@ try {
     }
     if (-not $taskProcess.HasExited) { $taskProcess.Kill(); $taskProcess.WaitForExit(); throw 'vkcube did not exit before the deadline' }
     $taskBlank=@($taskCaptures | Where-Object { $_.distinctSampledColors -lt 20 -or $_.unpaintedEdgeSamples })
-    $taskResult=[ordered]@{frames=$Frames; exerciseSeconds=$ExerciseSeconds; exitCode=$taskProcess.ExitCode; seconds=[math]::Round($taskWatch.Elapsed.TotalSeconds,2);
+    # "HasVK/WDDM present stats: R redirected, G gdi" (HASVK_WDDM_PRESENT_STATS, at swapchain destruction).
+    $taskStats=@([regex]::Matches($taskErrors.Result, 'present stats: (\d+) redirected, (\d+) gdi'))
+    $taskRedirected=($taskStats | ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
+    $taskGdi=($taskStats | ForEach-Object { [int]$_.Groups[2].Value } | Measure-Object -Sum).Sum
+    $taskCpu=$null; try { $taskCpu=[math]::Round($taskProcess.TotalProcessorTime.TotalSeconds,2) } catch {}
+    $taskResult=[ordered]@{frames=$Frames; exerciseSeconds=$ExerciseSeconds; present=$Present; exitCode=$taskProcess.ExitCode; seconds=[math]::Round($taskWatch.Elapsed.TotalSeconds,2);
+        cpuSeconds=$taskCpu;
+        redirectedPresents=$taskRedirected; gdiPresents=$taskGdi;
         captureCount=$taskCaptures.Count; blankCaptures=$taskBlank.Count; captures=$taskCaptures}
     [IO.File]::WriteAllText((Join-Path $OutputDirectory 'report.json'), ($taskResult | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
     if ($taskBlank.Count) { throw "vkcube produced $($taskBlank.Count) blank captures" }
@@ -142,6 +158,7 @@ try {
     if ($taskProcess.ExitCode) { throw "vkcube failed: $($taskProcess.ExitCode)" }
 } finally {
     if (-not $taskProcess.HasExited) { $taskProcess.Kill(); $taskProcess.WaitForExit() }
+    [CubeWindow]::KeepDisplayOn($false)
     [IO.File]::WriteAllText((Join-Path $OutputDirectory 'stderr.log'), $taskErrors.Result, [Text.UTF8Encoding]::new($false))
     $taskProcess.Dispose()
 }

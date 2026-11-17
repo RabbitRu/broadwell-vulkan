@@ -185,8 +185,39 @@ extern "C" int hasvk_wddm_bo_flush_range(hasvk_wddm_bo *bo, uint64_t offset, uin
    if (!bo) return failure("Invalid BO");
    return checked([&] { bo->native->flush(offset, bytes); });
 }
+extern "C" int hasvk_wddm_bo_create_window_surface(hasvk_wddm_device *device, uint32_t width, uint32_t height,
+                                                    hasvk_wddm_bo **out)
+{
+   if (!device || !out) return failure("Missing window surface arguments");
+   *out = nullptr;
+   return checked([&] {
+      std::lock_guard<std::mutex> lock(device->mutex);
+      auto bo = std::make_unique<hasvk_wddm_bo>();
+      bo->device = device; bo->reservation = 0;
+      bo->native = std::make_unique<Buffer>(device->native, WindowSurfaceTag{}, width, height);
+      device->buffers.insert(bo.get());
+      *out = bo.release();
+   });
+}
+extern "C" int hasvk_wddm_bo_window_surface_info(const hasvk_wddm_bo *bo, uint32_t *share, uint64_t *pitch)
+{
+   if (!bo || !share || !pitch || !bo->native->share()) return failure("Not a window surface");
+   *share = bo->native->share(); *pitch = bo->native->pitch();
+   return 0;
+}
+static int submit(hasvk_wddm_device *device, hasvk_wddm_bo *commands, uint32_t offset, uint32_t bytes, uint64_t present_token);
+extern "C" int hasvk_wddm_submit_present(hasvk_wddm_device *device, hasvk_wddm_bo *commands,
+                                          uint32_t offset, uint32_t bytes, uint64_t present_token)
+{
+   if (!present_token) return failure("Missing present token");
+   return submit(device, commands, offset, bytes, present_token);
+}
 extern "C" int hasvk_wddm_submit_wait(hasvk_wddm_device *device, hasvk_wddm_bo *commands,
                                        uint32_t offset, uint32_t bytes)
+{
+   return submit(device, commands, offset, bytes, 0);
+}
+static int submit(hasvk_wddm_device *device, hasvk_wddm_bo *commands, uint32_t offset, uint32_t bytes, uint64_t present_token)
 {
    if (!device || !commands || commands->device != device) return failure("Invalid submission device/BO");
    return checked([&] {
@@ -200,7 +231,7 @@ extern "C" int hasvk_wddm_submit_wait(hasvk_wddm_device *device, hasvk_wddm_bo *
          }
       }
       const uint64_t t1 = ticks();
-      device->native.submit_and_wait(commands->native->address() + offset, bytes, command_header_8192());
+      device->native.submit_and_wait(commands->native->address() + offset, bytes, command_header_8192(), 15000, present_token);
       device->profile.upload_ticks += t1 - t0; device->profile.submit_ticks += ticks() - t1; ++device->profile.submissions;
    });
 }

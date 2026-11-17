@@ -319,10 +319,12 @@ VKAPI_ATTR void VKAPI_CALL anv_CmdPipelineBarrier2(VkCommandBuffer handle, const
       "conservative compute memory barrier");
    genX(cmd_buffer_apply_pipe_flushes)(cmd);
 }
-int anv_wddm_execute_command(struct anv_cmd_buffer *cmd)
+int anv_wddm_execute_command(struct anv_cmd_buffer *cmd, uint64_t present_token)
 {
    struct anv_wddm_device_state *w = cmd->device->wddm;
-   if (cmd->vk.state != MESA_VK_COMMAND_BUFFER_STATE_PENDING || cmd->batch.status != VK_SUCCESS ||
+   const bool runnable = cmd->vk.state == MESA_VK_COMMAND_BUFFER_STATE_PENDING ||
+      (present_token && cmd->vk.state == MESA_VK_COMMAND_BUFFER_STATE_EXECUTABLE);
+   if (!runnable || cmd->batch.status != VK_SUCCESS ||
        cmd->vk.level != VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
       fprintf(stderr, "WDDM command rejected: runtime state=%u, batch status=%d\n", cmd->vk.state, cmd->batch.status);
       return -1;
@@ -341,7 +343,9 @@ int anv_wddm_execute_command(struct anv_cmd_buffer *cmd)
          jump.AddressSpaceIndicator = ASI_PPGTT; jump.BatchBufferStartAddress = start;
       }
       anv_batch_emit(&entry, GENX(MI_NOOP), noop);
-      if (entry.status != VK_SUCCESS || hasvk_wddm_submit_wait(w->transport, w->entry, 0, 16)) {
+      const bool present = present_token && segment == cmd->wddm->wait_count;
+      if (entry.status != VK_SUCCESS || (present ? hasvk_wddm_submit_present(w->transport, w->entry, 0, 16, present_token)
+                                                 : hasvk_wddm_submit_wait(w->transport, w->entry, 0, 16))) {
          fprintf(stderr, "WDDM command segment %u: %s\n", segment, hasvk_wddm_error());
          return -1;
       }

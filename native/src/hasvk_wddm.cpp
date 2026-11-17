@@ -27,10 +27,17 @@ uint64_t canonical(uint64_t address)
    return address & (1ull << 47) ? address | 0xffff000000000000ull : address;
 }
 
-Device::Device() : Device(4 /* D3DKMT_CLIENTHINT_VULKAN */, {}) {}
-Device::Device(uint32_t client_hint, std::vector<uint8_t> context_private)
+Device::Device() : Device(4 /* D3DKMT_CLIENTHINT_VULKAN */, {}, true) {}
+Device::Device(uint32_t client_hint, std::vector<uint8_t> context_private, bool presentable_context)
 {
    try {
+      if (presentable_context && context_private.empty()) {
+         context_buffer_.assign(0x2cdc, 0);
+         context_private.assign(32, 0);
+         const uint64_t pointer = reinterpret_cast<uint64_t>(context_buffer_.data());
+         const uint32_t bytes = static_cast<uint32_t>(context_buffer_.size()), flags = 0x100;
+         memcpy(context_private.data(), &pointer, 8); memcpy(context_private.data() + 12, &bytes, 4); memcpy(context_private.data() + 20, &flags, 4);
+      }
       ComPtr<IDXGIFactory1> factory;
       check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "CreateDXGIFactory1");
       LUID luid{};
@@ -114,7 +121,11 @@ void Device::submit_and_wait(uint64_t commands, uint32_t bytes,
    submit.PrivateDriverDataSize = static_cast<UINT>(header.size());
    if (present_token) { submit.Flags.PresentRedirected = 1; submit.PresentHistoryToken = present_token; }
    // From this point allocations must not be destroyed until completion or
-   // context cancellation. Every error path first destroys the context.
+   // context cancellation. Every error path first destroys the context,
+   // except a redirected present the kernel refuses before queuing anything
+   // (STATUS_GRAPHICS_PRESENT_MODE_CHANGED/OCCLUDED/DENIED, e.g. while the
+   // window is hidden or the display sleeps): the context stays usable.
+   LONG refused = 0;
    try {
       MemoryBarrier();
       // The private allocation profile does not establish a documented CPU
@@ -124,7 +135,12 @@ void Device::submit_and_wait(uint64_t commands, uint32_t bytes,
       for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 1) buffer->flush();
       _mm_mfence();
       QueryPerformanceCounter(&t1);
-      check(D3DKMTSubmitCommand(&submit), "SubmitCommand");
+      const LONG submitted = D3DKMTSubmitCommand(&submit);
+      if (submitted < 0 && present_token && (ULONG)submitted >= 0xC01E0005u && (ULONG)submitted <= 0xC01E0007u) {
+         refused = submitted;
+         throw Error("SubmitCommand (present refused)", submitted);
+      }
+      check(submitted, "SubmitCommand");
       D3DKMT_SIGNALSYNCHRONIZATIONOBJECT2 signal{};
       signal.hContext = context_;
       signal.Flags.EnqueueCpuEvent = 1;
@@ -140,11 +156,12 @@ void Device::submit_and_wait(uint64_t commands, uint32_t bytes,
       for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 2) buffer->flush();
       _mm_mfence();
       kernel_ticks += t2.QuadPart - t1.QuadPart;
-   } catch (...) { abort_context(); throw; }
+   } catch (...) { if (!refused) abort_context(); throw; }
 }
 void Buffer::flush(uint64_t offset, uint64_t bytes) const
 {
    if (offset > bytes_ || bytes > bytes_ - offset) throw std::runtime_error("Flush range outside the buffer");
+   if (!cpu_) return;   // window surfaces have no CPU mapping
    /* Every flush, implicit (around submissions) or explicit, is counted in
     * the device profile. */
    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
@@ -272,6 +289,48 @@ Buffer::Buffer(Device &device, const std::vector<uint8_t> &metadata, uint64_t by
       device_.buffers_.push_back(this);
    } catch (...) { close(); throw; }
 }
+Buffer::Buffer(Device &device, WindowSurfaceTag, uint32_t width, uint32_t height)
+   : device_(device), cpu_tracking_(0), owns_va_(true)
+{
+   if (device.lost() || !width || !height || width > 16384 || height > 16384) throw std::runtime_error("Invalid window surface size");
+   try {
+      auto metadata = window_surface_metadata(width, height), runtime = window_surface_runtime_data(width, height);
+      D3DDDI_ALLOCATIONINFO2 info{}; info.pPrivateDriverData = metadata.data(); info.PrivateDriverDataSize = static_cast<UINT>(metadata.size());
+      D3DKMT_CREATEALLOCATION create{};
+      create.hDevice = device_.handle(); create.NumAllocations = 1; create.pAllocationInfo2 = &info;
+      create.pPrivateRuntimeData = runtime.data(); create.PrivateRuntimeDataSize = static_cast<UINT>(runtime.size());
+      create.Flags.CreateResource = 1; create.Flags.CreateShared = 1;
+      check(D3DKMTCreateAllocation2(&create), "CreateAllocation2 (window surface)");
+      resource_ = create.hResource; share_ = create.hGlobalShare;
+      /* Open it again, as a consumer would: the kernel driver's completed
+       * description (pitch at 0xc0, size at 0xd0) comes back with it. */
+      D3DKMT_QUERYRESOURCEINFO query{}; query.hDevice = device_.handle(); query.hGlobalShare = share_;
+      check(D3DKMTQueryResourceInfo(&query), "QueryResourceInfo (window surface)");
+      std::vector<uint8_t> opened_runtime(query.PrivateRuntimeDataSize), opened(query.TotalPrivateDriverDataSize);
+      if (opened.size() < 0xd8) throw std::runtime_error("Unexpected window surface description");
+      D3DDDI_OPENALLOCATIONINFO2 open_info{};
+      D3DKMT_OPENRESOURCE open{}; open.hDevice = device_.handle(); open.hGlobalShare = share_; open.NumAllocations = 1;
+      open.pOpenAllocationInfo2 = &open_info;
+      open.pPrivateRuntimeData = opened_runtime.data(); open.PrivateRuntimeDataSize = static_cast<UINT>(opened_runtime.size());
+      open.pTotalPrivateDriverDataBuffer = opened.data(); open.TotalPrivateDriverDataBufferSize = static_cast<UINT>(opened.size());
+      check(D3DKMTOpenResource2(&open), "OpenResource2 (window surface)");
+      opened_resource_ = open.hResource; allocation_ = open_info.hAllocation;
+      memcpy(&pitch_, opened.data() + 0xc0, 8); memcpy(&bytes_, opened.data() + 0xd0, 8);
+      if (pitch_ != ((width * 4ull + 127) & ~127ull) || bytes_ != pitch_ * ((height + 31) & ~31u))
+         throw std::runtime_error("Window surface layout is not the expected Y-tiled one");
+      D3DDDI_MAPGPUVIRTUALADDRESS map{};
+      map.hPagingQueue = device_.queue(); map.hAllocation = allocation_;
+      map.MinimumAddress = gpu_min; map.MaximumAddress = gpu_max; map.SizeInPages = bytes_ / 4096; map.Protection.Value = 1;
+      check(D3DKMTMapGpuVirtualAddress(&map), "MapGpuVirtualAddress (window surface)");
+      address_ = map.VirtualAddress;
+      device_.wait_paging(map.PagingFenceValue);
+      D3DDDI_MAKERESIDENT resident{};
+      resident.hPagingQueue = device_.queue(); resident.NumAllocations = 1; resident.AllocationList = &allocation_;
+      check(D3DKMTMakeResident(&resident), "MakeResident (window surface)");
+      device_.wait_paging(resident.PagingFenceValue);
+      device_.buffers_.push_back(this);
+   } catch (...) { close(); throw; }
+}
 void Buffer::close() noexcept
 {
    auto &buffers = device_.buffers_;
@@ -289,6 +348,14 @@ void Buffer::close() noexcept
       catch (const Error &error) { device_.note_cleanup(error.status, "FreeGpuVirtualAddress"); }
    }
    address_ = 0;
+   if (opened_resource_ || resource_) {   // window surface: the opened and the created resource
+      for (D3DKMT_HANDLE *resource : {&opened_resource_, &resource_}) {
+         if (!*resource) continue;
+         D3DKMT_DESTROYALLOCATION2 destroy{}; destroy.hDevice = device_.handle(); destroy.hResource = *resource;
+         device_.note_cleanup(D3DKMTDestroyAllocation2(&destroy), "DestroyAllocation2 (window surface)"); *resource = 0;
+      }
+      allocation_ = 0;
+   }
    if (allocation_) {
       D3DKMT_DESTROYALLOCATION2 destroy{};
       destroy.hDevice = device_.handle(); destroy.phAllocationList = &allocation_; destroy.AllocationCount = 1;

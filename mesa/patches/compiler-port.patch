@@ -165,7 +165,16 @@
  
  #include <dcomp.h>
  
-@@ -316,8 +321,10 @@
+@@ -109,6 +114,8 @@
+    VkExtent2D                 extent;
+    HWND wnd;
+    HDC chain_dc;
++   void *redirect_state;
++   uint64_t redirected_presents, gdi_presents;
+    struct wsi_win32_image     images[0];
+ };
+ 
+@@ -316,8 +323,10 @@
     VkFormat     format;
  } available_surface_formats[] = {
     { VK_FORMAT_B8G8R8A8_UNORM },
@@ -176,7 +185,40 @@
  };
  
  
-@@ -1091,7 +1098,7 @@
+@@ -612,6 +621,12 @@
+ 
+    DeleteDC(chain->chain_dc);
+ 
++   if (chain->redirect_state && chain->wsi->wsi->win32.present_redirected_finish)
++      chain->wsi->wsi->win32.present_redirected_finish(chain->base.device, chain->redirect_state);
++   if (getenv("HASVK_WDDM_PRESENT_STATS"))
++      fprintf(stderr, "HasVK/WDDM present stats: %llu redirected, %llu gdi\n",
++              (unsigned long long)chain->redirected_presents, (unsigned long long)chain->gdi_presents);
++
+    if (chain->surface->current_swapchain == chain)
+       chain->surface->current_swapchain = NULL;
+ 
+@@ -819,6 +834,19 @@
+ 
+    if (chain->dxgi)
+       return wsi_win32_queue_present_dxgi(chain, image, damage);
++
++   if (chain->wsi->wsi->win32.present_redirected &&
++       chain->wsi->wsi->win32.present_redirected(chain->base.device, image->base.image, chain->surface->base.hwnd,
++                                                 chain->extent, &chain->redirect_state) == VK_SUCCESS) {
++      ++chain->redirected_presents;
++      chain->base.blit_unneeded = true;   /* the next frames skip the copy for GDI */
++      wsi_win32_set_image_idle(chain, image);
++      return chain->status;
++   }
++   ++chain->gdi_presents;
++   /* GDI shows the CPU copy: made from the next frame on (this frame shows
++    * the last copied one if the copy was skipped). */
++   chain->base.blit_unneeded = false;
+ 
+    char *ptr = (char *)image->base.cpu_map;
+    char *dptr = (char *)image->sw.ppvBits;
+@@ -1091,7 +1119,7 @@
     wsi->alloc = alloc;
     wsi->wsi = wsi_device;
  
@@ -185,8 +227,45 @@
        wsi->dxgi.factory = dxgi_get_factory(WSI_DEBUG & WSI_DEBUG_DXGI);
        if (!wsi->dxgi.factory) {
           vk_free(alloc, wsi);
+--- a/src/vulkan/wsi/wsi_common.h
++++ b/src/vulkan/wsi/wsi_common.h
+@@ -145,6 +145,12 @@
+       VkResult (*create_image_memory)(VkDevice device, void *resource,
+                                       const VkAllocationCallbacks *alloc,
+                                       VkDeviceMemory *out);
++      /* Present image into window hwnd without a CPU copy; *state is per
++       * swapchain, owned by the driver and released by
++       * present_redirected_finish. Anything but VK_SUCCESS falls back to GDI. */
++      VkResult (*present_redirected)(VkDevice device, VkImage image, void *hwnd,
++                                     VkExtent2D extent, void **state);
++      void (*present_redirected_finish)(VkDevice device, void *state);
+    } win32;
+ 
+    struct {
+--- a/src/vulkan/wsi/wsi_common_private.h
++++ b/src/vulkan/wsi/wsi_common_private.h
+@@ -255,6 +255,10 @@
+    uint32_t image_count;
+ 
+    uint64_t present_serial;
++
++   /* Set by the platform while presents need no CPU-visible copy (redirected
++    * present on the WDDM port); the buffer blit is then skipped. */
++   bool blit_unneeded;
+ 
+    struct {
+       enum wsi_swapchain_blit_type type;
 --- a/src/vulkan/wsi/wsi_common.c
 +++ b/src/vulkan/wsi/wsi_common.c
+@@ -2750,7 +2750,7 @@
+             continue;
+          }
+ 
+-         if (swapchain->blit.type != WSI_SWAPCHAIN_NO_BLIT) {
++         if (swapchain->blit.type != WSI_SWAPCHAIN_NO_BLIT && !swapchain->blit_unneeded) {
+             command_buffer_infos[command_buffer_count++] = (VkCommandBufferSubmitInfo) {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                .commandBuffer =
 @@ -2886,7 +2886,12 @@
  #endif
        }
@@ -1216,7 +1295,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,729 @@
+@@ -0,0 +1,743 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -1515,6 +1594,13 @@
 +   physical->vk.wsi_device = &physical->wsi_device;
 +   physical->wsi_device.supports_modifiers = false;
 +   physical->wsi_device.disable_unordered_submits = true;
++   /* Windowed present by redirected submission (GPU copy into a window
++    * surface, no CPU copy); HASVK_WDDM_PRESENT=gdi keeps the GDI path. */
++   const char *present = getenv("HASVK_WDDM_PRESENT");
++   if (!present || strcmp(present, "gdi")) {
++      physical->wsi_device.win32.present_redirected = anv_wddm_present_redirected;
++      physical->wsi_device.win32.present_redirected_finish = anv_wddm_present_redirected_finish;
++   }
 +#endif
 +   list_addtail(&physical->vk.link, &base->physical_devices.list);
 +   return VK_SUCCESS;
@@ -1686,18 +1772,22 @@
 +   if (vk_queue_submit_has_bind(work)) return VK_ERROR_FEATURE_NOT_PRESENT;
 +   VkResult result = vk_sync_wait_many(&device->vk, work->wait_count, work->waits, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
 +   if (result != VK_SUCCESS) return result;
++   mtx_lock(&w->submit_mutex);
 +   for (uint32_t i = 0; i < work->command_buffer_count; ++i) {
 +      struct anv_cmd_buffer *cmd = container_of(work->command_buffers[i], struct anv_cmd_buffer, vk);
-+      if (anv_wddm_execute_command(cmd)) return queue_lost(queue, "HasVK command buffer submission/completion failed");
++      if (anv_wddm_execute_command(cmd, 0)) {
++         mtx_unlock(&w->submit_mutex);
++         return queue_lost(queue, "HasVK command buffer submission/completion failed");
++      }
 +   }
 +   uint32_t serial = (uint32_t)(w->completed + 1);
 +   uint64_t target = intel_canonical_address(hasvk_wddm_bo_address(w->completion));
 +   uint32_t *batch = hasvk_wddm_bo_map(w->entry);
 +   batch[0] = 0x10000002; batch[1] = (uint32_t)target; batch[2] = target >> 32; batch[3] = serial;
 +   batch[4] = 0x05000000; batch[5] = 0;
-+   if (hasvk_wddm_submit_wait(w->transport, w->entry, 0, 24)) {
-+      return queue_lost(queue, hasvk_wddm_error());
-+   }
++   const int submitted = hasvk_wddm_submit_wait(w->transport, w->entry, 0, 24);
++   mtx_unlock(&w->submit_mutex);
++   if (submitted) return queue_lost(queue, hasvk_wddm_error());
 +   const uint32_t *actual = hasvk_wddm_bo_map(w->completion);
 +   if (actual[0] != serial) return queue_lost(queue, "GPU completion counter mismatch");
 +   for (unsigned i = 1; i < 1024; ++i) if (actual[i] != 0x39393939) return queue_lost(queue, "GPU guard corrupted");
@@ -1713,10 +1803,12 @@
 +   if (batch->status != VK_SUCCESS) return batch->status;
 +   if (!bytes || bytes > 8180) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 +   size_t aligned = align(bytes, 8);
++   mtx_lock(&w->submit_mutex);
 +   memcpy(hasvk_wddm_bo_map(w->entry), batch->start, bytes);
 +   if (aligned > bytes) memset((char *)hasvk_wddm_bo_map(w->entry) + bytes, 0, aligned - bytes);
-+   if (anv_wddm_flush_state_pools(queue->device) || hasvk_wddm_submit_wait(w->transport, w->entry, 0, aligned))
-+      return vk_errorf(queue->device, VK_ERROR_DEVICE_LOST, "WDDM initialization batch: %s", hasvk_wddm_error());
++   const int failed = anv_wddm_flush_state_pools(queue->device) || hasvk_wddm_submit_wait(w->transport, w->entry, 0, aligned);
++   mtx_unlock(&w->submit_mutex);
++   if (failed) return vk_errorf(queue->device, VK_ERROR_DEVICE_LOST, "WDDM initialization batch: %s", hasvk_wddm_error());
 +   return VK_SUCCESS;
 +}
 +#endif
@@ -1729,7 +1821,7 @@
 +   }
 +   if (w->reservation) hasvk_wddm_release(w->transport, w->reservation);
 +   if (w->transport && hasvk_wddm_device_destroy(w->transport)) fprintf(stderr, "HasVK/WDDM cleanup: %s\n", hasvk_wddm_error());
-+   u_cnd_monotonic_destroy(&w->condition); mtx_destroy(&w->mutex);
++   u_cnd_monotonic_destroy(&w->condition); mtx_destroy(&w->submit_mutex); mtx_destroy(&w->mutex);
 +   free(w->bo_ids); free(w);
 +}
 +VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle, const VkDeviceCreateInfo *info,
@@ -1755,7 +1847,8 @@
 +   if (!w) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
 +   device->wddm = w;
 +   if (mtx_init(&w->mutex, mtx_plain) != thrd_success) { free(w); device->wddm = NULL; result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
-+   if (u_cnd_monotonic_init(&w->condition) != thrd_success) { mtx_destroy(&w->mutex); free(w); device->wddm = NULL; result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
++   if (mtx_init(&w->submit_mutex, mtx_plain) != thrd_success) { mtx_destroy(&w->mutex); free(w); device->wddm = NULL; result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
++   if (u_cnd_monotonic_init(&w->condition) != thrd_success) { mtx_destroy(&w->submit_mutex); mtx_destroy(&w->mutex); free(w); device->wddm = NULL; result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
 +   if (hasvk_wddm_device_create(&w->transport) || hasvk_wddm_reserve(w->transport, 16ull << 30, 0, &w->reservation)) {
 +      result = VK_ERROR_INITIALIZATION_FAILED; goto fail_state;
 +   }
@@ -1948,7 +2041,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm.h
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,86 @@
 +/* Private Windows platform state for the HasVK port. */
 +#pragma once
 +#include "anv_private.h"
@@ -1968,6 +2061,9 @@
 +   struct hasvk_wddm_bo *entry, *completion;
 +   uint64_t reservation, origin, completed;
 +   mtx_t mutex;
++   /* Serializes kernel submissions (the shared entry BO): the queue thread
++    * and windowed presents from application threads. */
++   mtx_t submit_mutex;
 +   struct u_cnd_monotonic condition;
 +   struct util_vma_heap client_heap;
 +   struct util_vma_heap state_heap;
@@ -2007,7 +2103,16 @@
 +   struct anv_wddm_wait *waits;
 +   uint32_t wait_count, wait_capacity;
 +};
-+int anv_wddm_execute_command(struct anv_cmd_buffer *cmd);
++/* present_token != 0: the last kernel submission is a redirected present
++ * (see hasvk_wddm_submit_present); the command buffer may be executable
++ * rather than pending (driver-internal use). Caller holds submit_mutex. */
++int anv_wddm_execute_command(struct anv_cmd_buffer *cmd, uint64_t present_token);
++VkResult anv_wddm_alloc_window_surface_bo(struct anv_device *device, uint32_t width, uint32_t height,
++                                          struct anv_bo **out, uint32_t *share, uint64_t *pitch);
++#ifdef HASVK_WDDM_GRAPHICS
++VkResult anv_wddm_present_redirected(VkDevice device, VkImage image, void *hwnd, VkExtent2D extent, void **state);
++void anv_wddm_present_redirected_finish(VkDevice device, void *state);
++#endif
 +#ifdef HASVK_WDDM_GRAPHICS
 +void anv_wddm_cmd_state_finish(struct anv_cmd_buffer *cmd);
 +void anv_wddm_init_border_colors(struct anv_device *device);
@@ -2025,7 +2130,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_memory.c
-@@ -0,0 +1,444 @@
+@@ -0,0 +1,477 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -2142,6 +2247,38 @@
 +   return VK_SUCCESS;
 +}
 +
++/* Shared window surface for redirected present (anv_wddm_present.c). Its GPU
++ * address is chosen by the kernel, outside the device's VA heaps; it has no
++ * CPU mapping. is_external marks both (and selects the external MOCS). */
++VkResult
++anv_wddm_alloc_window_surface_bo(struct anv_device *device, uint32_t width, uint32_t height,
++                                 struct anv_bo **out, uint32_t *share, uint64_t *pitch)
++{
++   *out = NULL;
++   struct anv_bo *bo = vk_zalloc(&device->vk.alloc, sizeof(*bo), 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
++   if (!bo) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
++   struct anv_wddm_device_state *w = device->wddm;
++   mtx_lock(&w->mutex);
++   if (!w->bo_ids) w->bo_ids = calloc(BITSET_WORDS(ANV_WDDM_MAX_BOS + 1), sizeof(BITSET_WORD));
++   if (!w->bo_ids || w->allocation_count >= ANV_WDDM_MAX_BOS ||
++       hasvk_wddm_bo_create_window_surface(w->transport, width, height, &bo->wddm_bo) ||
++       hasvk_wddm_bo_window_surface_info(bo->wddm_bo, share, pitch)) {
++      if (bo->wddm_bo) hasvk_wddm_bo_destroy(bo->wddm_bo);
++      mtx_unlock(&w->mutex); vk_free(&device->vk.alloc, bo);
++      return vk_errorf(device, VK_ERROR_OUT_OF_DEVICE_MEMORY, "window surface: %s", hasvk_wddm_error());
++   }
++   bo->name = "window surface"; bo->size = hasvk_wddm_bo_size(bo->wddm_bo);
++   bo->offset = intel_canonical_address(hasvk_wddm_bo_address(bo->wddm_bo));
++   bo->refcount = 1; bo->flags = EXEC_OBJECT_PINNED; bo->is_external = true;
++   uint32_t id = w->bo_id_hint;
++   do { id = id % ANV_WDDM_MAX_BOS + 1; } while (BITSET_TEST(w->bo_ids, id));
++   BITSET_SET(w->bo_ids, id); w->bo_id_hint = id; bo->gem_handle = id;
++   w->allocated_bytes += bo->size; ++w->allocation_count;
++   mtx_unlock(&w->mutex);
++   *out = bo;
++   return VK_SUCCESS;
++}
++
 +VkResult
 +anv_device_map_bo(struct anv_device *device, struct anv_bo *bo, uint64_t offset,
 +                  size_t size, uint32_t flags, void **out)
@@ -2170,7 +2307,8 @@
 +      fprintf(stderr, "HasVK/WDDM BO cleanup: %s\n", hasvk_wddm_error());
 +      vk_device_set_lost(&device->vk, "WDDM BO destruction failed");
 +   } else {
-+      util_vma_heap_free(bo->has_fixed_address ? &w->state_heap : &w->client_heap, intel_48b_address(bo->offset), bo->size);
++      if (!bo->is_external)   /* window surfaces: the kernel chose and frees the address */
++         util_vma_heap_free(bo->has_fixed_address ? &w->state_heap : &w->client_heap, intel_48b_address(bo->offset), bo->size);
 +      w->allocated_bytes -= bo->size; --w->allocation_count; BITSET_CLEAR(w->bo_ids, bo->gem_handle);
 +   }
 +   mtx_unlock(&w->mutex);
@@ -2772,7 +2910,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_command.c
-@@ -0,0 +1,391 @@
+@@ -0,0 +1,395 @@
 +/* Windows lifetime and submission backing for HasVK command buffers.
 + * Packet emission, descriptor binding and push packing use upstream HasVK.
 + *
@@ -3094,10 +3232,12 @@
 +      "conservative compute memory barrier");
 +   genX(cmd_buffer_apply_pipe_flushes)(cmd);
 +}
-+int anv_wddm_execute_command(struct anv_cmd_buffer *cmd)
++int anv_wddm_execute_command(struct anv_cmd_buffer *cmd, uint64_t present_token)
 +{
 +   struct anv_wddm_device_state *w = cmd->device->wddm;
-+   if (cmd->vk.state != MESA_VK_COMMAND_BUFFER_STATE_PENDING || cmd->batch.status != VK_SUCCESS ||
++   const bool runnable = cmd->vk.state == MESA_VK_COMMAND_BUFFER_STATE_PENDING ||
++      (present_token && cmd->vk.state == MESA_VK_COMMAND_BUFFER_STATE_EXECUTABLE);
++   if (!runnable || cmd->batch.status != VK_SUCCESS ||
 +       cmd->vk.level != VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
 +      fprintf(stderr, "WDDM command rejected: runtime state=%u, batch status=%d\n", cmd->vk.state, cmd->batch.status);
 +      return -1;
@@ -3116,7 +3256,9 @@
 +         jump.AddressSpaceIndicator = ASI_PPGTT; jump.BatchBufferStartAddress = start;
 +      }
 +      anv_batch_emit(&entry, GENX(MI_NOOP), noop);
-+      if (entry.status != VK_SUCCESS || hasvk_wddm_submit_wait(w->transport, w->entry, 0, 16)) {
++      const bool present = present_token && segment == cmd->wddm->wait_count;
++      if (entry.status != VK_SUCCESS || (present ? hasvk_wddm_submit_present(w->transport, w->entry, 0, 16, present_token)
++                                                 : hasvk_wddm_submit_wait(w->transport, w->entry, 0, 16))) {
 +         fprintf(stderr, "WDDM command segment %u: %s\n", segment, hasvk_wddm_error());
 +         return -1;
 +      }
@@ -3164,6 +3306,169 @@
 +   *chunks = cmd->wddm->chunk_count;
 +   return 0;
 +}
+--- /dev/null
++++ b/src/intel/vulkan_hasvk/anv_wddm_present.c
+@@ -0,0 +1,160 @@
++/* Windowed present without a CPU copy and without D3D.
++ *
++ * As the Intel OpenGL ICD of the same driver package does (traced with
++ * tools/trace-gl-present.ps1, reproduced by tools/test-present-redirect.ps1):
++ * the frame is copied by the GPU into a shared window surface and the
++ * submission carries PresentRedirected with the token
++ * (0x80000000 | HWND) << 32 | share handle; DWM composes that surface.
++ *
++ * DWM places the surface at the top-left corner of the whole window rectangle
++ * (frame included), so the surface has the window's size and the image is
++ * copied at the client area's offset. Per swapchain one such surface:
++ * B8G8R8A8, Y-tiled, no aux, wrapped in an anv_image so the copy is an
++ * ordinary BLORP vkCmdCopyImage2; recreated when the window size changes. Called from WSI after the image's rendering has completed
++ * (wsi_common waits for it before platform present on this port). */
++#include "anv_wddm.h"
++
++#ifdef HASVK_WDDM_GRAPHICS
++struct anv_wddm_window {
++   HWND hwnd;
++   VkExtent2D extent;
++   struct anv_bo *bo;
++   uint32_t share;
++   VkImage image;
++   VkCommandPool pool;
++   VkCommandBuffer cmd;
++};
++
++static void window_release(struct anv_device *device, struct anv_wddm_window *w)
++{
++   VkDevice handle = anv_device_to_handle(device);
++   if (w->pool) device->vk.dispatch_table.DestroyCommandPool(handle, w->pool, NULL);
++   if (w->image) anv_DestroyImage(handle, w->image, NULL);
++   if (w->bo) anv_device_release_bo(device, w->bo);
++   memset(w, 0, sizeof(*w));
++}
++
++/* Window surface and its image for this HWND and extent. */
++static VkResult window_create(struct anv_device *device, struct anv_wddm_window *w, HWND hwnd, VkExtent2D extent)
++{
++   uint64_t pitch = 0;
++   VkResult result = anv_wddm_alloc_window_surface_bo(device, extent.width, extent.height, &w->bo, &w->share, &pitch);
++   if (result != VK_SUCCESS) return result;
++   w->hwnd = hwnd; w->extent = extent;
++
++   const VkImageCreateInfo info = {
++      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
++      .format = VK_FORMAT_B8G8R8A8_UNORM, .extent = {extent.width, extent.height, 1},
++      .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
++      .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
++      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
++   };
++   struct anv_image *image = vk_object_zalloc(&device->vk, NULL, sizeof(*image), VK_OBJECT_TYPE_IMAGE);
++   if (!image) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
++   struct anv_image_create_info create = {
++      .vk_info = &info, .isl_tiling_flags = ISL_TILING_Y0_BIT, .isl_extra_usage_flags = ISL_SURF_USAGE_DISABLE_AUX_BIT,
++   };
++   result = anv_image_init(device, image, &create);
++   if (result != VK_SUCCESS) { vk_object_free(&device->vk, NULL, image); return result; }
++   w->image = anv_image_to_handle(image);
++   const struct isl_surf *surf = &image->planes[0].primary_surface.isl;
++   if (surf->tiling != ISL_TILING_Y0 || surf->row_pitch_B != pitch || image->planes[0].aux_usage != ISL_AUX_USAGE_NONE ||
++       image->bindings[ANV_IMAGE_MEMORY_BINDING_MAIN].memory_range.size > w->bo->size)
++      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT, "window surface layout differs from ISL (pitch %llu vs %u)",
++                       (unsigned long long)pitch, surf->row_pitch_B);
++   image->bindings[ANV_IMAGE_MEMORY_BINDING_MAIN].address = (struct anv_address){w->bo, 0};
++
++   const VkCommandPoolCreateInfo pool_info = {
++      .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
++      .queueFamilyIndex = 0,
++   };
++   VkDevice handle = anv_device_to_handle(device);
++   result = device->vk.dispatch_table.CreateCommandPool(handle, &pool_info, NULL, &w->pool);
++   if (result != VK_SUCCESS) return result;
++   const VkCommandBufferAllocateInfo alloc = {
++      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = w->pool,
++      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1,
++   };
++   return device->vk.dispatch_table.AllocateCommandBuffers(handle, &alloc, &w->cmd);
++}
++
++VkResult anv_wddm_present_redirected(VkDevice handle, VkImage src, void *hwnd, VkExtent2D extent, void **state)
++{
++   ANV_FROM_HANDLE(anv_device, device, handle);
++   struct anv_wddm_window *w = *state;
++   if (!w) {
++      w = vk_zalloc(&device->vk.alloc, sizeof(*w), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++      if (!w) return VK_ERROR_OUT_OF_HOST_MEMORY;
++      *state = w;
++   }
++   /* Window size and the client area's offset inside it, in the window's own
++    * (possibly DPI-virtualized) coordinates. */
++   RECT outer, client;
++   POINT origin = {0, 0};
++   if (!GetWindowRect(hwnd, &outer) || !GetClientRect(hwnd, &client) || !ClientToScreen(hwnd, &origin))
++      return VK_ERROR_SURFACE_LOST_KHR;
++   const VkExtent2D window = {(uint32_t)MAX2(outer.right - outer.left, 1), (uint32_t)MAX2(outer.bottom - outer.top, 1)};
++   const VkOffset3D offset = {origin.x - outer.left, origin.y - outer.top, 0};
++   if (offset.x < 0 || offset.y < 0 || (uint32_t)offset.x >= window.width || (uint32_t)offset.y >= window.height)
++      return VK_ERROR_OUT_OF_DATE_KHR;   /* minimized or unusual geometry: GDI takes the frame */
++   const VkExtent3D copied = {MIN2(extent.width, window.width - offset.x), MIN2(extent.height, window.height - offset.y), 1};
++   if (w->bo && (w->hwnd != hwnd || w->extent.width != window.width || w->extent.height != window.height))
++      window_release(device, w);
++   if (!w->bo) {
++      VkResult result = window_create(device, w, hwnd, window);
++      if (result != VK_SUCCESS) { window_release(device, w); return result; }
++   }
++
++   const struct vk_device_dispatch_table *d = &device->vk.dispatch_table;
++   VkResult result = d->ResetCommandBuffer(w->cmd, 0);
++   const VkCommandBufferBeginInfo begin = {
++      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
++   };
++   if (result == VK_SUCCESS) result = d->BeginCommandBuffer(w->cmd, &begin);
++   if (result != VK_SUCCESS) return result;
++   const VkImageCopy2 region = {
++      .sType = VK_STRUCTURE_TYPE_IMAGE_COPY_2,
++      .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
++      .dstOffset = offset, .extent = copied,
++   };
++   const VkCopyImageInfo2 copy = {
++      .sType = VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2, .srcImage = src, .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
++      .dstImage = w->image, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL, .regionCount = 1, .pRegions = &region,
++   };
++   anv_CmdCopyImage2(w->cmd, &copy);
++   result = d->EndCommandBuffer(w->cmd);
++   if (result != VK_SUCCESS) return result;
++
++   const uint64_t token = (uint64_t)(0x80000000u | (uint32_t)(uintptr_t)hwnd) << 32 | w->share;
++   static int debug = -1;
++   if (debug < 0) debug = getenv("HASVK_WDDM_PRESENT_DEBUG") != NULL;
++   if (debug > 0 && debug++ < 4) {
++      DWORD pid = 0; const DWORD owner = GetWindowThreadProcessId(hwnd, &pid);
++      fprintf(stderr, "HasVK/WDDM present: hwnd=%p token=%#llx extent=%ux%u client=%ldx%ld window=%ldx%ld visible=%d iconic=%d "
++              "owner thread %lu, this thread %lu, surface VA %#llx size %llu\n", hwnd, (unsigned long long)token, extent.width, extent.height,
++              client.right, client.bottom, outer.right - outer.left, outer.bottom - outer.top, IsWindowVisible(hwnd), IsIconic(hwnd),
++              owner, GetCurrentThreadId(), (unsigned long long)w->bo->offset, (unsigned long long)w->bo->size);
++   }
++   struct anv_wddm_device_state *ws = device->wddm;
++   mtx_lock(&ws->submit_mutex);
++   const int failed = anv_wddm_execute_command(anv_cmd_buffer_from_handle(w->cmd), token);
++   mtx_unlock(&ws->submit_mutex);
++   if (failed) {
++      /* A present the kernel refuses (e.g. STATUS_GRAPHICS_PRESENT_OCCLUDED
++       * while the display sleeps) is not a lost device; GDI takes this frame. */
++      static unsigned reported;
++      if (reported++ < 3) fprintf(stderr, "HasVK/WDDM redirected present: %s\n", hasvk_wddm_error());
++      return VK_ERROR_OUT_OF_DATE_KHR;
++   }
++   return VK_SUCCESS;
++}
++
++void anv_wddm_present_redirected_finish(VkDevice handle, void *state)
++{
++   ANV_FROM_HANDLE(anv_device, device, handle);
++   struct anv_wddm_window *w = state;
++   if (!w) return;
++   window_release(device, w);
++   vk_free(&device->vk.alloc, w);
++}
++#endif
 --- /dev/null
 +++ b/src/intel/wddm_compiler/vulkan_hasvk_wddm.def
 @@ -0,0 +1,16 @@
@@ -3968,7 +4273,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm_compiler/meson.build
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,89 @@
 +# Windows ELK/ISL/BLORP and initial, incomplete HasVK ICD.
 +executable('IrisElkCompile', ['elk_compile_probe.c', 'elk_abi_probe.cpp', 'spirv_probe.c'],
 +  include_directories : [inc_include, inc_src, inc_intel],
@@ -4025,6 +4330,7 @@
 +endif
 +libanv_wddm_objects = static_library('anv_wddm_objects',
 +  ['../vulkan_hasvk/anv_wddm_device.c', '../vulkan_hasvk/anv_wddm_memory.c', '../vulkan_hasvk/anv_wddm_pools.c', '../vulkan_hasvk/anv_allocator.c',
++   '../vulkan_hasvk/anv_wddm_present.c',
 +   '../vulkan_hasvk/anv_descriptor_set.c',
 +   '../vulkan_hasvk/anv_image.c', '../vulkan_hasvk/anv_android_stubs.c',
 +   '../vulkan_hasvk/anv_pipeline.c', '../vulkan_hasvk/anv_pipeline_cache.c', '../vulkan_hasvk/anv_wddm_batch.c',
@@ -22764,7 +23070,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.h
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,62 @@
 +#pragma once
 +#include <stdint.h>
 +#ifdef __cplusplus
@@ -22803,6 +23109,16 @@
 +int hasvk_wddm_bo_flush_range(struct hasvk_wddm_bo *bo, uint64_t offset, uint64_t bytes);
 +int hasvk_wddm_submit_wait(struct hasvk_wddm_device *device, struct hasvk_wddm_bo *commands,
 +                          uint32_t offset, uint32_t bytes);
++/* Windowed present without D3D (see tools/test-present-redirect.ps1): a
++ * shared B8G8R8A8 window surface, Y-tiled, pitch align(width * 4, 128),
++ * height aligned to 32 rows, GPU-mapped, never CPU-mapped. A submission with
++ * present_token = (0x80000000 | HWND) << 32 | share handle shows the surface
++ * contents in that window once the submission completes. */
++int hasvk_wddm_bo_create_window_surface(struct hasvk_wddm_device *device, uint32_t width, uint32_t height,
++                                       struct hasvk_wddm_bo **out);
++int hasvk_wddm_bo_window_surface_info(const struct hasvk_wddm_bo *bo, uint32_t *share, uint64_t *pitch);
++int hasvk_wddm_submit_present(struct hasvk_wddm_device *device, struct hasvk_wddm_bo *commands,
++                             uint32_t offset, uint32_t bytes, uint64_t present_token);
 +/* Stable contiguous CPU shadow for GPU-read-only state/instruction pools.
 + * map commits on demand in 64 KiB chunks. submit_wait uploads every committed
 + * chunk before submitting. Vulkan callers must keep submitted state immutable
@@ -22819,7 +23135,7 @@
 +#endif
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.hpp
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,133 @@
 +#pragma once
 +#define NOMINMAX
 +#include <windows.h>
@@ -22848,14 +23164,20 @@
 +uint64_t canonical(uint64_t address);
 +std::vector<uint8_t> linear_metadata(uint64_t bytes);
 +std::vector<uint8_t> command_header_8192();
++std::vector<uint8_t> window_surface_metadata(uint32_t width, uint32_t height);
++std::vector<uint8_t> window_surface_runtime_data(uint32_t width, uint32_t height);
++struct WindowSurfaceTag {};
 +
 +// Stage-2 transport. Private allocation/submit data is supplied explicitly by
 +// the caller; this does not claim to generate Intel's resource descriptions.
 +class Device {
 +public:
 +   Device();
-+   /* Experiments: context client hint and private data other than Vulkan's. */
-+   Device(uint32_t client_hint, std::vector<uint8_t> context_private);
++   /* presentable_context: create the context with the private data the Intel
++    * OpenGL ICD passes (pointer to a 0x2cdc-byte buffer, its size, 0x100).
++    * Without it the kernel accepts PresentRedirected submissions but DWM never
++    * shows them. Other arguments are for experiments. */
++   Device(uint32_t client_hint, std::vector<uint8_t> context_private, bool presentable_context);
 +   ~Device();
 +   Device(const Device &) = delete;
 +   Device &operator=(const Device &) = delete;
@@ -22891,6 +23213,7 @@
 +   uint64_t driver_version_ = 0;
 +   LUID luid_{};
 +   std::vector<Buffer *> buffers_;
++   std::vector<uint8_t> context_buffer_;   // referenced by the context's private data
 +   bool lost_ = false;
 +   bool cancellation_failed_ = false;
 +   unsigned cleanup_errors_ = 0;
@@ -22913,6 +23236,11 @@
 +public:
 +   Buffer(Device &device, const std::vector<uint8_t> &metadata, uint64_t bytes,
 +          uint64_t protection = 1, uint64_t requested_va = 0);
++   /* Shared window surface for redirected present (not CPU-mapped). share()
++    * is its global handle, pitch() the row pitch the kernel driver chose. */
++   Buffer(Device &device, WindowSurfaceTag, uint32_t width, uint32_t height);
++   uint32_t share() const { return share_; }
++   uint64_t pitch() const { return pitch_; }
 +   ~Buffer();
 +   Buffer(const Buffer &) = delete;
 +   Buffer &operator=(const Buffer &) = delete;
@@ -22932,6 +23260,9 @@
 +   Device &device_;
 +   unsigned cpu_tracking_ = 3;
 +   D3DKMT_HANDLE allocation_ = 0;
++   D3DKMT_HANDLE resource_ = 0, opened_resource_ = 0;   // window surfaces only
++   uint32_t share_ = 0;
++   uint64_t pitch_ = 0;
 +   void *cpu_ = nullptr;
 +   uint64_t address_ = 0, bytes_ = 0;
 +   bool owns_va_ = true;
@@ -22940,7 +23271,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.cpp
-@@ -0,0 +1,299 @@
+@@ -0,0 +1,366 @@
 +#include "hasvk_wddm.hpp"
 +#include <dxgi1_2.h>
 +#include <wrl/client.h>
@@ -22970,10 +23301,17 @@
 +   return address & (1ull << 47) ? address | 0xffff000000000000ull : address;
 +}
 +
-+Device::Device() : Device(4 /* D3DKMT_CLIENTHINT_VULKAN */, {}) {}
-+Device::Device(uint32_t client_hint, std::vector<uint8_t> context_private)
++Device::Device() : Device(4 /* D3DKMT_CLIENTHINT_VULKAN */, {}, true) {}
++Device::Device(uint32_t client_hint, std::vector<uint8_t> context_private, bool presentable_context)
 +{
 +   try {
++      if (presentable_context && context_private.empty()) {
++         context_buffer_.assign(0x2cdc, 0);
++         context_private.assign(32, 0);
++         const uint64_t pointer = reinterpret_cast<uint64_t>(context_buffer_.data());
++         const uint32_t bytes = static_cast<uint32_t>(context_buffer_.size()), flags = 0x100;
++         memcpy(context_private.data(), &pointer, 8); memcpy(context_private.data() + 12, &bytes, 4); memcpy(context_private.data() + 20, &flags, 4);
++      }
 +      ComPtr<IDXGIFactory1> factory;
 +      check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "CreateDXGIFactory1");
 +      LUID luid{};
@@ -23057,7 +23395,11 @@
 +   submit.PrivateDriverDataSize = static_cast<UINT>(header.size());
 +   if (present_token) { submit.Flags.PresentRedirected = 1; submit.PresentHistoryToken = present_token; }
 +   // From this point allocations must not be destroyed until completion or
-+   // context cancellation. Every error path first destroys the context.
++   // context cancellation. Every error path first destroys the context,
++   // except a redirected present the kernel refuses before queuing anything
++   // (STATUS_GRAPHICS_PRESENT_MODE_CHANGED/OCCLUDED/DENIED, e.g. while the
++   // window is hidden or the display sleeps): the context stays usable.
++   LONG refused = 0;
 +   try {
 +      MemoryBarrier();
 +      // The private allocation profile does not establish a documented CPU
@@ -23067,7 +23409,12 @@
 +      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 1) buffer->flush();
 +      _mm_mfence();
 +      QueryPerformanceCounter(&t1);
-+      check(D3DKMTSubmitCommand(&submit), "SubmitCommand");
++      const LONG submitted = D3DKMTSubmitCommand(&submit);
++      if (submitted < 0 && present_token && (ULONG)submitted >= 0xC01E0005u && (ULONG)submitted <= 0xC01E0007u) {
++         refused = submitted;
++         throw Error("SubmitCommand (present refused)", submitted);
++      }
++      check(submitted, "SubmitCommand");
 +      D3DKMT_SIGNALSYNCHRONIZATIONOBJECT2 signal{};
 +      signal.hContext = context_;
 +      signal.Flags.EnqueueCpuEvent = 1;
@@ -23083,11 +23430,12 @@
 +      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 2) buffer->flush();
 +      _mm_mfence();
 +      kernel_ticks += t2.QuadPart - t1.QuadPart;
-+   } catch (...) { abort_context(); throw; }
++   } catch (...) { if (!refused) abort_context(); throw; }
 +}
 +void Buffer::flush(uint64_t offset, uint64_t bytes) const
 +{
 +   if (offset > bytes_ || bytes > bytes_ - offset) throw std::runtime_error("Flush range outside the buffer");
++   if (!cpu_) return;   // window surfaces have no CPU mapping
 +   /* Every flush, implicit (around submissions) or explicit, is counted in
 +    * the device profile. */
 +   LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
@@ -23215,6 +23563,48 @@
 +      device_.buffers_.push_back(this);
 +   } catch (...) { close(); throw; }
 +}
++Buffer::Buffer(Device &device, WindowSurfaceTag, uint32_t width, uint32_t height)
++   : device_(device), cpu_tracking_(0), owns_va_(true)
++{
++   if (device.lost() || !width || !height || width > 16384 || height > 16384) throw std::runtime_error("Invalid window surface size");
++   try {
++      auto metadata = window_surface_metadata(width, height), runtime = window_surface_runtime_data(width, height);
++      D3DDDI_ALLOCATIONINFO2 info{}; info.pPrivateDriverData = metadata.data(); info.PrivateDriverDataSize = static_cast<UINT>(metadata.size());
++      D3DKMT_CREATEALLOCATION create{};
++      create.hDevice = device_.handle(); create.NumAllocations = 1; create.pAllocationInfo2 = &info;
++      create.pPrivateRuntimeData = runtime.data(); create.PrivateRuntimeDataSize = static_cast<UINT>(runtime.size());
++      create.Flags.CreateResource = 1; create.Flags.CreateShared = 1;
++      check(D3DKMTCreateAllocation2(&create), "CreateAllocation2 (window surface)");
++      resource_ = create.hResource; share_ = create.hGlobalShare;
++      /* Open it again, as a consumer would: the kernel driver's completed
++       * description (pitch at 0xc0, size at 0xd0) comes back with it. */
++      D3DKMT_QUERYRESOURCEINFO query{}; query.hDevice = device_.handle(); query.hGlobalShare = share_;
++      check(D3DKMTQueryResourceInfo(&query), "QueryResourceInfo (window surface)");
++      std::vector<uint8_t> opened_runtime(query.PrivateRuntimeDataSize), opened(query.TotalPrivateDriverDataSize);
++      if (opened.size() < 0xd8) throw std::runtime_error("Unexpected window surface description");
++      D3DDDI_OPENALLOCATIONINFO2 open_info{};
++      D3DKMT_OPENRESOURCE open{}; open.hDevice = device_.handle(); open.hGlobalShare = share_; open.NumAllocations = 1;
++      open.pOpenAllocationInfo2 = &open_info;
++      open.pPrivateRuntimeData = opened_runtime.data(); open.PrivateRuntimeDataSize = static_cast<UINT>(opened_runtime.size());
++      open.pTotalPrivateDriverDataBuffer = opened.data(); open.TotalPrivateDriverDataBufferSize = static_cast<UINT>(opened.size());
++      check(D3DKMTOpenResource2(&open), "OpenResource2 (window surface)");
++      opened_resource_ = open.hResource; allocation_ = open_info.hAllocation;
++      memcpy(&pitch_, opened.data() + 0xc0, 8); memcpy(&bytes_, opened.data() + 0xd0, 8);
++      if (pitch_ != ((width * 4ull + 127) & ~127ull) || bytes_ != pitch_ * ((height + 31) & ~31u))
++         throw std::runtime_error("Window surface layout is not the expected Y-tiled one");
++      D3DDDI_MAPGPUVIRTUALADDRESS map{};
++      map.hPagingQueue = device_.queue(); map.hAllocation = allocation_;
++      map.MinimumAddress = gpu_min; map.MaximumAddress = gpu_max; map.SizeInPages = bytes_ / 4096; map.Protection.Value = 1;
++      check(D3DKMTMapGpuVirtualAddress(&map), "MapGpuVirtualAddress (window surface)");
++      address_ = map.VirtualAddress;
++      device_.wait_paging(map.PagingFenceValue);
++      D3DDDI_MAKERESIDENT resident{};
++      resident.hPagingQueue = device_.queue(); resident.NumAllocations = 1; resident.AllocationList = &allocation_;
++      check(D3DKMTMakeResident(&resident), "MakeResident (window surface)");
++      device_.wait_paging(resident.PagingFenceValue);
++      device_.buffers_.push_back(this);
++   } catch (...) { close(); throw; }
++}
 +void Buffer::close() noexcept
 +{
 +   auto &buffers = device_.buffers_;
@@ -23232,6 +23622,14 @@
 +      catch (const Error &error) { device_.note_cleanup(error.status, "FreeGpuVirtualAddress"); }
 +   }
 +   address_ = 0;
++   if (opened_resource_ || resource_) {   // window surface: the opened and the created resource
++      for (D3DKMT_HANDLE *resource : {&opened_resource_, &resource_}) {
++         if (!*resource) continue;
++         D3DKMT_DESTROYALLOCATION2 destroy{}; destroy.hDevice = device_.handle(); destroy.hResource = *resource;
++         device_.note_cleanup(D3DKMTDestroyAllocation2(&destroy), "DestroyAllocation2 (window surface)"); *resource = 0;
++      }
++      allocation_ = 0;
++   }
 +   if (allocation_) {
 +      D3DKMT_DESTROYALLOCATION2 destroy{};
 +      destroy.hDevice = device_.handle(); destroy.phAllocationList = &allocation_; destroy.AllocationCount = 1;
@@ -23242,7 +23640,7 @@
 +} // namespace hasvk::wddm
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm_c.cpp
-@@ -0,0 +1,266 @@
+@@ -0,0 +1,297 @@
 +#include "hasvk_wddm.h"
 +#include "hasvk_wddm.hpp"
 +#include <cstdio>
@@ -23430,8 +23828,39 @@
 +   if (!bo) return failure("Invalid BO");
 +   return checked([&] { bo->native->flush(offset, bytes); });
 +}
++extern "C" int hasvk_wddm_bo_create_window_surface(hasvk_wddm_device *device, uint32_t width, uint32_t height,
++                                                    hasvk_wddm_bo **out)
++{
++   if (!device || !out) return failure("Missing window surface arguments");
++   *out = nullptr;
++   return checked([&] {
++      std::lock_guard<std::mutex> lock(device->mutex);
++      auto bo = std::make_unique<hasvk_wddm_bo>();
++      bo->device = device; bo->reservation = 0;
++      bo->native = std::make_unique<Buffer>(device->native, WindowSurfaceTag{}, width, height);
++      device->buffers.insert(bo.get());
++      *out = bo.release();
++   });
++}
++extern "C" int hasvk_wddm_bo_window_surface_info(const hasvk_wddm_bo *bo, uint32_t *share, uint64_t *pitch)
++{
++   if (!bo || !share || !pitch || !bo->native->share()) return failure("Not a window surface");
++   *share = bo->native->share(); *pitch = bo->native->pitch();
++   return 0;
++}
++static int submit(hasvk_wddm_device *device, hasvk_wddm_bo *commands, uint32_t offset, uint32_t bytes, uint64_t present_token);
++extern "C" int hasvk_wddm_submit_present(hasvk_wddm_device *device, hasvk_wddm_bo *commands,
++                                          uint32_t offset, uint32_t bytes, uint64_t present_token)
++{
++   if (!present_token) return failure("Missing present token");
++   return submit(device, commands, offset, bytes, present_token);
++}
 +extern "C" int hasvk_wddm_submit_wait(hasvk_wddm_device *device, hasvk_wddm_bo *commands,
 +                                       uint32_t offset, uint32_t bytes)
++{
++   return submit(device, commands, offset, bytes, 0);
++}
++static int submit(hasvk_wddm_device *device, hasvk_wddm_bo *commands, uint32_t offset, uint32_t bytes, uint64_t present_token)
 +{
 +   if (!device || !commands || commands->device != device) return failure("Invalid submission device/BO");
 +   return checked([&] {
@@ -23445,7 +23874,7 @@
 +         }
 +      }
 +      const uint64_t t1 = ticks();
-+      device->native.submit_and_wait(commands->native->address() + offset, bytes, command_header_8192());
++      device->native.submit_and_wait(commands->native->address() + offset, bytes, command_header_8192(), 15000, present_token);
 +      device->profile.upload_ticks += t1 - t0; device->profile.submit_ticks += ticks() - t1; ++device->profile.submissions;
 +   });
 +}
@@ -23511,7 +23940,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm/intel_2019_profile.cpp
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,60 @@
 +#include "hasvk_wddm.hpp"
 +#include <cstring>
 +
@@ -23532,6 +23961,33 @@
 +   for (const auto &field : fields) memcpy(metadata.data() + field[0], &field[1], 4);
 +   memcpy(metadata.data() + 40, &bytes, 8);
 +   return metadata;
++}
++/* Window surface for redirected present: 2D B8G8R8A8, render target, shared.
++ * Captured from the surface dwmapi creates through D3D11 for the Intel OpenGL
++ * ICD (tools/trace-gl-present.ps1); only width (0x28) and height (0x30) vary.
++ * The kernel driver picks Y tiling, pitch align(width * 4, 128) and height
++ * aligned to 32 rows. */
++std::vector<uint8_t> window_surface_metadata(uint32_t width, uint32_t height)
++{
++   std::vector<uint8_t> metadata(1096, 0);
++   const uint32_t fields[][2] = {
++      {0x0, 3}, {0x8, 2}, {0xc, 0x17}, {0x10, 0x20}, {0x14, 0x400000}, {0x18, 2}, {0x1c, 0x42100008},
++      {0x28, width}, {0x30, height}, {0x34, 1}, {0x3c, 1}, {0x40, 0x2e}, {0x4c, 1}, {0x50, 1}, {0x194, 0x15},
++      {0x3ac, 0x14330000},
++   };
++   for (const auto &field : fields) memcpy(metadata.data() + field[0], &field[1], 4);
++   return metadata;
++}
++/* D3D runtime data of that resource (DXGI_FORMAT_B8G8R8A8_UNORM = 0x57). */
++std::vector<uint8_t> window_surface_runtime_data(uint32_t width, uint32_t height)
++{
++   std::vector<uint8_t> data(104, 0);
++   const uint32_t fields[][2] = {
++      {0x0, 0x68}, {0x4, 4}, {0x38, 3}, {0x3c, width}, {0x40, height}, {0x44, 1}, {0x48, 1}, {0x4c, 0x57},
++      {0x50, 1}, {0x5c, 8}, {0x64, 2},
++   };
++   for (const auto &field : fields) memcpy(data.data() + field[0], &field[1], 4);
++   return data;
 +}
 +std::vector<uint8_t> command_header_8192()
 +{

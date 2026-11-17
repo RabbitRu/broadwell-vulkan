@@ -1,12 +1,12 @@
 ﻿{
     "schema":  1,
-    "testedUtc":  "2026-11-17T16:44:30.4940842Z",
+    "testedUtc":  "2026-11-17T18:07:39.2311552Z",
     "hardware":  "8086:162b",
     "driverVersion":  "20.19.15.5171",
     "layer":  "VK_LAYER_KHRONOS_validation",
     "layerApiVersion":  "1.4.363",
     "layerImplementation":  "1",
-    "icdSha256":  "4c94bab7a9d30a6de03f9dad26c898559bf800eb7fc419aa17dd37c2ce739029",
+    "icdSha256":  "fa19ec88ace0f3ac2d95db7b69c2b65cbcc4440b49e8bcc5ee3a27d35ddd285e",
     "runs":  [
                  {
                      "client":  "IrisIcdProbe.exe",
@@ -15,7 +15,7 @@
                      "messageIds":  [
                                         "WARNING-vkCreateDevice-FeatureNotPresent"
                                     ],
-                     "clientSha256":  "7b39052af46bac14dd478e0476d212d997a3ba4369c17a8f9ebfec6bc34263f3"
+                     "clientSha256":  "301b8831a9b1b4a7ec721846e1a92b73da8b4ac615ded9373ef42eb0ae4a4d87"
                  },
                  {
                      "client":  "IrisGraphicsProbe.exe",
@@ -24,7 +24,7 @@
                      "messageIds":  [
 
                                     ],
-                     "clientSha256":  "00efa2553ab29ad6d6eab81253a712333a786baf16ee39fb4080a5c0e90eb5d3"
+                     "clientSha256":  "b481361c720214fa44bd079d6ef8caae120ce16f68af744d9ac0c457dba917f8"
                  },
                  {
                      "client":  "vkcube.exe (resize/minimize)",

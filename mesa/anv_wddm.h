@@ -17,6 +17,9 @@ struct anv_wddm_device_state {
    struct hasvk_wddm_bo *entry, *completion;
    uint64_t reservation, origin, completed;
    mtx_t mutex;
+   /* Serializes kernel submissions (the shared entry BO): the queue thread
+    * and windowed presents from application threads. */
+   mtx_t submit_mutex;
    struct u_cnd_monotonic condition;
    struct util_vma_heap client_heap;
    struct util_vma_heap state_heap;
@@ -56,7 +59,16 @@ struct anv_wddm_cmd_state {
    struct anv_wddm_wait *waits;
    uint32_t wait_count, wait_capacity;
 };
-int anv_wddm_execute_command(struct anv_cmd_buffer *cmd);
+/* present_token != 0: the last kernel submission is a redirected present
+ * (see hasvk_wddm_submit_present); the command buffer may be executable
+ * rather than pending (driver-internal use). Caller holds submit_mutex. */
+int anv_wddm_execute_command(struct anv_cmd_buffer *cmd, uint64_t present_token);
+VkResult anv_wddm_alloc_window_surface_bo(struct anv_device *device, uint32_t width, uint32_t height,
+                                          struct anv_bo **out, uint32_t *share, uint64_t *pitch);
+#ifdef HASVK_WDDM_GRAPHICS
+VkResult anv_wddm_present_redirected(VkDevice device, VkImage image, void *hwnd, VkExtent2D extent, void **state);
+void anv_wddm_present_redirected_finish(VkDevice device, void *state);
+#endif
 #ifdef HASVK_WDDM_GRAPHICS
 void anv_wddm_cmd_state_finish(struct anv_cmd_buffer *cmd);
 void anv_wddm_init_border_colors(struct anv_device *device);

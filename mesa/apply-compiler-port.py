@@ -34,7 +34,7 @@ names = {
     'src/intel/blorp/blorp_blit.c',
     'src/intel/isl/isl_priv.h', 'src/intel/isl/isl_drm.c', 'src/intel/isl/isl_gfx8.c',
     'src/vulkan/wsi/wsi_common_win32.cpp', 'src/vulkan/wsi/meson.build',
-    'src/vulkan/wsi/wsi_common.c',
+    'src/vulkan/wsi/wsi_common.c', 'src/vulkan/wsi/wsi_common.h', 'src/vulkan/wsi/wsi_common_private.h',
     'src/intel/vulkan_hasvk/anv_private.h',
     'src/intel/vulkan_hasvk/anv_allocator.c',
     'src/intel/vulkan_hasvk/anv_descriptor_set.c',
@@ -120,8 +120,68 @@ edit('src/vulkan/wsi/wsi_common_win32.cpp', [
      '   if (!wsi_device->sw && wsi_device->win32.get_d3d12_command_queue) {\n      wsi->dxgi.factory = dxgi_get_factory'),
     ('   { VK_FORMAT_R8G8B8A8_UNORM },\n   { VK_FORMAT_B8G8R8A8_SRGB },',
      '#ifndef HASVK_WDDM_GDI\n   { VK_FORMAT_R8G8B8A8_UNORM },\n   { VK_FORMAT_B8G8R8A8_SRGB },\n#endif'),
+    # Redirected present (no CPU copy, no D3D): the driver copies the image into
+    # a shared window surface and submits with the present token. GDI remains
+    # the fallback when the driver hook fails.
+    ('   HWND wnd;\n   HDC chain_dc;\n',
+     '   HWND wnd;\n   HDC chain_dc;\n   void *redirect_state;\n   uint64_t redirected_presents, gdi_presents;\n'),
+    ('''   char *ptr = (char *)image->base.cpu_map;
+   char *dptr = (char *)image->sw.ppvBits;
+''', '''   if (chain->wsi->wsi->win32.present_redirected &&
+       chain->wsi->wsi->win32.present_redirected(chain->base.device, image->base.image, chain->surface->base.hwnd,
+                                                 chain->extent, &chain->redirect_state) == VK_SUCCESS) {
+      ++chain->redirected_presents;
+      chain->base.blit_unneeded = true;   /* the next frames skip the copy for GDI */
+      wsi_win32_set_image_idle(chain, image);
+      return chain->status;
+   }
+   ++chain->gdi_presents;
+   /* GDI shows the CPU copy: made from the next frame on (this frame shows
+    * the last copied one if the copy was skipped). */
+   chain->base.blit_unneeded = false;
+
+   char *ptr = (char *)image->base.cpu_map;
+   char *dptr = (char *)image->sw.ppvBits;
+'''),
+    ('''   DeleteDC(chain->chain_dc);
+
+   if (chain->surface->current_swapchain == chain)''', '''   DeleteDC(chain->chain_dc);
+
+   if (chain->redirect_state && chain->wsi->wsi->win32.present_redirected_finish)
+      chain->wsi->wsi->win32.present_redirected_finish(chain->base.device, chain->redirect_state);
+   if (getenv("HASVK_WDDM_PRESENT_STATS"))
+      fprintf(stderr, "HasVK/WDDM present stats: %llu redirected, %llu gdi\\n",
+              (unsigned long long)chain->redirected_presents, (unsigned long long)chain->gdi_presents);
+
+   if (chain->surface->current_swapchain == chain)'''),
+])
+edit('src/vulkan/wsi/wsi_common.h', [
+    ('''      VkResult (*create_image_memory)(VkDevice device, void *resource,
+                                      const VkAllocationCallbacks *alloc,
+                                      VkDeviceMemory *out);
+''', '''      VkResult (*create_image_memory)(VkDevice device, void *resource,
+                                      const VkAllocationCallbacks *alloc,
+                                      VkDeviceMemory *out);
+      /* Present image into window hwnd without a CPU copy; *state is per
+       * swapchain, owned by the driver and released by
+       * present_redirected_finish. Anything but VK_SUCCESS falls back to GDI. */
+      VkResult (*present_redirected)(VkDevice device, VkImage image, void *hwnd,
+                                     VkExtent2D extent, void **state);
+      void (*present_redirected_finish)(VkDevice device, void *state);
+'''),
+])
+edit('src/vulkan/wsi/wsi_common_private.h', [
+    ('   struct {\n      enum wsi_swapchain_blit_type type;\n',
+     '   /* Set by the platform while presents need no CPU-visible copy (redirected\n'
+     '    * present on the WDDM port); the buffer blit is then skipped. */\n'
+     '   bool blit_unneeded;\n\n'
+     '   struct {\n      enum wsi_swapchain_blit_type type;\n'),
 ])
 edit('src/vulkan/wsi/wsi_common.c', [
+    ('''         if (swapchain->blit.type != WSI_SWAPCHAIN_NO_BLIT) {
+            command_buffer_infos[command_buffer_count++] = (VkCommandBufferSubmitInfo) {''',
+     '''         if (swapchain->blit.type != WSI_SWAPCHAIN_NO_BLIT && !swapchain->blit_unneeded) {
+            command_buffer_infos[command_buffer_count++] = (VkCommandBufferSubmitInfo) {'''),
     ('      if (wsi->sw) {\n         wsi->WaitForFences',
      '''#ifdef HASVK_WDDM_GDI
       /* CPU presentation of a hardware image must wait for its GPU copy. */
@@ -383,6 +443,7 @@ owned_sources = {
     'src/intel/vulkan_hasvk/anv_wddm_pools.c': (ROOT / 'mesa/anv_wddm_pools.c').read_text(encoding='utf-8'),
     'src/intel/vulkan_hasvk/anv_wddm_batch.c': (ROOT / 'mesa/anv_wddm_batch.c').read_text(encoding='utf-8'),
     'src/intel/vulkan_hasvk/anv_wddm_command.c': (ROOT / 'mesa/anv_wddm_command.c').read_text(encoding='utf-8'),
+    'src/intel/vulkan_hasvk/anv_wddm_present.c': (ROOT / 'mesa/anv_wddm_present.c').read_text(encoding='utf-8'),
     'src/intel/wddm_compiler/vulkan_hasvk_wddm.def': (ROOT / 'mesa/anv_wddm.def').read_text(encoding='utf-8'),
     'src/intel/wddm_compiler/elk_compile_probe.c': (ROOT / 'mesa/elk_compile_probe.c').read_text(encoding='utf-8'),
     'src/intel/wddm_compiler/elk_abi_probe.cpp': (ROOT / 'mesa/elk_abi_probe.cpp').read_text(encoding='utf-8'),
@@ -492,6 +553,7 @@ if get_option('hasvk-wddm-graphics')
 endif
 libanv_wddm_objects = static_library('anv_wddm_objects',
   ['../vulkan_hasvk/anv_wddm_device.c', '../vulkan_hasvk/anv_wddm_memory.c', '../vulkan_hasvk/anv_wddm_pools.c', '../vulkan_hasvk/anv_allocator.c',
+   '../vulkan_hasvk/anv_wddm_present.c',
    '../vulkan_hasvk/anv_descriptor_set.c',
    '../vulkan_hasvk/anv_image.c', '../vulkan_hasvk/anv_android_stubs.c',
    '../vulkan_hasvk/anv_pipeline.c', '../vulkan_hasvk/anv_pipeline_cache.c', '../vulkan_hasvk/anv_wddm_batch.c',

@@ -55,12 +55,20 @@ int main(int argc, char **argv)
 {
    if (argc < 3) { fprintf(stderr, "usage: PresentRedirectProbe <descriptor.bin> <runtime.bin>\n"); return 2; }
    int failures = 0;
-   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);   // physical screen coordinates
+   bool dpi_aware = true;   // option "nodpi": DPI-virtualized like most applications (vkcube)
+   for (int a = 3; a < argc; ++a) if (!strcmp(argv[a], "nodpi")) dpi_aware = false;
+   if (dpi_aware) SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);   // physical screen coordinates
+   printf("DPI aware: %s, system DPI %u\n", dpi_aware ? "yes" : "no", GetDpiForSystem());
    SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);            // a sleeping display makes every present "occluded"
    Sleep(1500);
    try {
       auto descriptor = load(argv[1], 1096), runtime = load(argv[2], 104);
       uint32_t width, height; memcpy(&width, descriptor.data() + 0x28, 4); memcpy(&height, descriptor.data() + 0x30, 4);
+      /* Option "size=WxH": the same descriptor and runtime data for another window size. */
+      for (int a = 3; a < argc; ++a) if (!strncmp(argv[a], "size=", 5) && sscanf_s(argv[a] + 5, "%ux%u", &width, &height) == 2) {
+         memcpy(descriptor.data() + 0x28, &width, 4); memcpy(descriptor.data() + 0x30, &height, 4);
+         memcpy(runtime.data() + 0x3c, &width, 4); memcpy(runtime.data() + 0x40, &height, 4);
+      }
       /* Option "glcontext": context as the Intel OpenGL ICD creates it
        * (ClientHint OPENGL; private data = pointer to a 0x2cdc-byte buffer, its size, 0x100). */
       bool gl_context = false; int hint = -1;
@@ -68,23 +76,36 @@ int main(int argc, char **argv)
          if (!strcmp(argv[a], "glcontext")) gl_context = true;
          if (!strncmp(argv[a], "hint=", 5)) hint = atoi(argv[a] + 5);   // override the client hint alone
       }
-      static std::vector<uint8_t> context_buffer(0x2cdc);
-      std::vector<uint8_t> context_private;
-      if (gl_context) {
-         context_private.assign(32, 0);
-         const uint64_t pointer = reinterpret_cast<uint64_t>(context_buffer.data()); const uint32_t bytes = 0x2cdc, flags = 0x100;
-         memcpy(context_private.data(), &pointer, 8); memcpy(context_private.data() + 12, &bytes, 4); memcpy(context_private.data() + 20, &flags, 4);
-      }
       if (hint < 0) hint = gl_context ? 1 : 4;
-      Device device((uint32_t)hint, context_private);
-      printf("context: ClientHint=%d, private data %zu bytes\n", hint, context_private.size());
+      Device device((uint32_t)hint, {}, gl_context);
+      printf("context: ClientHint=%d, presentable private data: %s\n", hint, gl_context ? "yes" : "no");
       printf("adapter: %ls; surface %ux%u\n", device.adapter_name.c_str(), width, height);
 
       WNDCLASSW wc{}; wc.lpfnWndProc = window_proc; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"PresentRedirectProbe";
       wc.hCursor = LoadCursor(nullptr, IDC_ARROW); RegisterClassW(&wc);
-      HWND window = CreateWindowExW(WS_EX_TOPMOST, wc.lpszClassName, L"present redirect probe", WS_POPUP | WS_VISIBLE,
-                                    120, 120, (int)width, (int)height, nullptr, nullptr, wc.hInstance, nullptr);
+      /* Option "framed": an ordinary overlapped window whose client area is
+       * width x height; "framed-window" sizes the surface to the whole window
+       * rectangle instead (as dwmapi did for the traced OpenGL window). */
+      bool framed = false, window_sized = false;
+      for (int a = 3; a < argc; ++a) { if (!strcmp(argv[a], "framed")) framed = true; if (!strcmp(argv[a], "framed-window")) framed = window_sized = true; }
+      RECT outer{0, 0, (LONG)width, (LONG)height};
+      if (framed) AdjustWindowRectEx(&outer, WS_OVERLAPPEDWINDOW, FALSE, WS_EX_TOPMOST);
+      HWND window = CreateWindowExW(WS_EX_TOPMOST, wc.lpszClassName, L"present redirect probe", (framed ? WS_OVERLAPPEDWINDOW : WS_POPUP) | WS_VISIBLE,
+                                    120, 120, outer.right - outer.left, outer.bottom - outer.top, nullptr, nullptr, wc.hInstance, nullptr);
       if (!window) throw std::runtime_error("CreateWindowEx");
+      if (window_sized) {
+         width = outer.right - outer.left; height = outer.bottom - outer.top;
+         memcpy(descriptor.data() + 0x28, &width, 4); memcpy(descriptor.data() + 0x30, &height, 4);
+         memcpy(runtime.data() + 0x3c, &width, 4); memcpy(runtime.data() + 0x40, &height, 4);
+      }
+      printf("window %s, surface %ux%u\n", framed ? "framed" : "popup", width, height);
+      /* Option "covered": another topmost window fully covers the probe window. */
+      for (int a = 3; a < argc; ++a) if (!strcmp(argv[a], "covered")) {
+         RECT r; GetWindowRect(window, &r);
+         HWND cover = CreateWindowExW(WS_EX_TOPMOST, wc.lpszClassName, L"cover", WS_POPUP | WS_VISIBLE, r.left - 20, r.top - 20,
+                                      r.right - r.left + 40, r.bottom - r.top + 40, nullptr, nullptr, wc.hInstance, nullptr);
+         printf("covered by %p\n", (void *)cover);
+      }
       pump(); DwmFlush(); Sleep(100); pump();
       /* Option "pixelformat": mark the window as an OpenGL window first
        * (gdi32 SetPixelFormat; for this experiment only, it loads opengl32). */
@@ -173,15 +194,28 @@ int main(int argc, char **argv)
          for (const auto &field : fields) memcpy(header.data() + field[0], &field[1], 4);
          printf("using the OpenGL ICD submission header\n");
       }
-      const uint32_t colours[3] = {0xff8000, 0x20c040, 0x3050e0};   // RGB
-      for (unsigned f = 0; f < 3; ++f) {
-         if (use_dwmapi) { if (f) dwm_surface(f); token = update_id; }
-         const uint32_t bgra = 0xff000000u | colours[f];
+      /* Records the fill batch: colour_at(byte offset) gives the RGB of each 8 bytes. */
+      auto record_fill = [&](auto &&colour_at) {
          auto *p = static_cast<uint32_t *>(fill.cpu());
          for (uint64_t offset = 0; offset < size; offset += 8) {
-            const uint64_t a = surface_va + offset;
+            const uint64_t a = surface_va + offset; const uint32_t bgra = 0xff000000u | colour_at(offset);
             *p++ = 0x10200003; *p++ = (uint32_t)a; *p++ = (uint32_t)(a >> 32); *p++ = bgra; *p++ = bgra;
          }
+         return p;
+      };
+      auto screen_at = [&](int x, int y) {
+         RECT r; GetWindowRect(window, &r); HDC desktop = GetDC(nullptr);
+         const COLORREF s = GetPixel(desktop, r.left + x, r.top + y); ReleaseDC(nullptr, desktop);
+         return (uint32_t)(GetRValue(s) << 16 | GetGValue(s) << 8 | GetBValue(s));
+      };
+      const uint32_t colours[3] = {0xff8000, 0x20c040, 0x3050e0};   // RGB
+      for (unsigned f = 0; f < 4; ++f) {
+         if (use_dwmapi) { if (f) dwm_surface(f); token = update_id; }
+         /* Frame 3 (layout): blue, bytes [512,1024) yellow, [4096,4608) magenta.
+          * Linear (pitch 0x500) puts yellow at (130,0); X-tiling at (2,1);
+          * Y-tiling at (5,10), with magenta at (33,10) if tiles are row-major. */
+         auto *p = f < 3 ? record_fill([&](uint64_t) { return colours[f]; })
+                         : record_fill([](uint64_t o) { return o >= 512 && o < 1024 ? 0xffff00u : o >= 4096 && o < 4608 ? 0xff00ffu : 0x0000ffu; });
          /* Read back the first and the middle dword through the GPU (MI_COPY_MEM_MEM) into entry + 4096. */
          const uint64_t probes[2] = {0, size / 2};
          for (unsigned i = 0; i < 2; ++i) {
@@ -194,14 +228,15 @@ int main(int argc, char **argv)
          device.submit_and_wait(entry.address(), 16, header, 15000, token);
          printf("frame %u: GPU readback of surface %08x %08x\n", f, static_cast<uint32_t *>(entry.cpu())[1024], static_cast<uint32_t *>(entry.cpu())[1025]);
          DwmFlush(); pump(); Sleep(150); DwmFlush(); pump();
+         if (f == 3) {
+            const struct { const char *layout; int x, y; } points[] = {{"linear", 130, 0}, {"X-tiled", 2, 1}, {"Y-tiled", 5, 10}, {"Y next tile", 33, 10}, {"background", 200, 200}};
+            for (const auto &pt : points) printf("layout: %-12s (%3d,%3d) = %06x\n", pt.layout, pt.x, pt.y, screen_at(pt.x, pt.y));
+            continue;
+         }
          uint32_t screen, printed; sample(window, screen, printed);
          const bool ok = screen == colours[f];
          printf("frame %u: expected %06x screen=%06x printwindow=%06x %s\n", f, colours[f], screen, printed, ok ? "PASS" : "FAIL");
          if (!ok) ++failures;
-      }
-      if (gl_context) {
-         size_t written = 0; for (uint8_t b : context_buffer) written += b != 0;
-         printf("context buffer: %zu of %zu bytes written by the kernel driver\n", written, context_buffer.size());
       }
       static const wchar_t *forbidden[] = {L"d3d11.dll", L"d3d12.dll", L"igd10iumd64.dll", L"igd12umd64.dll", L"igdumdim64.dll", L"ig8icd64.dll"};
       for (const wchar_t *m : forbidden) if (GetModuleHandleW(m)) { printf("loaded: %ls\n", m); if (!use_dwmapi) ++failures; }

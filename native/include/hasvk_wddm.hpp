@@ -26,14 +26,20 @@ void check(LONG status, const char *operation);
 uint64_t canonical(uint64_t address);
 std::vector<uint8_t> linear_metadata(uint64_t bytes);
 std::vector<uint8_t> command_header_8192();
+std::vector<uint8_t> window_surface_metadata(uint32_t width, uint32_t height);
+std::vector<uint8_t> window_surface_runtime_data(uint32_t width, uint32_t height);
+struct WindowSurfaceTag {};
 
 // Stage-2 transport. Private allocation/submit data is supplied explicitly by
 // the caller; this does not claim to generate Intel's resource descriptions.
 class Device {
 public:
    Device();
-   /* Experiments: context client hint and private data other than Vulkan's. */
-   Device(uint32_t client_hint, std::vector<uint8_t> context_private);
+   /* presentable_context: create the context with the private data the Intel
+    * OpenGL ICD passes (pointer to a 0x2cdc-byte buffer, its size, 0x100).
+    * Without it the kernel accepts PresentRedirected submissions but DWM never
+    * shows them. Other arguments are for experiments. */
+   Device(uint32_t client_hint, std::vector<uint8_t> context_private, bool presentable_context);
    ~Device();
    Device(const Device &) = delete;
    Device &operator=(const Device &) = delete;
@@ -69,6 +75,7 @@ private:
    uint64_t driver_version_ = 0;
    LUID luid_{};
    std::vector<Buffer *> buffers_;
+   std::vector<uint8_t> context_buffer_;   // referenced by the context's private data
    bool lost_ = false;
    bool cancellation_failed_ = false;
    unsigned cleanup_errors_ = 0;
@@ -91,6 +98,11 @@ class Buffer {
 public:
    Buffer(Device &device, const std::vector<uint8_t> &metadata, uint64_t bytes,
           uint64_t protection = 1, uint64_t requested_va = 0);
+   /* Shared window surface for redirected present (not CPU-mapped). share()
+    * is its global handle, pitch() the row pitch the kernel driver chose. */
+   Buffer(Device &device, WindowSurfaceTag, uint32_t width, uint32_t height);
+   uint32_t share() const { return share_; }
+   uint64_t pitch() const { return pitch_; }
    ~Buffer();
    Buffer(const Buffer &) = delete;
    Buffer &operator=(const Buffer &) = delete;
@@ -110,6 +122,9 @@ private:
    Device &device_;
    unsigned cpu_tracking_ = 3;
    D3DKMT_HANDLE allocation_ = 0;
+   D3DKMT_HANDLE resource_ = 0, opened_resource_ = 0;   // window surfaces only
+   uint32_t share_ = 0;
+   uint64_t pitch_ = 0;
    void *cpu_ = nullptr;
    uint64_t address_ = 0, bytes_ = 0;
    bool owns_va_ = true;

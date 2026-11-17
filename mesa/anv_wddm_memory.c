@@ -114,6 +114,38 @@ anv_device_alloc_bo(struct anv_device *device, const char *name, uint64_t size,
    return VK_SUCCESS;
 }
 
+/* Shared window surface for redirected present (anv_wddm_present.c). Its GPU
+ * address is chosen by the kernel, outside the device's VA heaps; it has no
+ * CPU mapping. is_external marks both (and selects the external MOCS). */
+VkResult
+anv_wddm_alloc_window_surface_bo(struct anv_device *device, uint32_t width, uint32_t height,
+                                 struct anv_bo **out, uint32_t *share, uint64_t *pitch)
+{
+   *out = NULL;
+   struct anv_bo *bo = vk_zalloc(&device->vk.alloc, sizeof(*bo), 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+   if (!bo) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   struct anv_wddm_device_state *w = device->wddm;
+   mtx_lock(&w->mutex);
+   if (!w->bo_ids) w->bo_ids = calloc(BITSET_WORDS(ANV_WDDM_MAX_BOS + 1), sizeof(BITSET_WORD));
+   if (!w->bo_ids || w->allocation_count >= ANV_WDDM_MAX_BOS ||
+       hasvk_wddm_bo_create_window_surface(w->transport, width, height, &bo->wddm_bo) ||
+       hasvk_wddm_bo_window_surface_info(bo->wddm_bo, share, pitch)) {
+      if (bo->wddm_bo) hasvk_wddm_bo_destroy(bo->wddm_bo);
+      mtx_unlock(&w->mutex); vk_free(&device->vk.alloc, bo);
+      return vk_errorf(device, VK_ERROR_OUT_OF_DEVICE_MEMORY, "window surface: %s", hasvk_wddm_error());
+   }
+   bo->name = "window surface"; bo->size = hasvk_wddm_bo_size(bo->wddm_bo);
+   bo->offset = intel_canonical_address(hasvk_wddm_bo_address(bo->wddm_bo));
+   bo->refcount = 1; bo->flags = EXEC_OBJECT_PINNED; bo->is_external = true;
+   uint32_t id = w->bo_id_hint;
+   do { id = id % ANV_WDDM_MAX_BOS + 1; } while (BITSET_TEST(w->bo_ids, id));
+   BITSET_SET(w->bo_ids, id); w->bo_id_hint = id; bo->gem_handle = id;
+   w->allocated_bytes += bo->size; ++w->allocation_count;
+   mtx_unlock(&w->mutex);
+   *out = bo;
+   return VK_SUCCESS;
+}
+
 VkResult
 anv_device_map_bo(struct anv_device *device, struct anv_bo *bo, uint64_t offset,
                   size_t size, uint32_t flags, void **out)
@@ -142,7 +174,8 @@ anv_device_release_bo(struct anv_device *device, struct anv_bo *bo)
       fprintf(stderr, "HasVK/WDDM BO cleanup: %s\n", hasvk_wddm_error());
       vk_device_set_lost(&device->vk, "WDDM BO destruction failed");
    } else {
-      util_vma_heap_free(bo->has_fixed_address ? &w->state_heap : &w->client_heap, intel_48b_address(bo->offset), bo->size);
+      if (!bo->is_external)   /* window surfaces: the kernel chose and frees the address */
+         util_vma_heap_free(bo->has_fixed_address ? &w->state_heap : &w->client_heap, intel_48b_address(bo->offset), bo->size);
       w->allocated_bytes -= bo->size; --w->allocation_count; BITSET_CLEAR(w->bo_ids, bo->gem_handle);
    }
    mtx_unlock(&w->mutex);

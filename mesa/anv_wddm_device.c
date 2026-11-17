@@ -296,6 +296,13 @@ static VkResult enumerate(struct vk_instance *base)
    physical->vk.wsi_device = &physical->wsi_device;
    physical->wsi_device.supports_modifiers = false;
    physical->wsi_device.disable_unordered_submits = true;
+   /* Windowed present by redirected submission (GPU copy into a window
+    * surface, no CPU copy); HASVK_WDDM_PRESENT=gdi keeps the GDI path. */
+   const char *present = getenv("HASVK_WDDM_PRESENT");
+   if (!present || strcmp(present, "gdi")) {
+      physical->wsi_device.win32.present_redirected = anv_wddm_present_redirected;
+      physical->wsi_device.win32.present_redirected_finish = anv_wddm_present_redirected_finish;
+   }
 #endif
    list_addtail(&physical->vk.link, &base->physical_devices.list);
    return VK_SUCCESS;
@@ -467,18 +474,22 @@ static VkResult submit(struct vk_queue *queue, struct vk_queue_submit *work)
    if (vk_queue_submit_has_bind(work)) return VK_ERROR_FEATURE_NOT_PRESENT;
    VkResult result = vk_sync_wait_many(&device->vk, work->wait_count, work->waits, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
    if (result != VK_SUCCESS) return result;
+   mtx_lock(&w->submit_mutex);
    for (uint32_t i = 0; i < work->command_buffer_count; ++i) {
       struct anv_cmd_buffer *cmd = container_of(work->command_buffers[i], struct anv_cmd_buffer, vk);
-      if (anv_wddm_execute_command(cmd)) return queue_lost(queue, "HasVK command buffer submission/completion failed");
+      if (anv_wddm_execute_command(cmd, 0)) {
+         mtx_unlock(&w->submit_mutex);
+         return queue_lost(queue, "HasVK command buffer submission/completion failed");
+      }
    }
    uint32_t serial = (uint32_t)(w->completed + 1);
    uint64_t target = intel_canonical_address(hasvk_wddm_bo_address(w->completion));
    uint32_t *batch = hasvk_wddm_bo_map(w->entry);
    batch[0] = 0x10000002; batch[1] = (uint32_t)target; batch[2] = target >> 32; batch[3] = serial;
    batch[4] = 0x05000000; batch[5] = 0;
-   if (hasvk_wddm_submit_wait(w->transport, w->entry, 0, 24)) {
-      return queue_lost(queue, hasvk_wddm_error());
-   }
+   const int submitted = hasvk_wddm_submit_wait(w->transport, w->entry, 0, 24);
+   mtx_unlock(&w->submit_mutex);
+   if (submitted) return queue_lost(queue, hasvk_wddm_error());
    const uint32_t *actual = hasvk_wddm_bo_map(w->completion);
    if (actual[0] != serial) return queue_lost(queue, "GPU completion counter mismatch");
    for (unsigned i = 1; i < 1024; ++i) if (actual[i] != 0x39393939) return queue_lost(queue, "GPU guard corrupted");
@@ -494,10 +505,12 @@ VkResult anv_queue_submit_simple_batch(struct anv_queue *queue, struct anv_batch
    if (batch->status != VK_SUCCESS) return batch->status;
    if (!bytes || bytes > 8180) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
    size_t aligned = align(bytes, 8);
+   mtx_lock(&w->submit_mutex);
    memcpy(hasvk_wddm_bo_map(w->entry), batch->start, bytes);
    if (aligned > bytes) memset((char *)hasvk_wddm_bo_map(w->entry) + bytes, 0, aligned - bytes);
-   if (anv_wddm_flush_state_pools(queue->device) || hasvk_wddm_submit_wait(w->transport, w->entry, 0, aligned))
-      return vk_errorf(queue->device, VK_ERROR_DEVICE_LOST, "WDDM initialization batch: %s", hasvk_wddm_error());
+   const int failed = anv_wddm_flush_state_pools(queue->device) || hasvk_wddm_submit_wait(w->transport, w->entry, 0, aligned);
+   mtx_unlock(&w->submit_mutex);
+   if (failed) return vk_errorf(queue->device, VK_ERROR_DEVICE_LOST, "WDDM initialization batch: %s", hasvk_wddm_error());
    return VK_SUCCESS;
 }
 #endif
@@ -510,7 +523,7 @@ static void state_finish(struct anv_wddm_device_state *w)
    }
    if (w->reservation) hasvk_wddm_release(w->transport, w->reservation);
    if (w->transport && hasvk_wddm_device_destroy(w->transport)) fprintf(stderr, "HasVK/WDDM cleanup: %s\n", hasvk_wddm_error());
-   u_cnd_monotonic_destroy(&w->condition); mtx_destroy(&w->mutex);
+   u_cnd_monotonic_destroy(&w->condition); mtx_destroy(&w->submit_mutex); mtx_destroy(&w->mutex);
    free(w->bo_ids); free(w);
 }
 VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle, const VkDeviceCreateInfo *info,
@@ -536,7 +549,8 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle
    if (!w) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
    device->wddm = w;
    if (mtx_init(&w->mutex, mtx_plain) != thrd_success) { free(w); device->wddm = NULL; result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
-   if (u_cnd_monotonic_init(&w->condition) != thrd_success) { mtx_destroy(&w->mutex); free(w); device->wddm = NULL; result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
+   if (mtx_init(&w->submit_mutex, mtx_plain) != thrd_success) { mtx_destroy(&w->mutex); free(w); device->wddm = NULL; result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
+   if (u_cnd_monotonic_init(&w->condition) != thrd_success) { mtx_destroy(&w->submit_mutex); mtx_destroy(&w->mutex); free(w); device->wddm = NULL; result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
    if (hasvk_wddm_device_create(&w->transport) || hasvk_wddm_reserve(w->transport, 16ull << 30, 0, &w->reservation)) {
       result = VK_ERROR_INITIALIZATION_FAILED; goto fail_state;
    }
