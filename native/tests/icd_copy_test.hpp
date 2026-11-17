@@ -263,3 +263,37 @@ static json test_large_memory(VkDevice device, VkQueue queue, PFN_vkGetDevicePro
    require(!stats(device, &final_bytes, &final_count) && live_bytes - final_bytes == count * size && live_count - final_count == count, "Large allocations were not returned");
    return {{"allocations", count}, {"bytesEach", size}, {"liveBytes", count * size}, {"gpuFilledBothEnds", true}, {"allReturned", true}};
 }
+/* One allocation of exactly maxMemoryAllocationSize (1 GiB, the Vulkan 1.1
+ * minimum): the GPU fills 64 KiB at the start, the middle and the end, the
+ * CPU checks them and untouched sentinels in between. */
+static json test_largest_allocation(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr get)
+{
+#define API(name) auto name = reinterpret_cast<PFN_##name>(get(device, #name)); require(name != nullptr, "Missing " #name)
+   API(vkAllocateMemory); API(vkFreeMemory); API(vkMapMemory); API(vkCreateBuffer); API(vkDestroyBuffer); API(vkBindBufferMemory);
+   API(vkCreateCommandPool); API(vkDestroyCommandPool); API(vkAllocateCommandBuffers); API(vkBeginCommandBuffer); API(vkEndCommandBuffer);
+   API(vkCmdFillBuffer); API(vkCmdPipelineBarrier); API(vkCreateFence); API(vkDestroyFence); API(vkQueueSubmit); API(vkWaitForFences);
+#undef API
+   const uint64_t size = 1ull << 30, chunk = 65536; const uint64_t offsets[3] = {0, size / 2, size - chunk};
+   VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bi.size = size; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+   VkBuffer buffer{}; check(vkCreateBuffer(device, &bi, nullptr, &buffer), "Create 1 GiB buffer");
+   VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; ai.allocationSize = size;
+   VkDeviceMemory memory{}; check(vkAllocateMemory(device, &ai, nullptr, &memory), "Allocate 1 GiB of device memory");
+   check(vkBindBufferMemory(device, buffer, memory, 0), "Bind 1 GiB buffer");
+   void *map{}; check(vkMapMemory(device, memory, 0, VK_WHOLE_SIZE, 0, &map), "Map 1 GiB allocation"); uint8_t *bytes = static_cast<uint8_t *>(map);
+   for (uint64_t page = 0; page < size; page += 16ull << 20) memset(bytes + page + chunk, 0x5a, 4096);
+   VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; VkCommandPool pool{}; check(vkCreateCommandPool(device, &pool_info, nullptr, &pool), "Pool");
+   VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; ca.commandPool = pool; ca.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ca.commandBufferCount = 1;
+   VkCommandBuffer command{}; check(vkAllocateCommandBuffers(device, &ca, &command), "Command buffer");
+   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; check(vkBeginCommandBuffer(command, &begin), "Begin");
+   for (unsigned i = 0; i < 3; ++i) vkCmdFillBuffer(command, buffer, offsets[i], chunk, 0xc0de0000u + i);
+   VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+   vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+   check(vkEndCommandBuffer(command), "End");
+   VkFenceCreateInfo fc{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; VkFence fence{}; check(vkCreateFence(device, &fc, nullptr, &fence), "Fence");
+   VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &command;
+   check(vkQueueSubmit(queue, 1, &submit, fence), "Submit 1 GiB fills"); check(vkWaitForFences(device, 1, &fence, VK_TRUE, 30000000000ull), "Wait 1 GiB fills");
+   for (unsigned i = 0; i < 3; ++i) for (uint64_t w = 0; w < chunk / 4; ++w) { uint32_t v; memcpy(&v, bytes + offsets[i] + w * 4, 4); require(v == 0xc0de0000u + i, "GPU fill in the 1 GiB allocation differs"); }
+   for (uint64_t page = 0; page < size; page += 16ull << 20) for (unsigned k = 0; k < 4096; k += 511) require(bytes[page + chunk + k] == 0x5a, "1 GiB allocation sentinel overwritten");
+   vkDestroyFence(device, fence, nullptr); vkDestroyCommandPool(device, pool, nullptr); vkDestroyBuffer(device, buffer, nullptr); vkFreeMemory(device, memory, nullptr);
+   return {{"bytes", size}, {"gpuFills", 3}, {"sentinelPages", size / (16ull << 20)}};
+}

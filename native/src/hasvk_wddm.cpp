@@ -214,11 +214,11 @@ Buffer::Buffer(Device &device, const std::vector<uint8_t> &metadata, uint64_t by
                uint64_t protection, uint64_t requested_va)
    : device_(device), bytes_(bytes), owns_va_(requested_va == 0)
 {
-   if (device.lost() || metadata.size() != 1096 || !bytes || bytes > 128 * 1024 * 1024 || (bytes & 4095))
+   if (device.lost() || metadata.size() != 1096 || !bytes || bytes > kMaxLinearAllocationBytes || (bytes & 4095))
       throw std::runtime_error("Invalid Intel allocation metadata/size");
    uint64_t described_bytes;
    memcpy(&described_bytes, metadata.data() + 40, sizeof(described_bytes));
-   if (!described_bytes || described_bytes > 128 * 1024 * 1024 || ((described_bytes + 4095) & ~4095ull) != bytes)
+   if (!described_bytes || described_bytes > kMaxLinearAllocationBytes || ((described_bytes + 4095) & ~4095ull) != bytes)
       throw std::runtime_error("Intel descriptor size does not match allocation");
    try {
       auto mutable_metadata = metadata;

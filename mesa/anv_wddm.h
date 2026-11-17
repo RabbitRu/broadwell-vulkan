@@ -7,8 +7,8 @@
 
 /* One WDDM allocation is at most 128 MiB (transport profile). The device-wide
  * budget is what the single Vulkan heap reports. */
-#define ANV_WDDM_MAX_BO_BYTES (128ull << 20)
-#define ANV_WDDM_HEAP_BYTES (2ull << 30)
+#define ANV_WDDM_MAX_BO_BYTES (1ull << 30)   /* = hasvk::wddm::kMaxLinearAllocationBytes */
+#define ANV_WDDM_HEAP_BYTES (3ull << 30)
 #define ANV_WDDM_MAX_BOS 65536u
 #define ANV_WDDM_EVENT_SLOTS 4096u   /* 8 bytes each in one BO */
 

@@ -9,6 +9,9 @@
 #include <vector>
 
 namespace hasvk::wddm {
+// Largest linear allocation of the experimental Intel profile. The size is an
+// 8-byte field of the 1096-byte descriptor; verified on hardware up to this value.
+constexpr uint64_t kMaxLinearAllocationBytes = 1ull << 30;
 class Buffer;
 constexpr uint64_t gpu_min = 0x800000000000ull;
 constexpr uint64_t gpu_max = 0xfffffffff000ull;

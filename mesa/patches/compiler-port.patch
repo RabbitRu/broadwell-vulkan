@@ -1377,7 +1377,7 @@
 +};
 +/* Limits, features and extensions as upstream HasVK reports them for Gen8
 + * (anv_device.c, built as anv_wddm_capabilities.c), then the limits of this
-+ * port: Vulkan 1.1, one WDDM allocation of at most 128 MiB, no external
++ * port: Vulkan 1.2, one WDDM allocation of at most 128 MiB, no external
 + * handles, not a conformant implementation. */
 +static void apply_upstream_capabilities(struct anv_physical_device *physical)
 +{
@@ -1388,7 +1388,7 @@
 +   struct vk_properties *p = &physical->vk.properties;
 +   const struct vk_properties ours = *p;
 +   *p = upstream;
-+   p->apiVersion = VK_API_VERSION_1_1;
++   p->apiVersion = VK_MAKE_API_VERSION(0, 1, 2, VK_HEADER_VERSION);
 +   memcpy(p->deviceName, ours.deviceName, sizeof(p->deviceName));
 +   memcpy(p->pipelineCacheUUID, ours.pipelineCacheUUID, VK_UUID_SIZE);
 +   memcpy(p->deviceLUID, ours.deviceLUID, VK_LUID_SIZE); p->deviceLUIDValid = true; p->deviceNodeMask = 1;
@@ -1512,7 +1512,7 @@
 +VKAPI_ATTR VkResult VKAPI_CALL anv_EnumerateInstanceVersion(uint32_t *version)
 +{
 +#ifdef HASVK_WDDM_GRAPHICS
-+   *version = VK_API_VERSION_1_1;
++   *version = VK_MAKE_API_VERSION(0, 1, 2, VK_HEADER_VERSION);
 +#else
 +   *version = VK_API_VERSION_1_0;
 +#endif
@@ -1948,8 +1948,8 @@
 +
 +/* One WDDM allocation is at most 128 MiB (transport profile). The device-wide
 + * budget is what the single Vulkan heap reports. */
-+#define ANV_WDDM_MAX_BO_BYTES (128ull << 20)
-+#define ANV_WDDM_HEAP_BYTES (2ull << 30)
++#define ANV_WDDM_MAX_BO_BYTES (1ull << 30)   /* = hasvk::wddm::kMaxLinearAllocationBytes */
++#define ANV_WDDM_HEAP_BYTES (3ull << 30)
 +#define ANV_WDDM_MAX_BOS 65536u
 +#define ANV_WDDM_EVENT_SLOTS 4096u   /* 8 bytes each in one BO */
 +
@@ -2014,7 +2014,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_memory.c
-@@ -0,0 +1,386 @@
+@@ -0,0 +1,400 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -2400,6 +2400,20 @@
 +         dedicated->prefersDedicatedAllocation = dedicated->requiresDedicatedAllocation = false;
 +      }
 +   }
++}
++
++/* Vulkan 1.2 core entry points for buffer-device-address capture/replay. Only
++ * valid with bufferDeviceAddressCaptureReplay, which this port does not
++ * expose (no fixed client addresses across processes). */
++VKAPI_ATTR uint64_t VKAPI_CALL
++anv_GetBufferOpaqueCaptureAddress(VkDevice handle, const VkBufferDeviceAddressInfo *info)
++{
++   (void)handle; (void)info; return 0;
++}
++VKAPI_ATTR uint64_t VKAPI_CALL
++anv_GetDeviceMemoryOpaqueCaptureAddress(VkDevice handle, const VkDeviceMemoryOpaqueCaptureAddressInfo *info)
++{
++   (void)handle; (void)info; return 0;
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_allocator.h
@@ -22714,7 +22728,7 @@
 +#endif
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.hpp
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,99 @@
 +#pragma once
 +#define NOMINMAX
 +#include <windows.h>
@@ -22726,6 +22740,9 @@
 +#include <vector>
 +
 +namespace hasvk::wddm {
++// Largest linear allocation of the experimental Intel profile. The size is an
++// 8-byte field of the 1096-byte descriptor; verified on hardware up to this value.
++constexpr uint64_t kMaxLinearAllocationBytes = 1ull << 30;
 +class Buffer;
 +constexpr uint64_t gpu_min = 0x800000000000ull;
 +constexpr uint64_t gpu_max = 0xfffffffff000ull;
@@ -23030,11 +23047,11 @@
 +               uint64_t protection, uint64_t requested_va)
 +   : device_(device), bytes_(bytes), owns_va_(requested_va == 0)
 +{
-+   if (device.lost() || metadata.size() != 1096 || !bytes || bytes > 128 * 1024 * 1024 || (bytes & 4095))
++   if (device.lost() || metadata.size() != 1096 || !bytes || bytes > kMaxLinearAllocationBytes || (bytes & 4095))
 +      throw std::runtime_error("Invalid Intel allocation metadata/size");
 +   uint64_t described_bytes;
 +   memcpy(&described_bytes, metadata.data() + 40, sizeof(described_bytes));
-+   if (!described_bytes || described_bytes > 128 * 1024 * 1024 || ((described_bytes + 4095) & ~4095ull) != bytes)
++   if (!described_bytes || described_bytes > kMaxLinearAllocationBytes || ((described_bytes + 4095) & ~4095ull) != bytes)
 +      throw std::runtime_error("Intel descriptor size does not match allocation");
 +   try {
 +      auto mutable_metadata = metadata;
@@ -23227,7 +23244,7 @@
 +   *out = nullptr;
 +   return checked([&] {
 +      std::lock_guard<std::mutex> lock(device->mutex);
-+      if (!bytes || (bytes & 4095) || bytes > 128 * 1024 * 1024 ||
++      if (!bytes || (bytes & 4095) || bytes > hasvk::wddm::kMaxLinearAllocationBytes ||
 +          (requested & 4095)) throw std::runtime_error("Invalid linear allocation size/address");
 +      auto bo = std::make_unique<hasvk_wddm_bo>();
 +      bo->device = device;
@@ -23348,7 +23365,7 @@
 +// encodes their logical size. This is not a general Intel GMM implementation.
 +std::vector<uint8_t> linear_metadata(uint64_t bytes)
 +{
-+   if (!bytes || bytes > 128 * 1024 * 1024) throw std::runtime_error("Linear allocation size outside experimental profile");
++   if (!bytes || bytes > kMaxLinearAllocationBytes) throw std::runtime_error("Linear allocation size outside experimental profile");
 +   std::vector<uint8_t> metadata(1096, 0);
 +   const uint32_t fields[][2] = {
 +      {0, 3}, {8, 6}, {12, 0x155}, {16, 8}, {20, 0x20000000},

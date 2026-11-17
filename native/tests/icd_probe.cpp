@@ -74,7 +74,7 @@ static unsigned test_memory(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcA
       }
       uint64_t actual_bytes{}; uint32_t actual_count{};
       require(!stats(device, &actual_bytes, &actual_count) && actual_bytes == expected_bytes && actual_count == baseline_count + live.size(), "WDDM allocation accounting mismatch");
-      VkMemoryAllocateInfo full{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; full.allocationSize = (128ull << 20) + 4096;   /* above the largest single WDDM allocation */
+      VkMemoryAllocateInfo full{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; full.allocationSize = (1ull << 30) + 4096;   /* above the largest single WDDM allocation */
       VkDeviceMemory rejected{};
       require(vkAllocateMemory(device, &full, nullptr, &rejected) == VK_ERROR_OUT_OF_DEVICE_MEMORY && !rejected, "Oversized allocation was not rejected");
       // Keep all allocations resident/mapped during a real GPU submission.
@@ -387,7 +387,7 @@ int wmain(int argc, wchar_t **argv)
          require(names == wanted, "Device extensions differ from the verified list");
          report["deviceExtensions"] = names;
       }
-      require(VK_API_VERSION_MAJOR(properties.apiVersion) == 1 && VK_API_VERSION_MINOR(properties.apiVersion) == 1, "ICD must report Vulkan 1.1");
+      require(VK_API_VERSION_MAJOR(properties.apiVersion) == 1 && VK_API_VERSION_MINOR(properties.apiVersion) == 2, "ICD must report Vulkan 1.2");
       float priority = 1;
       VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}; qi.queueCount = 1; qi.pQueuePriorities = &priority;
       VkDeviceCreateInfo di{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO}; di.queueCreateInfoCount = 1; di.pQueueCreateInfos = &qi;

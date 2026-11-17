@@ -127,7 +127,7 @@ extern "C" int hasvk_wddm_bo_create(hasvk_wddm_device *device, uint64_t bytes,
    *out = nullptr;
    return checked([&] {
       std::lock_guard<std::mutex> lock(device->mutex);
-      if (!bytes || (bytes & 4095) || bytes > 128 * 1024 * 1024 ||
+      if (!bytes || (bytes & 4095) || bytes > hasvk::wddm::kMaxLinearAllocationBytes ||
           (requested & 4095)) throw std::runtime_error("Invalid linear allocation size/address");
       auto bo = std::make_unique<hasvk_wddm_bo>();
       bo->device = device;

@@ -8,7 +8,7 @@ namespace hasvk::wddm {
 // encodes their logical size. This is not a general Intel GMM implementation.
 std::vector<uint8_t> linear_metadata(uint64_t bytes)
 {
-   if (!bytes || bytes > 128 * 1024 * 1024) throw std::runtime_error("Linear allocation size outside experimental profile");
+   if (!bytes || bytes > kMaxLinearAllocationBytes) throw std::runtime_error("Linear allocation size outside experimental profile");
    std::vector<uint8_t> metadata(1096, 0);
    const uint32_t fields[][2] = {
       {0, 3}, {8, 6}, {12, 0x155}, {16, 8}, {20, 0x20000000},

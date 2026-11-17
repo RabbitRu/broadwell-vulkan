@@ -158,7 +158,7 @@ static const char *const verified_device_extensions[] = {
 };
 /* Limits, features and extensions as upstream HasVK reports them for Gen8
  * (anv_device.c, built as anv_wddm_capabilities.c), then the limits of this
- * port: Vulkan 1.1, one WDDM allocation of at most 128 MiB, no external
+ * port: Vulkan 1.2, one WDDM allocation of at most 128 MiB, no external
  * handles, not a conformant implementation. */
 static void apply_upstream_capabilities(struct anv_physical_device *physical)
 {
@@ -169,7 +169,7 @@ static void apply_upstream_capabilities(struct anv_physical_device *physical)
    struct vk_properties *p = &physical->vk.properties;
    const struct vk_properties ours = *p;
    *p = upstream;
-   p->apiVersion = VK_API_VERSION_1_1;
+   p->apiVersion = VK_MAKE_API_VERSION(0, 1, 2, VK_HEADER_VERSION);
    memcpy(p->deviceName, ours.deviceName, sizeof(p->deviceName));
    memcpy(p->pipelineCacheUUID, ours.pipelineCacheUUID, VK_UUID_SIZE);
    memcpy(p->deviceLUID, ours.deviceLUID, VK_LUID_SIZE); p->deviceLUIDValid = true; p->deviceNodeMask = 1;
@@ -293,7 +293,7 @@ static VkResult enumerate(struct vk_instance *base)
 VKAPI_ATTR VkResult VKAPI_CALL anv_EnumerateInstanceVersion(uint32_t *version)
 {
 #ifdef HASVK_WDDM_GRAPHICS
-   *version = VK_API_VERSION_1_1;
+   *version = VK_MAKE_API_VERSION(0, 1, 2, VK_HEADER_VERSION);
 #else
    *version = VK_API_VERSION_1_0;
 #endif
