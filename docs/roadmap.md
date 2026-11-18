@@ -346,9 +346,13 @@ WDDM-контексте (непривилегированный PPGTT-батч),
 1. Системная регистрация ICD: скрипт готов (`tools/install-icd.ps1`: копия
    пакета в `%ProgramFiles%\HasVK-WDDM`, запись манифеста в
    `HKLM\SOFTWARE\Khronos\Vulkan\Drivers`, проверка установленной копии
-   `IrisIcdProbe` через системный загрузчик; `-Uninstall`; `-WhatIf` —
-   проверен). Сама установка требует прав администратора и решения
-   пользователя — не выполнялась.
+   `IrisIcdProbe` через системный загрузчик; `-Uninstall`; `-WhatIf`).
+   Установлено 2026-11-18 (с повышением прав через UAC по решению
+   пользователя): `C:\Program Files\HasVK-WDDM`, запись в
+   `HKLM\SOFTWARE\Khronos\Vulkan\Drivers`; установленная копия проходит
+   `IrisIcdProbe`, `vulkaninfo` без переменных окружения видит
+   «Intel Iris 6100 (HasVK/WDDM)», Vulkan 1.3. Только для 64-битных
+   приложений.
 2. Проверка на реальных приложениях: демо → движки → DXVK/VKD3D. Из
    локального Vulkan SDK проверены: `vulkaninfo` (полный вывод, Vulkan 1.3,
    107 расширений устройства, 0 ошибок под validation layers), `vkcubepp`
