@@ -1,0 +1,35 @@
+﻿[
+    {
+        "run":  "wsi3-wsi-win32",
+        "counts":  {
+                       "NotSupported":  951,
+                       "Pass":  18
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "run":  "wsi3-wsi-win32-swapchain-simulate-oom",
+        "counts":  {
+                       "Pass":  1,
+                       "Timeout":  1
+                   },
+        "notPassing":  [
+                           {
+                               "case":  "dEQP-VK.wsi.win32.swapchain.simulate_oom.min_image_count",
+                               "status":  "Timeout"
+                           }
+                       ]
+    },
+    {
+        "run":  "wsi-one4",
+        "counts":  {
+                       "NotSupported":  1,
+                       "Pass":  2
+                   },
+        "notPassing":  [
+
+                       ]
+    }
+]

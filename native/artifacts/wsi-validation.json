@@ -1,0 +1,85 @@
+{
+  "compositionObservable": false,
+  "displayState": 0,
+  "extents": {
+    "current": [
+      256,
+      192
+    ],
+    "max": [
+      256,
+      192
+    ],
+    "min": [
+      256,
+      192
+    ]
+  },
+  "formats": [
+    {
+      "expected": "4080bf",
+      "format": "B8G8R8A8_UNORM",
+      "height": 192,
+      "mismatches": 0,
+      "width": 256
+    },
+    {
+      "expected": "89bce1",
+      "format": "B8G8R8A8_SRGB",
+      "height": 192,
+      "mismatches": 0,
+      "width": 256
+    },
+    {
+      "expected": "4080bf",
+      "format": "R8G8B8A8_UNORM",
+      "height": 192,
+      "mismatches": 0,
+      "width": 256
+    },
+    {
+      "expected": "89bce1",
+      "format": "R8G8B8A8_SRGB",
+      "height": 192,
+      "mismatches": 0,
+      "width": 256
+    }
+  ],
+  "note": "display off or session locked: frames went through the GDI fallback",
+  "passed": true,
+  "presentModes": [
+    2,
+    1,
+    0
+  ],
+  "presentTiming": {
+    "fifoMsPerFrame": 16.684986666666667,
+    "immediateMsPerFrame": 3.51785,
+    "mailboxMsPerFrame": 3.3443449999999997,
+    "observable": false
+  },
+  "resize": {
+    "acquireAfterResize": -1000001004,
+    "acquireAfterRestore": -1000001004,
+    "acquireWhileMinimized": 0,
+    "afterRecreate": {
+      "expected": "89bce1",
+      "height": 200,
+      "mismatches": 0,
+      "width": 320
+    },
+    "minimizedExtent": [
+      0,
+      0
+    ],
+    "presentAfterResize": 1000001003,
+    "presentWhileMinimized": 0,
+    "zeroExtentSwapchain": -1000001004
+  },
+  "surfaceFormats": [
+    "B8G8R8A8_UNORM",
+    "R8G8B8A8_UNORM",
+    "B8G8R8A8_SRGB",
+    "R8G8B8A8_SRGB"
+  ]
+}

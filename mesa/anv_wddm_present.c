@@ -18,6 +18,7 @@
 struct anv_wddm_window {
    HWND hwnd;
    VkExtent2D extent;
+   VkFormat format;        /* B8G8R8A8_UNORM or _SRGB, as the swapchain's encoding */
    struct anv_bo *bo;
    uint32_t share;
    VkImage image;
@@ -47,16 +48,16 @@ static void window_release(struct anv_device *device, struct anv_wddm_window *w)
 }
 
 /* Window surface and its image for this HWND and extent. */
-static VkResult window_create(struct anv_device *device, struct anv_wddm_window *w, HWND hwnd, VkExtent2D extent)
+static VkResult window_create(struct anv_device *device, struct anv_wddm_window *w, HWND hwnd, VkExtent2D extent, VkFormat format)
 {
    uint64_t pitch = 0;
    VkResult result = anv_wddm_alloc_window_surface_bo(device, extent.width, extent.height, &w->bo, &w->share, &pitch);
    if (result != VK_SUCCESS) return result;
-   w->hwnd = hwnd; w->extent = extent;
+   w->hwnd = hwnd; w->extent = extent; w->format = format;
 
    const VkImageCreateInfo info = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
-      .format = VK_FORMAT_B8G8R8A8_UNORM, .extent = {extent.width, extent.height, 1},
+      .format = format, .extent = {extent.width, extent.height, 1},
       .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
       .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
       .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -110,10 +111,18 @@ VkResult anv_wddm_present_redirected(VkDevice handle, VkImage src, void *hwnd, V
    if (offset.x < 0 || offset.y < 0 || (uint32_t)offset.x >= window.width || (uint32_t)offset.y >= window.height)
       return VK_ERROR_OUT_OF_DATE_KHR;   /* minimized or unusual geometry: GDI takes the frame */
    const VkExtent3D copied = {MIN2(extent.width, window.width - offset.x), MIN2(extent.height, window.height - offset.y), 1};
-   if (w->bo && (w->hwnd != hwnd || w->extent.width != window.width || w->extent.height != window.height))
+   /* DWM reads the surface as B8G8R8A8 bytes in the sRGB encoding. An sRGB
+    * swapchain already holds encoded bytes: the surface takes the _SRGB view so
+    * nothing is decoded on the way. R8G8B8A8 needs its channels swapped (blit). */
+   const VkFormat source = anv_image_from_handle(src)->vk.format;
+   const bool srgb = source == VK_FORMAT_B8G8R8A8_SRGB || source == VK_FORMAT_R8G8B8A8_SRGB;
+   const bool swap = source == VK_FORMAT_R8G8B8A8_UNORM || source == VK_FORMAT_R8G8B8A8_SRGB;
+   if (!swap && source != VK_FORMAT_B8G8R8A8_UNORM && source != VK_FORMAT_B8G8R8A8_SRGB) return VK_ERROR_FORMAT_NOT_SUPPORTED;
+   const VkFormat format = srgb ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8A8_UNORM;
+   if (w->bo && (w->hwnd != hwnd || w->extent.width != window.width || w->extent.height != window.height || w->format != format))
       window_release(device, w);
    if (!w->bo) {
-      VkResult result = window_create(device, w, hwnd, window);
+      VkResult result = window_create(device, w, hwnd, window, format);
       if (result != VK_SUCCESS) { window_release(device, w); return result; }
    }
 
@@ -125,16 +134,32 @@ VkResult anv_wddm_present_redirected(VkDevice handle, VkImage src, void *hwnd, V
    };
    if (result == VK_SUCCESS) result = d->BeginCommandBuffer(w->cmd, &begin);
    if (result != VK_SUCCESS) return result;
-   const VkImageCopy2 region = {
-      .sType = VK_STRUCTURE_TYPE_IMAGE_COPY_2,
-      .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-      .dstOffset = offset, .extent = copied,
-   };
-   const VkCopyImageInfo2 copy = {
-      .sType = VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2, .srcImage = src, .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
-      .dstImage = w->image, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL, .regionCount = 1, .pRegions = &region,
-   };
-   anv_CmdCopyImage2(w->cmd, &copy);
+   const VkImageSubresourceLayers layers = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+   if (swap) {
+      /* 1:1 nearest blit: per-texel format conversion, values unchanged (the
+       * sRGB decode/encode round trip of 8-bit values is exact). */
+      const VkImageBlit2 region = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2, .srcSubresource = layers, .dstSubresource = layers,
+         .srcOffsets = {{0, 0, 0}, {(int32_t)copied.width, (int32_t)copied.height, 1}},
+         .dstOffsets = {offset, {offset.x + (int32_t)copied.width, offset.y + (int32_t)copied.height, 1}},
+      };
+      const VkBlitImageInfo2 blit = {
+         .sType = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2, .srcImage = src, .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+         .dstImage = w->image, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL, .regionCount = 1, .pRegions = &region,
+         .filter = VK_FILTER_NEAREST,
+      };
+      anv_CmdBlitImage2(w->cmd, &blit);
+   } else {
+      const VkImageCopy2 region = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_COPY_2, .srcSubresource = layers, .dstSubresource = layers,
+         .dstOffset = offset, .extent = copied,
+      };
+      const VkCopyImageInfo2 copy = {
+         .sType = VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2, .srcImage = src, .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+         .dstImage = w->image, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL, .regionCount = 1, .pRegions = &region,
+      };
+      anv_CmdCopyImage2(w->cmd, &copy);
+   }
    result = d->EndCommandBuffer(w->cmd);
    if (result != VK_SUCCESS) return result;
 

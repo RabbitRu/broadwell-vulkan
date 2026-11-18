@@ -73,10 +73,12 @@ def edit(name, replacements):
     # also makes repeated bootstrap/build calls idempotent.
     before = (originals / name).read_text(encoding='utf-8')
     after = before
-    for old, new in replacements:
+    for old, new, *count in replacements:
+        # An optional third item: how many identical occurrences to replace.
+        expected = count[0] if count else 1
         if new in after:
             continue
-        if after.count(old) != 1:
+        if after.count(old) != expected:
             raise ValueError(f"Unexpected source context: {name}: {old[:80]!r}")
         after = after.replace(old, new)
     if after != before:
@@ -115,24 +117,155 @@ edit('src/intel/isl/isl_drm.c', [
 ])
 edit('src/vulkan/wsi/wsi_common_win32.cpp', [
     ('#include <directx/d3d12.h>\n#include <dxguids/dxguids.h>',
-     '#ifdef HASVK_WDDM_GDI\n/* The isolated WDDM build uses the pinned Windows SDK interfaces. */\n#include <d3d12.h>\n#else\n#include <directx/d3d12.h>\n#include <dxguids/dxguids.h>\n#endif'),
+     '#ifdef HASVK_WDDM_GDI\n/* The isolated WDDM build uses the pinned Windows SDK interfaces. */\n#include <d3d12.h>\n#include <dwmapi.h>\n#else\n#include <directx/d3d12.h>\n#include <dxguids/dxguids.h>\n#endif'),
     ('   if (!wsi_device->sw) {\n      wsi->dxgi.factory = dxgi_get_factory',
      '   if (!wsi_device->sw && wsi_device->win32.get_d3d12_command_queue) {\n      wsi->dxgi.factory = dxgi_get_factory'),
+    # The WDDM port's redirected present converts any of these into the
+    # window's B8G8R8A8 surface (copy or channel-swapping blit, sRGB bytes kept).
     ('   { VK_FORMAT_R8G8B8A8_UNORM },\n   { VK_FORMAT_B8G8R8A8_SRGB },',
-     '#ifndef HASVK_WDDM_GDI\n   { VK_FORMAT_R8G8B8A8_UNORM },\n   { VK_FORMAT_B8G8R8A8_SRGB },\n#endif'),
+     '   { VK_FORMAT_R8G8B8A8_UNORM },\n   { VK_FORMAT_B8G8R8A8_SRGB },\n#ifdef HASVK_WDDM_GDI\n   { VK_FORMAT_R8G8B8A8_SRGB },\n#endif'),
+    # FIFO is paced by DWM composition (DwmFlush after each present); MAILBOX
+    # and IMMEDIATE are not: DWM shows the latest surface content.
+    ('static const VkPresentModeKHR present_modes_gdi[] = {\n   VK_PRESENT_MODE_FIFO_KHR,\n};',
+     'static const VkPresentModeKHR present_modes_gdi[] = {\n   VK_PRESENT_MODE_FIFO_KHR,\n#ifdef HASVK_WDDM_GDI\n'
+     '   VK_PRESENT_MODE_MAILBOX_KHR,\n   VK_PRESENT_MODE_IMMEDIATE_KHR,\n#endif\n};'),
     # Redirected present (no CPU copy, no D3D): the driver copies the image into
     # a shared window surface and submits with the present token. GDI remains
     # the fallback when the driver hook fails.
     ('   HWND wnd;\n   HDC chain_dc;\n',
-     '   HWND wnd;\n   HDC chain_dc;\n   void *redirect_state;\n   uint64_t redirected_presents, gdi_presents;\n'),
+     '   HWND wnd;\n   HDC chain_dc;\n   void *redirect_state;\n   uint64_t redirected_presents, gdi_presents;\n'
+     '   bool rgba_order;   /* R8G8B8A8 images: GDI needs R and B swapped */\n'),
+    # VK_KHR_win32_surface: "minImageExtent, maxImageExtent, and currentExtent
+    # must always equal the window size" (upstream advertises 1..16384, which
+    # lets applications create swapchains the present then reports out of date).
+    ('''   caps->surfaceCapabilities.minImageExtent = { 1u, 1u };
+   caps->surfaceCapabilities.maxImageExtent = {
+      wsi_device->maxImageDimension2D,
+      wsi_device->maxImageDimension2D,
+   };
+''', '''#ifdef HASVK_WDDM_GDI
+   caps->surfaceCapabilities.minImageExtent = caps->surfaceCapabilities.currentExtent;
+   caps->surfaceCapabilities.maxImageExtent = caps->surfaceCapabilities.currentExtent;
+#else
+   caps->surfaceCapabilities.minImageExtent = { 1u, 1u };
+   caps->surfaceCapabilities.maxImageExtent = {
+      wsi_device->maxImageDimension2D,
+      wsi_device->maxImageDimension2D,
+   };
+#endif
+'''),
+    # A zero extent (an application recreating while minimized; invalid usage)
+    # would assert in image creation: report the surface as out of date.
+    ('''   const unsigned num_images = create_info->minImageCount;
+   struct wsi_win32_swapchain *chain;''', '''#ifdef HASVK_WDDM_GDI
+   if (!create_info->imageExtent.width || !create_info->imageExtent.height)
+      return VK_ERROR_OUT_OF_DATE_KHR;
+#endif
+   const unsigned num_images = create_info->minImageCount;
+   struct wsi_win32_swapchain *chain;'''),
+    ('   chain->extent = create_info->imageExtent;\n',
+     '   chain->extent = create_info->imageExtent;\n'
+     '   chain->rgba_order = create_info->imageFormat == VK_FORMAT_R8G8B8A8_UNORM ||\n'
+     '                       create_info->imageFormat == VK_FORMAT_R8G8B8A8_SRGB;\n'),
+    # A window whose client area no longer matches the swapchain: acquire
+    # reports OUT_OF_DATE (as other Windows drivers do), present SUBOPTIMAL.
+    ('''   /* acquire timeout has to be explicitly handled for sw wsi */
+   if (!chain->dxgi)
+      return wsi_win32_acquire_idle_cpu_image(chain, info, image_index);
+''', '''   /* acquire timeout has to be explicitly handled for sw wsi */
+   if (!chain->dxgi) {
+#ifdef HASVK_WDDM_GDI
+      if (!wsi_win32_extent_matches(chain))
+         return VK_ERROR_OUT_OF_DATE_KHR;
+#endif
+      return wsi_win32_acquire_idle_cpu_image(chain, info, image_index);
+   }
+'''),
+    ('''static bool
+wsi_win32_find_idle_image(''', '''#ifdef HASVK_WDDM_GDI
+/* Client area size equals the swapchain extent. A minimized window (0x0) is
+ * not a mismatch: the swapchain stays usable until the window is restored, so
+ * applications are not pushed into recreating it with a zero extent. */
+static bool
+wsi_win32_extent_matches(struct wsi_win32_swapchain *chain)
+{
+   RECT client;
+   if (!GetClientRect(chain->surface->base.hwnd, &client))
+      return false;
+   const uint32_t width = client.right - client.left, height = client.bottom - client.top;
+   const bool matches = (!width && !height) || (width == chain->extent.width && height == chain->extent.height);
+   if (!matches && getenv("HASVK_WDDM_PRESENT_DEBUG"))
+      fprintf(stderr, "HasVK/WDDM WSI: client %ux%u, swapchain %ux%u\\n", width, height, chain->extent.width, chain->extent.height);
+   return matches;
+}
+
+/* FIFO pacing: sleep until the next vertical blank, from DWM's composition
+ * timing (last vblank and refresh period). Unlike DwmFlush this does not
+ * depend on DWM composing right now: with the display off DwmFlush stalled
+ * for ~270 ms per frame. Without timing information, 60 Hz is assumed. */
+static void
+wsi_win32_wait_composition(void)
+{
+   typedef HRESULT (WINAPI *PFN_DwmGetCompositionTimingInfo)(HWND, DWM_TIMING_INFO *);
+   static PFN_DwmGetCompositionTimingInfo get_timing;
+   static HANDLE timer;
+   static bool loaded;
+   if (!loaded) {
+      HMODULE dwm = LoadLibraryA("dwmapi.dll");
+      get_timing = dwm ? (PFN_DwmGetCompositionTimingInfo)(void *)GetProcAddress(dwm, "DwmGetCompositionTimingInfo") : NULL;
+      timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+      if (!timer)
+         timer = CreateWaitableTimerW(NULL, TRUE, NULL);
+      loaded = true;
+   }
+   LARGE_INTEGER frequency, now;
+   QueryPerformanceFrequency(&frequency);
+   QueryPerformanceCounter(&now);
+   int64_t period = frequency.QuadPart / 60, next = now.QuadPart + period;
+   DWM_TIMING_INFO info;
+   memset(&info, 0, sizeof(info));
+   info.cbSize = sizeof(info);
+   if (get_timing && SUCCEEDED(get_timing(NULL, &info)) && info.qpcRefreshPeriod &&
+       info.qpcRefreshPeriod < (UINT64)frequency.QuadPart / 20) {
+      period = (int64_t)info.qpcRefreshPeriod;
+      next = (int64_t)info.qpcVBlank;
+      if (next <= now.QuadPart)
+         next += ((now.QuadPart - next) / period + 1) * period;
+   }
+   const int64_t wait = next - now.QuadPart;
+   if (wait <= 0 || wait > 2 * period)
+      return;
+   if (timer) {
+      LARGE_INTEGER due;
+      due.QuadPart = -(wait * 10000000 / frequency.QuadPart);   /* relative, 100 ns */
+      if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
+         WaitForSingleObject(timer, INFINITE);
+         return;
+      }
+   }
+   Sleep((DWORD)(wait * 1000 / frequency.QuadPart));
+}
+#endif
+
+static bool
+wsi_win32_find_idle_image('''),
     ('''   char *ptr = (char *)image->base.cpu_map;
    char *dptr = (char *)image->sw.ppvBits;
-''', '''   if (chain->wsi->wsi->win32.present_redirected &&
+''', '''#ifdef HASVK_WDDM_GDI
+   const bool extent_matches = wsi_win32_extent_matches(chain);
+#endif
+   if (chain->wsi->wsi->win32.present_redirected &&
        chain->wsi->wsi->win32.present_redirected(chain->base.device, image->base.image, chain->surface->base.hwnd,
                                                  chain->extent, &chain->redirect_state) == VK_SUCCESS) {
       ++chain->redirected_presents;
       chain->base.blit_unneeded = true;   /* the next frames skip the copy for GDI */
       wsi_win32_set_image_idle(chain, image);
+#ifdef HASVK_WDDM_GDI
+      if (chain->base.present_mode == VK_PRESENT_MODE_FIFO_KHR)
+         wsi_win32_wait_composition();
+      if (chain->status == VK_SUCCESS && !extent_matches)
+         return VK_SUBOPTIMAL_KHR;
+#endif
       return chain->status;
    }
    ++chain->gdi_presents;
@@ -143,6 +276,39 @@ edit('src/vulkan/wsi/wsi_common_win32.cpp', [
    char *ptr = (char *)image->base.cpu_map;
    char *dptr = (char *)image->sw.ppvBits;
 '''),
+    ('''   for (unsigned h = 0; h < chain->extent.height; h++) {
+      memcpy(dptr, ptr, chain->extent.width * 4);
+      dptr += image->sw.bmp_row_pitch;
+      ptr += image->base.row_pitches[0];
+   }''', '''   for (unsigned h = 0; h < chain->extent.height; h++) {
+#ifdef HASVK_WDDM_GDI
+      if (chain->rgba_order) {
+         const uint32_t *in = (const uint32_t *)ptr;
+         uint32_t *out = (uint32_t *)dptr;
+         for (unsigned x = 0; x < chain->extent.width; x++)
+            out[x] = (in[x] & 0xff00ff00u) | ((in[x] & 0xffu) << 16) | ((in[x] >> 16) & 0xffu);
+      } else
+#endif
+      memcpy(dptr, ptr, chain->extent.width * 4);
+      dptr += image->sw.bmp_row_pitch;
+      ptr += image->base.row_pitches[0];
+   }'''),
+    ('''      chain->status = VK_ERROR_MEMORY_MAP_FAILED;
+
+   wsi_win32_set_image_idle(chain, image);
+
+   return chain->status;''', '''      chain->status = VK_ERROR_MEMORY_MAP_FAILED;
+
+   wsi_win32_set_image_idle(chain, image);
+#ifdef HASVK_WDDM_GDI
+   /* The fallback (display off, minimized) paces FIFO the same way. */
+   if (chain->base.present_mode == VK_PRESENT_MODE_FIFO_KHR)
+      wsi_win32_wait_composition();
+   if (chain->status == VK_SUCCESS && !extent_matches)
+      return VK_SUBOPTIMAL_KHR;
+#endif
+
+   return chain->status;'''),
     ('''   for (uint32_t i = 0; i < chain->base.image_count; i++)
       wsi_win32_image_finish(chain, allocator, &chain->images[i]);
 
@@ -333,8 +499,12 @@ image_after = image_after.replace('   vk_image_init(&device->vk, &image->vk, pCr
 #endif
    vk_image_init(&device->vk, &image->vk, pCreateInfo);''')
 edit(image_name, [(image_before, image_after)])
-for name in ['src/intel/blorp/blorp_clear.c', 'src/intel/blorp/blorp_blit.c']:
-    edit(name, [('#include "blorp_shaders.h"', '#ifdef HASVK_WDDM_LEGACY_BLORP\n#include "blorp_bounds_nir.h"\n#else\n#include "blorp_shaders.h"\n#endif')])
+# A shader upload that fails (out of memory) is returned to the caller, which
+# skips the operation; the driver marks the command buffer failed. Upstream
+# asserts, which ended the process in CTS simulate_oom tests.
+for name, uploads in [('src/intel/blorp/blorp_clear.c', 3), ('src/intel/blorp/blorp_blit.c', 2)]:
+    edit(name, [('#include "blorp_shaders.h"', '#ifdef HASVK_WDDM_LEGACY_BLORP\n#include "blorp_bounds_nir.h"\n#else\n#include "blorp_shaders.h"\n#endif'),
+                ('   assert(result);\n', '   (void)result;   /* failure is returned (out of memory) */\n', uploads)])
 edit("src/intel/mda/debug_archiver.c", [
     ('#include "util/u_process.h"', '#include "util/u_process.h"\n#include "util/os_file.h"'),
     ('#include <unistd.h>', '#ifdef _WIN32\n#include <process.h>\n#define getpid _getpid\n#define S_ISDIR(mode) (((mode) & _S_IFMT) == _S_IFDIR)\n#else\n#include <unistd.h>\n#endif'),

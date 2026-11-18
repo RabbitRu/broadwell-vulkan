@@ -115,6 +115,23 @@ anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct
     start = blorp.index('   switch (device->info->verx10) {')
     end = blorp.index('\n   }', start) + len('\n   }')
     blorp = blorp[:start] + '   device->blorp.exec = gfx8_blorp_exec;' + blorp[end:]
+    # A failed shader upload (out of memory) marks the command buffer failed:
+    # vkEndCommandBuffer then reports it instead of BLORP asserting.
+    marker = '''                               NULL, 0, NULL, &bind_map);
+
+   if (!bin)
+      return false;
+'''
+    assert blorp.count(marker) == 1
+    blorp = blorp.replace(marker, '''                               NULL, 0, NULL, &bind_map);
+
+   if (!bin) {
+      struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
+      if (cmd_buffer)
+         anv_batch_set_error(&cmd_buffer->batch, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return false;
+   }
+''')
     # Upstream query code is kept verbatim. Performance-query extensions are
     # not exposed and intel_perf is not built for Windows, so those unreachable
     # branches are compiled out through no-op macros and their pool types are

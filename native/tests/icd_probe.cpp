@@ -381,7 +381,7 @@ int wmain(int argc, wchar_t **argv)
             "VK_KHR_relaxed_block_layout", "VK_KHR_sampler_mirror_clamp_to_edge", "VK_KHR_separate_depth_stencil_layouts",
             "VK_KHR_shader_draw_parameters", "VK_KHR_shader_float_controls", "VK_KHR_shader_float16_int8",
             "VK_KHR_shader_subgroup_extended_types", "VK_KHR_spirv_1_4", "VK_KHR_storage_buffer_storage_class",
-            "VK_KHR_swapchain", "VK_KHR_uniform_buffer_standard_layout", "VK_KHR_variable_pointers",
+            "VK_KHR_swapchain", "VK_KHR_swapchain_mutable_format", "VK_KHR_uniform_buffer_standard_layout", "VK_KHR_variable_pointers",
             "VK_KHR_vulkan_memory_model",
             /* Vulkan 1.3 */
             "VK_EXT_inline_uniform_block", "VK_EXT_private_data", "VK_EXT_subgroup_size_control", "VK_EXT_texel_buffer_alignment",

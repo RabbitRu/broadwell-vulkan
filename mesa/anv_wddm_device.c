@@ -93,6 +93,7 @@ static const struct vk_instance_extension_table instance_extensions = {
    .EXT_debug_utils = true,
 #ifdef HASVK_WDDM_GRAPHICS
    .KHR_surface = true, .KHR_win32_surface = true,
+   .KHR_get_surface_capabilities2 = true, .KHR_surface_protected_capabilities = true, .EXT_debug_report = true,
    .KHR_device_group_creation = true, .KHR_external_fence_capabilities = true,
    .KHR_external_memory_capabilities = true, .KHR_external_semaphore_capabilities = true,
 #endif
@@ -225,6 +226,7 @@ static void apply_upstream_capabilities(struct anv_physical_device *physical)
       for (unsigned x = 0; x < VK_DEVICE_EXTENSION_COUNT; ++x)
          if (!strcmp(vk_device_extensions[x].extensionName, verified_device_extensions[i])) e->extensions[x] = upstream_extensions.extensions[x];
    e->KHR_swapchain = true;
+   e->KHR_swapchain_mutable_format = true;
    /* HASVK_WDDM_EXTRA_EXTENSIONS=VK_EXT_a,VK_EXT_b: also enable these upstream
     * extensions (investigating ones that are off because CTS failed). */
    const char *extra = getenv("HASVK_WDDM_EXTRA_EXTENSIONS");

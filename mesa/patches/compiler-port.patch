@@ -151,13 +151,14 @@
  #include "dev/intel_device_info.h"
 --- a/src/vulkan/wsi/wsi_common_win32.cpp
 +++ b/src/vulkan/wsi/wsi_common_win32.cpp
-@@ -37,8 +37,13 @@
+@@ -37,8 +37,14 @@
  #include "wsi_common_private.h"
  
  #include <dxgi1_4.h>
 +#ifdef HASVK_WDDM_GDI
 +/* The isolated WDDM build uses the pinned Windows SDK interfaces. */
 +#include <d3d12.h>
++#include <dwmapi.h>
 +#else
  #include <directx/d3d12.h>
  #include <dxguids/dxguids.h>
@@ -165,27 +166,55 @@
  
  #include <dcomp.h>
  
-@@ -109,6 +114,8 @@
+@@ -109,6 +115,9 @@
     VkExtent2D                 extent;
     HWND wnd;
     HDC chain_dc;
 +   void *redirect_state;
 +   uint64_t redirected_presents, gdi_presents;
++   bool rgba_order;   /* R8G8B8A8 images: GDI needs R and B swapped */
     struct wsi_win32_image     images[0];
  };
  
-@@ -316,8 +323,10 @@
-    VkFormat     format;
- } available_surface_formats[] = {
+@@ -201,11 +210,16 @@
+       (uint32_t)win_rect.right - (uint32_t)win_rect.left,
+       (uint32_t)win_rect.bottom - (uint32_t)win_rect.top
+    };
++#ifdef HASVK_WDDM_GDI
++   caps->surfaceCapabilities.minImageExtent = caps->surfaceCapabilities.currentExtent;
++   caps->surfaceCapabilities.maxImageExtent = caps->surfaceCapabilities.currentExtent;
++#else
+    caps->surfaceCapabilities.minImageExtent = { 1u, 1u };
+    caps->surfaceCapabilities.maxImageExtent = {
+       wsi_device->maxImageDimension2D,
+       wsi_device->maxImageDimension2D,
+    };
++#endif
+ 
+    caps->surfaceCapabilities.supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    caps->surfaceCapabilities.currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+@@ -318,6 +332,9 @@
     { VK_FORMAT_B8G8R8A8_UNORM },
-+#ifndef HASVK_WDDM_GDI
     { VK_FORMAT_R8G8B8A8_UNORM },
     { VK_FORMAT_B8G8R8A8_SRGB },
++#ifdef HASVK_WDDM_GDI
++   { VK_FORMAT_R8G8B8A8_SRGB },
 +#endif
  };
  
  
-@@ -607,10 +616,18 @@
+@@ -384,6 +401,10 @@
+ 
+ static const VkPresentModeKHR present_modes_gdi[] = {
+    VK_PRESENT_MODE_FIFO_KHR,
++#ifdef HASVK_WDDM_GDI
++   VK_PRESENT_MODE_MAILBOX_KHR,
++   VK_PRESENT_MODE_IMMEDIATE_KHR,
++#endif
+ };
+ static const VkPresentModeKHR present_modes_dxgi[] = {
+    VK_PRESENT_MODE_IMMEDIATE_KHR,
+@@ -607,10 +628,18 @@
     struct wsi_win32_swapchain *chain =
        (struct wsi_win32_swapchain *) drv_chain;
  
@@ -204,27 +233,169 @@
  
     if (chain->surface->current_swapchain == chain)
        chain->surface->current_swapchain = NULL;
-@@ -819,6 +836,19 @@
+@@ -671,6 +700,71 @@
  
+    return VK_SUCCESS;
+ }
++
++#ifdef HASVK_WDDM_GDI
++/* Client area size equals the swapchain extent. A minimized window (0x0) is
++ * not a mismatch: the swapchain stays usable until the window is restored, so
++ * applications are not pushed into recreating it with a zero extent. */
++static bool
++wsi_win32_extent_matches(struct wsi_win32_swapchain *chain)
++{
++   RECT client;
++   if (!GetClientRect(chain->surface->base.hwnd, &client))
++      return false;
++   const uint32_t width = client.right - client.left, height = client.bottom - client.top;
++   const bool matches = (!width && !height) || (width == chain->extent.width && height == chain->extent.height);
++   if (!matches && getenv("HASVK_WDDM_PRESENT_DEBUG"))
++      fprintf(stderr, "HasVK/WDDM WSI: client %ux%u, swapchain %ux%u\n", width, height, chain->extent.width, chain->extent.height);
++   return matches;
++}
++
++/* FIFO pacing: sleep until the next vertical blank, from DWM's composition
++ * timing (last vblank and refresh period). Unlike DwmFlush this does not
++ * depend on DWM composing right now: with the display off DwmFlush stalled
++ * for ~270 ms per frame. Without timing information, 60 Hz is assumed. */
++static void
++wsi_win32_wait_composition(void)
++{
++   typedef HRESULT (WINAPI *PFN_DwmGetCompositionTimingInfo)(HWND, DWM_TIMING_INFO *);
++   static PFN_DwmGetCompositionTimingInfo get_timing;
++   static HANDLE timer;
++   static bool loaded;
++   if (!loaded) {
++      HMODULE dwm = LoadLibraryA("dwmapi.dll");
++      get_timing = dwm ? (PFN_DwmGetCompositionTimingInfo)(void *)GetProcAddress(dwm, "DwmGetCompositionTimingInfo") : NULL;
++      timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
++      if (!timer)
++         timer = CreateWaitableTimerW(NULL, TRUE, NULL);
++      loaded = true;
++   }
++   LARGE_INTEGER frequency, now;
++   QueryPerformanceFrequency(&frequency);
++   QueryPerformanceCounter(&now);
++   int64_t period = frequency.QuadPart / 60, next = now.QuadPart + period;
++   DWM_TIMING_INFO info;
++   memset(&info, 0, sizeof(info));
++   info.cbSize = sizeof(info);
++   if (get_timing && SUCCEEDED(get_timing(NULL, &info)) && info.qpcRefreshPeriod &&
++       info.qpcRefreshPeriod < (UINT64)frequency.QuadPart / 20) {
++      period = (int64_t)info.qpcRefreshPeriod;
++      next = (int64_t)info.qpcVBlank;
++      if (next <= now.QuadPart)
++         next += ((now.QuadPart - next) / period + 1) * period;
++   }
++   const int64_t wait = next - now.QuadPart;
++   if (wait <= 0 || wait > 2 * period)
++      return;
++   if (timer) {
++      LARGE_INTEGER due;
++      due.QuadPart = -(wait * 10000000 / frequency.QuadPart);   /* relative, 100 ns */
++      if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
++         WaitForSingleObject(timer, INFINITE);
++         return;
++      }
++   }
++   Sleep((DWORD)(wait * 1000 / frequency.QuadPart));
++}
++#endif
+ 
+ static bool
+ wsi_win32_find_idle_image(struct wsi_win32_swapchain *chain,
+@@ -737,8 +831,13 @@
+       return chain->status;
+ 
+    /* acquire timeout has to be explicitly handled for sw wsi */
+-   if (!chain->dxgi)
++   if (!chain->dxgi) {
++#ifdef HASVK_WDDM_GDI
++      if (!wsi_win32_extent_matches(chain))
++         return VK_ERROR_OUT_OF_DATE_KHR;
++#endif
+       return wsi_win32_acquire_idle_cpu_image(chain, info, image_index);
++   }
+ 
+    if (wsi_win32_find_idle_image(chain, image_index))
+       return VK_SUCCESS;
+@@ -820,10 +919,40 @@
     if (chain->dxgi)
        return wsi_win32_queue_present_dxgi(chain, image, damage);
-+
+ 
++#ifdef HASVK_WDDM_GDI
++   const bool extent_matches = wsi_win32_extent_matches(chain);
++#endif
 +   if (chain->wsi->wsi->win32.present_redirected &&
 +       chain->wsi->wsi->win32.present_redirected(chain->base.device, image->base.image, chain->surface->base.hwnd,
 +                                                 chain->extent, &chain->redirect_state) == VK_SUCCESS) {
 +      ++chain->redirected_presents;
 +      chain->base.blit_unneeded = true;   /* the next frames skip the copy for GDI */
 +      wsi_win32_set_image_idle(chain, image);
++#ifdef HASVK_WDDM_GDI
++      if (chain->base.present_mode == VK_PRESENT_MODE_FIFO_KHR)
++         wsi_win32_wait_composition();
++      if (chain->status == VK_SUCCESS && !extent_matches)
++         return VK_SUBOPTIMAL_KHR;
++#endif
 +      return chain->status;
 +   }
 +   ++chain->gdi_presents;
 +   /* GDI shows the CPU copy: made from the next frame on (this frame shows
 +    * the last copied one if the copy was skipped). */
 +   chain->base.blit_unneeded = false;
- 
++
     char *ptr = (char *)image->base.cpu_map;
     char *dptr = (char *)image->sw.ppvBits;
-@@ -1091,7 +1121,7 @@
+ 
+    for (unsigned h = 0; h < chain->extent.height; h++) {
++#ifdef HASVK_WDDM_GDI
++      if (chain->rgba_order) {
++         const uint32_t *in = (const uint32_t *)ptr;
++         uint32_t *out = (uint32_t *)dptr;
++         for (unsigned x = 0; x < chain->extent.width; x++)
++            out[x] = (in[x] & 0xff00ff00u) | ((in[x] & 0xffu) << 16) | ((in[x] >> 16) & 0xffu);
++      } else
++#endif
+       memcpy(dptr, ptr, chain->extent.width * 4);
+       dptr += image->sw.bmp_row_pitch;
+       ptr += image->base.row_pitches[0];
+@@ -832,6 +961,13 @@
+       chain->status = VK_ERROR_MEMORY_MAP_FAILED;
+ 
+    wsi_win32_set_image_idle(chain, image);
++#ifdef HASVK_WDDM_GDI
++   /* The fallback (display off, minimized) paces FIFO the same way. */
++   if (chain->base.present_mode == VK_PRESENT_MODE_FIFO_KHR)
++      wsi_win32_wait_composition();
++   if (chain->status == VK_SUCCESS && !extent_matches)
++      return VK_SUBOPTIMAL_KHR;
++#endif
+ 
+    return chain->status;
+ }
+@@ -925,6 +1061,10 @@
+ 
+    assert(create_info->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR);
+ 
++#ifdef HASVK_WDDM_GDI
++   if (!create_info->imageExtent.width || !create_info->imageExtent.height)
++      return VK_ERROR_OUT_OF_DATE_KHR;
++#endif
+    const unsigned num_images = create_info->minImageCount;
+    struct wsi_win32_swapchain *chain;
+    size_t size = sizeof(*chain) + num_images * sizeof(chain->images[0]);
+@@ -982,6 +1122,8 @@
+    chain->base.queue_present = wsi_win32_queue_present;
+    chain->base.present_mode = wsi_swapchain_get_present_mode(wsi_device, create_info);
+    chain->extent = create_info->imageExtent;
++   chain->rgba_order = create_info->imageFormat == VK_FORMAT_R8G8B8A8_UNORM ||
++                       create_info->imageFormat == VK_FORMAT_R8G8B8A8_SRGB;
+ 
+    chain->wsi = wsi;
+    chain->status = VK_SUCCESS;
+@@ -1091,7 +1233,7 @@
     wsi->alloc = alloc;
     wsi->wsi = wsi_device;
  
@@ -842,6 +1013,33 @@
  #include "dev/intel_debug.h"
  #include "dev/intel_device_info.h"
  
+@@ -120,7 +124,7 @@
+                            p.kernel, p.kernel_size,
+                            p.prog_data, p.prog_data_size,
+                            &params->wm_prog_kernel, &params->fs_prog_data);
+-   assert(result);
++   (void)result;   /* failure is returned (out of memory) */
+ 
+    ralloc_free(mem_ctx);
+    return result;
+@@ -212,7 +216,7 @@
+                            p.kernel, p.kernel_size,
+                            p.prog_data, p.prog_data_size,
+                            &params->cs_prog_kernel, &params->cs_prog_data);
+-   assert(result);
++   (void)result;   /* failure is returned (out of memory) */
+ 
+    ralloc_free(mem_ctx);
+    return result;
+@@ -1576,7 +1580,7 @@
+                            p.kernel, p.kernel_size,
+                            p.prog_data, p.prog_data_size,
+                            &params->wm_prog_kernel, &params->fs_prog_data);
+-   assert(result);
++   (void)result;   /* failure is returned (out of memory) */
+ 
+    ralloc_free(mem_ctx);
+    return result;
 --- a/src/intel/blorp/blorp_blit.c
 +++ b/src/intel/blorp/blorp_blit.c
 @@ -25,7 +25,11 @@
@@ -856,6 +1054,24 @@
  #include "dev/intel_debug.h"
  #include "dev/intel_device_info.h"
  
+@@ -1757,7 +1761,7 @@
+                            p.kernel, p.kernel_size,
+                            p.prog_data, p.prog_data_size,
+                            &params->wm_prog_kernel, &params->fs_prog_data);
+-   assert(result);
++   (void)result;   /* failure is returned (out of memory) */
+ 
+    ralloc_free(mem_ctx);
+    return result;
+@@ -1794,7 +1798,7 @@
+                            p.kernel, p.kernel_size,
+                            p.prog_data, p.prog_data_size,
+                            &params->cs_prog_kernel, &params->cs_prog_data);
+-   assert(result);
++   (void)result;   /* failure is returned (out of memory) */
+ 
+    ralloc_free(mem_ctx);
+    return result;
 --- a/src/intel/mda/debug_archiver.c
 +++ b/src/intel/mda/debug_archiver.c
 @@ -10,12 +10,19 @@
@@ -1307,7 +1523,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,919 @@
+@@ -0,0 +1,921 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -1403,6 +1619,7 @@
 +   .EXT_debug_utils = true,
 +#ifdef HASVK_WDDM_GRAPHICS
 +   .KHR_surface = true, .KHR_win32_surface = true,
++   .KHR_get_surface_capabilities2 = true, .KHR_surface_protected_capabilities = true, .EXT_debug_report = true,
 +   .KHR_device_group_creation = true, .KHR_external_fence_capabilities = true,
 +   .KHR_external_memory_capabilities = true, .KHR_external_semaphore_capabilities = true,
 +#endif
@@ -1535,6 +1752,7 @@
 +      for (unsigned x = 0; x < VK_DEVICE_EXTENSION_COUNT; ++x)
 +         if (!strcmp(vk_device_extensions[x].extensionName, verified_device_extensions[i])) e->extensions[x] = upstream_extensions.extensions[x];
 +   e->KHR_swapchain = true;
++   e->KHR_swapchain_mutable_format = true;
 +   /* HASVK_WDDM_EXTRA_EXTENSIONS=VK_EXT_a,VK_EXT_b: also enable these upstream
 +    * extensions (investigating ones that are off because CTS failed). */
 +   const char *extra = getenv("HASVK_WDDM_EXTRA_EXTENSIONS");
@@ -3681,7 +3899,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_present.c
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,207 @@
 +/* Windowed present without a CPU copy and without D3D.
 + *
 + * As the Intel OpenGL ICD of the same driver package does (traced with
@@ -3702,6 +3920,7 @@
 +struct anv_wddm_window {
 +   HWND hwnd;
 +   VkExtent2D extent;
++   VkFormat format;        /* B8G8R8A8_UNORM or _SRGB, as the swapchain's encoding */
 +   struct anv_bo *bo;
 +   uint32_t share;
 +   VkImage image;
@@ -3731,16 +3950,16 @@
 +}
 +
 +/* Window surface and its image for this HWND and extent. */
-+static VkResult window_create(struct anv_device *device, struct anv_wddm_window *w, HWND hwnd, VkExtent2D extent)
++static VkResult window_create(struct anv_device *device, struct anv_wddm_window *w, HWND hwnd, VkExtent2D extent, VkFormat format)
 +{
 +   uint64_t pitch = 0;
 +   VkResult result = anv_wddm_alloc_window_surface_bo(device, extent.width, extent.height, &w->bo, &w->share, &pitch);
 +   if (result != VK_SUCCESS) return result;
-+   w->hwnd = hwnd; w->extent = extent;
++   w->hwnd = hwnd; w->extent = extent; w->format = format;
 +
 +   const VkImageCreateInfo info = {
 +      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
-+      .format = VK_FORMAT_B8G8R8A8_UNORM, .extent = {extent.width, extent.height, 1},
++      .format = format, .extent = {extent.width, extent.height, 1},
 +      .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
 +      .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 +      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -3794,10 +4013,18 @@
 +   if (offset.x < 0 || offset.y < 0 || (uint32_t)offset.x >= window.width || (uint32_t)offset.y >= window.height)
 +      return VK_ERROR_OUT_OF_DATE_KHR;   /* minimized or unusual geometry: GDI takes the frame */
 +   const VkExtent3D copied = {MIN2(extent.width, window.width - offset.x), MIN2(extent.height, window.height - offset.y), 1};
-+   if (w->bo && (w->hwnd != hwnd || w->extent.width != window.width || w->extent.height != window.height))
++   /* DWM reads the surface as B8G8R8A8 bytes in the sRGB encoding. An sRGB
++    * swapchain already holds encoded bytes: the surface takes the _SRGB view so
++    * nothing is decoded on the way. R8G8B8A8 needs its channels swapped (blit). */
++   const VkFormat source = anv_image_from_handle(src)->vk.format;
++   const bool srgb = source == VK_FORMAT_B8G8R8A8_SRGB || source == VK_FORMAT_R8G8B8A8_SRGB;
++   const bool swap = source == VK_FORMAT_R8G8B8A8_UNORM || source == VK_FORMAT_R8G8B8A8_SRGB;
++   if (!swap && source != VK_FORMAT_B8G8R8A8_UNORM && source != VK_FORMAT_B8G8R8A8_SRGB) return VK_ERROR_FORMAT_NOT_SUPPORTED;
++   const VkFormat format = srgb ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8A8_UNORM;
++   if (w->bo && (w->hwnd != hwnd || w->extent.width != window.width || w->extent.height != window.height || w->format != format))
 +      window_release(device, w);
 +   if (!w->bo) {
-+      VkResult result = window_create(device, w, hwnd, window);
++      VkResult result = window_create(device, w, hwnd, window, format);
 +      if (result != VK_SUCCESS) { window_release(device, w); return result; }
 +   }
 +
@@ -3809,16 +4036,32 @@
 +   };
 +   if (result == VK_SUCCESS) result = d->BeginCommandBuffer(w->cmd, &begin);
 +   if (result != VK_SUCCESS) return result;
-+   const VkImageCopy2 region = {
-+      .sType = VK_STRUCTURE_TYPE_IMAGE_COPY_2,
-+      .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-+      .dstOffset = offset, .extent = copied,
-+   };
-+   const VkCopyImageInfo2 copy = {
-+      .sType = VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2, .srcImage = src, .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
-+      .dstImage = w->image, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL, .regionCount = 1, .pRegions = &region,
-+   };
-+   anv_CmdCopyImage2(w->cmd, &copy);
++   const VkImageSubresourceLayers layers = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
++   if (swap) {
++      /* 1:1 nearest blit: per-texel format conversion, values unchanged (the
++       * sRGB decode/encode round trip of 8-bit values is exact). */
++      const VkImageBlit2 region = {
++         .sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2, .srcSubresource = layers, .dstSubresource = layers,
++         .srcOffsets = {{0, 0, 0}, {(int32_t)copied.width, (int32_t)copied.height, 1}},
++         .dstOffsets = {offset, {offset.x + (int32_t)copied.width, offset.y + (int32_t)copied.height, 1}},
++      };
++      const VkBlitImageInfo2 blit = {
++         .sType = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2, .srcImage = src, .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
++         .dstImage = w->image, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL, .regionCount = 1, .pRegions = &region,
++         .filter = VK_FILTER_NEAREST,
++      };
++      anv_CmdBlitImage2(w->cmd, &blit);
++   } else {
++      const VkImageCopy2 region = {
++         .sType = VK_STRUCTURE_TYPE_IMAGE_COPY_2, .srcSubresource = layers, .dstSubresource = layers,
++         .dstOffset = offset, .extent = copied,
++      };
++      const VkCopyImageInfo2 copy = {
++         .sType = VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2, .srcImage = src, .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
++         .dstImage = w->image, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL, .regionCount = 1, .pRegions = &region,
++      };
++      anv_CmdCopyImage2(w->cmd, &copy);
++   }
 +   result = d->EndCommandBuffer(w->cmd);
 +   if (result != VK_SUCCESS) return result;
 +
@@ -18694,7 +18937,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_blorp.c
-@@ -0,0 +1,1996 @@
+@@ -0,0 +1,2000 @@
 +/*
 + * Copyright © 2016 Intel Corporation
 + *
@@ -18767,8 +19010,12 @@
 +                               prog_data, prog_data_size,
 +                               NULL, 0, NULL, &bind_map);
 +
-+   if (!bin)
++   if (!bin) {
++      struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
++      if (cmd_buffer)
++         anv_batch_set_error(&cmd_buffer->batch, VK_ERROR_OUT_OF_HOST_MEMORY);
 +      return false;
++   }
 +
 +   /* The cache already has a reference and it's not going anywhere so there
 +    * is no need to hold a second reference.

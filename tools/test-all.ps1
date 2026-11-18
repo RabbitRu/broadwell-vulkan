@@ -24,6 +24,9 @@ $taskMesaBuild=Get-Content -LiteralPath (Join-Path $taskRoot 'build\mesa-compile
 if ($taskMesaBuild.graphicsModulesBuilt) {
     $taskAttempt.stage='graphics'
     & (Join-Path $PSScriptRoot 'test-graphics.ps1') -SkipBuild
+    $taskAttempt.stage='wsi'
+    & (Join-Path $PSScriptRoot 'build-icd.ps1') -SkipBuild | Out-Null
+    & (Join-Path $PSScriptRoot 'test-wsi.ps1') -SkipBuild
 }
 $taskAttempt.stage='csharp-controls'
 & (Join-Path $taskRoot '.tools\python\python.exe') (Join-Path $PSScriptRoot 'render-readback.py')
