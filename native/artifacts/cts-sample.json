@@ -4,7 +4,7 @@
         "matched":  321144,
         "selected":  215,
         "executed":  215,
-        "seconds":  26.1,
+        "seconds":  24.4,
         "counts":  {
                        "NotSupported":  147,
                        "Pass":  68
@@ -15,7 +15,7 @@
         "matched":  293309,
         "selected":  98,
         "executed":  98,
-        "seconds":  16.9,
+        "seconds":  15.2,
         "counts":  {
                        "NotSupported":  51,
                        "Pass":  47
@@ -26,7 +26,7 @@
         "matched":  19678,
         "selected":  99,
         "executed":  99,
-        "seconds":  35.6,
+        "seconds":  36.8,
         "counts":  {
                        "NotSupported":  13,
                        "Pass":  86
@@ -37,10 +37,10 @@
         "matched":  12889,
         "selected":  86,
         "executed":  86,
-        "seconds":  25.1,
+        "seconds":  26.3,
         "counts":  {
-                       "NotSupported":  16,
-                       "Pass":  70
+                       "NotSupported":  15,
+                       "Pass":  71
                    }
     },
     {
@@ -48,7 +48,7 @@
         "matched":  20282,
         "selected":  68,
         "executed":  68,
-        "seconds":  4.7,
+        "seconds":  3.7,
         "counts":  {
                        "NotSupported":  52,
                        "Pass":  16
@@ -59,7 +59,7 @@
         "matched":  142323,
         "selected":  143,
         "executed":  143,
-        "seconds":  8.2,
+        "seconds":  10.1,
         "counts":  {
                        "NotSupported":  121,
                        "Pass":  22
@@ -70,10 +70,10 @@
         "matched":  146470,
         "selected":  147,
         "executed":  147,
-        "seconds":  38.4,
+        "seconds":  57.7,
         "counts":  {
-                       "NotSupported":  92,
-                       "Pass":  55
+                       "NotSupported":  49,
+                       "Pass":  98
                    }
     },
     {
@@ -81,10 +81,10 @@
         "matched":  16303,
         "selected":  136,
         "executed":  136,
-        "seconds":  58.1,
+        "seconds":  60.5,
         "counts":  {
-                       "NotSupported":  76,
-                       "Pass":  60
+                       "NotSupported":  75,
+                       "Pass":  61
                    }
     },
     {
@@ -92,7 +92,7 @@
         "matched":  23929,
         "selected":  150,
         "executed":  150,
-        "seconds":  118.2,
+        "seconds":  121.7,
         "counts":  {
                        "NotSupported":  28,
                        "Pass":  122
@@ -103,7 +103,7 @@
         "matched":  9844,
         "selected":  141,
         "executed":  141,
-        "seconds":  49.5,
+        "seconds":  49.3,
         "counts":  {
                        "NotSupported":  14,
                        "Pass":  127
@@ -114,7 +114,7 @@
         "matched":  12224,
         "selected":  136,
         "executed":  136,
-        "seconds":  32.2,
+        "seconds":  28.1,
         "counts":  {
                        "NotSupported":  1,
                        "Pass":  135
@@ -125,7 +125,7 @@
         "matched":  18256,
         "selected":  141,
         "executed":  141,
-        "seconds":  71.5,
+        "seconds":  69.9,
         "counts":  {
                        "NotSupported":  1,
                        "Pass":  140
@@ -136,10 +136,10 @@
         "matched":  6267,
         "selected":  126,
         "executed":  126,
-        "seconds":  27.3,
+        "seconds":  28.6,
         "counts":  {
-                       "NotSupported":  29,
-                       "Pass":  97
+                       "NotSupported":  28,
+                       "Pass":  98
                    }
     },
     {
@@ -147,7 +147,7 @@
         "matched":  64823,
         "selected":  145,
         "executed":  145,
-        "seconds":  27.3,
+        "seconds":  30.3,
         "counts":  {
                        "NotSupported":  120,
                        "Pass":  25
@@ -158,7 +158,7 @@
         "matched":  15079,
         "selected":  138,
         "executed":  138,
-        "seconds":  5.1,
+        "seconds":  5.2,
         "counts":  {
                        "NotSupported":  132,
                        "Pass":  6
@@ -169,7 +169,7 @@
         "matched":  671,
         "selected":  112,
         "executed":  112,
-        "seconds":  4.7,
+        "seconds":  4.3,
         "counts":  {
                        "NotSupported":  95,
                        "Pass":  17
@@ -180,7 +180,7 @@
         "matched":  61618,
         "selected":  147,
         "executed":  147,
-        "seconds":  30.2,
+        "seconds":  28.2,
         "counts":  {
                        "NotSupported":  72,
                        "Pass":  75
@@ -191,7 +191,7 @@
         "matched":  308,
         "selected":  103,
         "executed":  103,
-        "seconds":  27.1,
+        "seconds":  25.7,
         "counts":  {
                        "Pass":  103
                    }
@@ -201,7 +201,7 @@
         "matched":  151,
         "selected":  76,
         "executed":  76,
-        "seconds":  20,
+        "seconds":  18.5,
         "counts":  {
                        "NotSupported":  15,
                        "Pass":  60,
@@ -213,7 +213,7 @@
         "matched":  199,
         "selected":  100,
         "executed":  100,
-        "seconds":  21.7,
+        "seconds":  21.1,
         "counts":  {
                        "NotSupported":  4,
                        "Pass":  96
@@ -224,7 +224,7 @@
         "matched":  1103,
         "selected":  138,
         "executed":  138,
-        "seconds":  42.7,
+        "seconds":  43.2,
         "counts":  {
                        "Fail":  1,
                        "NotSupported":  36,

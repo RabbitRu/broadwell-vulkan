@@ -397,13 +397,15 @@ int wmain(int argc, wchar_t **argv)
             "VK_KHR_deferred_host_operations", "VK_VALVE_mutable_descriptor_type",
             /* stage 3, batch B */
             "VK_EXT_border_color_swizzle", "VK_EXT_custom_border_color", "VK_EXT_color_write_enable", "VK_EXT_depth_clamp_control",
-            "VK_EXT_depth_clamp_zero_one", "VK_EXT_depth_clip_enable", "VK_EXT_image_2d_view_of_3d",
+            "VK_EXT_depth_clamp_zero_one", "VK_EXT_depth_clip_enable", "VK_EXT_depth_clip_control", "VK_EXT_image_2d_view_of_3d",
             "VK_EXT_image_view_min_lod", "VK_EXT_line_rasterization", "VK_EXT_non_seamless_cube_map",
             "VK_EXT_primitive_topology_list_restart", "VK_EXT_provoking_vertex", 
             "VK_EXT_vertex_attribute_divisor", "VK_KHR_push_descriptor", "VK_KHR_maintenance5", 
             "VK_EXT_buffer_device_address",
             /* stage 3, batch C */
-            "VK_EXT_conditional_rendering", "VK_EXT_transform_feedback", "VK_EXT_primitives_generated_query"};
+            "VK_EXT_conditional_rendering", "VK_EXT_transform_feedback", "VK_EXT_primitives_generated_query",
+            /* stage 3, fixed after CTS failures */
+            "VK_EXT_robustness2", "VK_KHR_robustness2", "VK_KHR_maintenance6", "VK_EXT_sample_locations"};
          std::vector<VkExtensionProperties> extensions(extension_count);
          check(vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, extensions.data()), "Query device extensions");
          std::vector<std::string> names; for (const auto &extension : extensions) names.push_back(extension.extensionName);

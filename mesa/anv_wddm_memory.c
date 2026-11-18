@@ -362,18 +362,26 @@ VKAPI_ATTR VkResult VKAPI_CALL
 anv_BindBufferMemory2(VkDevice handle, uint32_t count, const VkBindBufferMemoryInfo *infos)
 {
    ANV_FROM_HANDLE(anv_device, device, handle);
+   VkResult first_error = VK_SUCCESS;
    for (uint32_t i = 0; i < count; ++i) {
       ANV_FROM_HANDLE(anv_buffer, buffer, infos[i].buffer);
       ANV_FROM_HANDLE(anv_device_memory, mem, infos[i].memory);
+      /* VK_KHR_maintenance6: each bind reports its own result. */
+      const VkBindMemoryStatusKHR *status = vk_find_struct_const(infos[i].pNext, BIND_MEMORY_STATUS_KHR);
       const uint64_t offset = infos[i].memoryOffset;
       const uint64_t alignment = (buffer->vk.usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ? ANV_UBO_ALIGNMENT : 16;
+      VkResult result = VK_SUCCESS;
       if (!mem || offset % alignment || offset > mem->wddm_allocation_size ||
-          buffer->vk.size > mem->wddm_allocation_size - offset)
-         return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
-      buffer->address = (struct anv_address){.bo = mem->bo, .offset = offset};
-      buffer->vk.device_address = anv_address_physical(buffer->address);
+          buffer->vk.size > mem->wddm_allocation_size - offset) {
+         result = vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+         if (first_error == VK_SUCCESS) first_error = result;
+      } else {
+         buffer->address = (struct anv_address){.bo = mem->bo, .offset = offset};
+         buffer->vk.device_address = anv_address_physical(buffer->address);
+      }
+      if (status) *status->pResult = result;
    }
-   return VK_SUCCESS;
+   return first_error;
 }
 
 /* Integration diagnostics, not a Vulkan entry point. Validate the actual

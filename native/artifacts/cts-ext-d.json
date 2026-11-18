@@ -1,0 +1,68 @@
+﻿[
+    {
+        "group":  "pipeline.monolithic.depth.*depth_clip_control*",
+        "every":  1,
+        "counts":  {
+                       "NotSupported":  12,
+                       "Pass":  60
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "draw.renderpass.depth_clamp.*",
+        "every":  1,
+        "counts":  {
+                       "NotSupported":  36,
+                       "Pass":  82
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "memory.binding.maintenance6.*",
+        "every":  1,
+        "counts":  {
+                       "NotSupported":  112,
+                       "Pass":  56
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "robustness.robustness2.*",
+        "every":  20,
+        "counts":  {
+                       "NotSupported":  954,
+                       "Pass":  1781
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "robustness.buffer_access.*",
+        "every":  2,
+        "counts":  {
+                       "NotSupported":  99,
+                       "Pass":  507
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "pipeline.monolithic.multisample.sample_locations_ext.*",
+        "every":  2,
+        "counts":  {
+                       "NotSupported":  192,
+                       "Pass":  292
+                   },
+        "notPassing":  [
+
+                       ]
+    }
+]

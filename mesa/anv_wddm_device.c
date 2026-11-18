@@ -171,13 +171,16 @@ static const char *const verified_device_extensions[] = {
    "VK_KHR_deferred_host_operations", "VK_VALVE_mutable_descriptor_type",
    /* Stage 3, batch B: state, rasterization, descriptors, maintenance */
    "VK_EXT_border_color_swizzle", "VK_EXT_custom_border_color", "VK_EXT_color_write_enable", "VK_EXT_depth_clamp_control",
-   "VK_EXT_depth_clamp_zero_one", "VK_EXT_depth_clip_enable", "VK_EXT_image_2d_view_of_3d",
+   "VK_EXT_depth_clamp_zero_one", "VK_EXT_depth_clip_enable", "VK_EXT_depth_clip_control", "VK_EXT_image_2d_view_of_3d",
    "VK_EXT_image_view_min_lod", "VK_EXT_line_rasterization", "VK_EXT_non_seamless_cube_map",
    "VK_EXT_primitive_topology_list_restart", "VK_EXT_provoking_vertex", 
    "VK_EXT_vertex_attribute_divisor", "VK_KHR_push_descriptor", "VK_KHR_maintenance5", 
    "VK_EXT_buffer_device_address",
    /* Stage 3, batch C: predication, transform feedback, generated-primitives query */
    "VK_EXT_conditional_rendering", "VK_EXT_transform_feedback", "VK_EXT_primitives_generated_query",
+   /* Stage 3: off after CTS failures, fixed in the port (robust_buffer_access,
+    * per-bind status, vkGetPhysicalDeviceMultisamplePropertiesEXT) */
+   "VK_EXT_robustness2", "VK_KHR_robustness2", "VK_KHR_maintenance6", "VK_EXT_sample_locations",
 };
 /* Limits, features and extensions as upstream HasVK reports them for Gen8
  * (anv_device.c, built as anv_wddm_capabilities.c), then the limits of this
@@ -221,6 +224,21 @@ static void apply_upstream_capabilities(struct anv_physical_device *physical)
       for (unsigned x = 0; x < VK_DEVICE_EXTENSION_COUNT; ++x)
          if (!strcmp(vk_device_extensions[x].extensionName, verified_device_extensions[i])) e->extensions[x] = upstream_extensions.extensions[x];
    e->KHR_swapchain = true;
+   /* HASVK_WDDM_EXTRA_EXTENSIONS=VK_EXT_a,VK_EXT_b: also enable these upstream
+    * extensions (investigating ones that are off because CTS failed). */
+   const char *extra = getenv("HASVK_WDDM_EXTRA_EXTENSIONS");
+   if (extra)
+      for (unsigned x = 0; x < VK_DEVICE_EXTENSION_COUNT; ++x) {
+         const char *name = vk_device_extensions[x].extensionName, *at = extra;
+         const size_t length = strlen(name);
+         while ((at = strstr(at, name)) != NULL) {
+            if ((at == extra || at[-1] == ',') && (at[length] == ',' || !at[length])) {
+               e->extensions[x] = upstream_extensions.extensions[x];
+               break;
+            }
+            at += length;
+         }
+      }
    /* HASVK_WDDM_LIST_EXTENSIONS=1: upstream HasVK extensions not (yet) enabled here. */
    if (getenv("HASVK_WDDM_LIST_EXTENSIONS"))
       for (unsigned x = 0; x < VK_DEVICE_EXTENSION_COUNT; ++x)
@@ -380,6 +398,11 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateInstance(const VkInstanceCreateInfo *in
    if (result != VK_SUCCESS) { vk_free(allocator, instance); return result; }
    instance->vk.physical_devices.enumerate = enumerate;
    instance->vk.physical_devices.destroy = physical_destroy;
+   /* driconf is not loaded on Windows, so instance->drirc keeps zeros. That is
+    * the default of every hasvk option except lower_depth_range_rate (1.0): at
+    * 0 the viewport depth translation (m32) was multiplied away, breaking
+    * depth_clip_control and any viewport with minDepth != 0. */
+   instance->drirc.quality.lower_depth_range_rate = 1.0f;
    process_intel_debug_variable();
    *out = anv_instance_to_handle(instance);
    return VK_SUCCESS;
@@ -506,6 +529,17 @@ VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceSparseImageFormatProperties2(VkP
    (void)handle; (void)info; (void)properties; *count = 0;
 }
 #endif
+/* VK_EXT_sample_locations, as upstream anv_device.c: a 1x1 grid for every
+ * multisampled count the hardware supports. */
+VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceMultisamplePropertiesEXT(VkPhysicalDevice handle, VkSampleCountFlagBits samples,
+   VkMultisamplePropertiesEXT *properties)
+{
+   ANV_FROM_HANDLE(anv_physical_device, physical, handle);
+   const VkSampleCountFlags counts = ~VK_SAMPLE_COUNT_1_BIT & isl_device_get_sample_counts(&physical->isl_dev);
+   const uint32_t grid = (samples & counts) ? 1 : 0;
+   properties->maxSampleLocationGridSize = (VkExtent2D){grid, grid};
+   vk_foreach_struct(ext, properties->pNext) vk_debug_ignored_stype(ext->sType);
+}
 static VkResult queue_lost(struct vk_queue *queue, const char *message)
 {
    VkResult result = vk_queue_set_lost(queue, "%s", message);
@@ -657,6 +691,10 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle
    if (result != VK_SUCCESS) { vk_free2(&physical->instance->vk.alloc, allocator, device); return result; }
    anv_device_set_physical(device, physical);
    device->vk.command_buffer_ops = &anv_cmd_buffer_ops;
+   /* As upstream anv_CreateDevice: shaders get bounds-checked UBO/SSBO access
+    * (ELK_ROBUSTNESS_*) when robustBufferAccess or nullDescriptor is on. */
+   device->robust_buffer_access = device->vk.enabled_features.robustBufferAccess ||
+                                  device->vk.enabled_features.nullDescriptor;
    struct anv_wddm_device_state *w = calloc(1, sizeof(*w));
    if (!w) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
    device->wddm = w;

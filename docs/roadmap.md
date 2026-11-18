@@ -16,8 +16,8 @@ Intel `20.19.15.5171`, без Intel UMD и D3D12. Потолок для этой
 
 ## 1. Сделано
 
-Сейчас ICD объявляет **Vulkan 1.3** и 99 расширений устройства. Выборочный
-прогон CTS по 22 группам (~2660 тестов): 1528 Pass, 1 Fail — известное
+Сейчас ICD объявляет **Vulkan 1.3** и 104 расширения устройства. Выборочный
+прогон CTS по 22 группам (~2660 тестов): 1574 Pass, 1 Fail — известное
 зависание `tess_factor_barrier_bug` (этап 4) и ResourceError следующего за ним
 теста, который отдельно проходит (`native/artifacts/cts-sample.json`; свежий
 итог выборки — `build/cts-sample.json`).
@@ -101,7 +101,22 @@ Intel `20.19.15.5171`, без Intel UMD и D3D12. Потолок для этой
     `EXT_transform_feedback`, `EXT_primitives_generated_query` (в белые списки
     `vkCreateBuffer` и `vkCreateQueryPool` добавлены их флаги буферов и типы
     запросов) — 1620 Pass (`conditional_rendering`, `transform_feedback.simple`,
-    каждый 40-й из `transform_feedback.primitives_generated_query`).
+    каждый 40-й из `transform_feedback.primitives_generated_query`);
+  - выключенные ранее из-за отказов CTS (5), исправлены ошибки порта:
+    `EXT_depth_clip_control` — driconf на Windows не читается, и
+    `drirc.quality.lower_depth_range_rate` оставался 0 вместо 1, обнуляя
+    смещение глубины viewport (m32); то же чинит depth clamp с четырьмя
+    viewport. `EXT/KHR_robustness2` — порт не выставлял
+    `device->robust_buffer_access`, и шейдеры собирались без проверки границ
+    UBO/SSBO. `KHR_maintenance6` — `vkBindBufferMemory2` не заполнял
+    `VkBindMemoryStatus`. `EXT_sample_locations` — не было
+    `vkGetPhysicalDeviceMultisamplePropertiesEXT` (функция из upstream
+    `anv_device.c`, который порт заменяет своим кодом). Для разбора таких
+    случаев есть `HASVK_WDDM_EXTRA_EXTENSIONS=VK_EXT_a,VK_EXT_b`: включает
+    выключенные расширения upstream без пересборки. Прицельный CTS
+    (`depth_clip_control`, `depth_clamp`, `maintenance6`, каждый 20-й из
+    `robustness2`, каждый 2-й из `robustness.buffer_access` и
+    `sample_locations_ext`) — 2778 Pass, 0 Fail.
 - Командные буферы: цепочка BO без ограничения размера, secondary command
   buffers (копируются в primary).
 - Events: отдельный BO; `MI_SEMAPHORE_WAIT` в WDDM-контексте не работает,
@@ -215,19 +230,12 @@ WDDM-контексте (непривилегированный PPGTT-батч),
 ## 2. Осталось
 
 ### Этап 3. Полнота относительно HasVK
-1. YCbCr и многоплоскостные изображения.
-2. Расширения HasVK, выключенные из-за отказов CTS (выяснить и исправить):
-   `VK_EXT_depth_clip_control` (все 60 тестов: глубина смещена на 0,5 —
-   режим −1…1 не действует, хотя масштаб viewport в коде есть),
-   `VK_EXT_sample_locations` (Crash), `VK_KHR_maintenance6` (6 Fail в
-   `memory.binding.maintenance6`), `VK_EXT/KHR_robustness2` (2 Fail в
-   выборке `robustness.robustness2`).
-3. Ошибка depth clamp с четырьмя viewport:
-   `draw.renderpass.depth_clamp.d32_sfloat_s8_uint_clamp_four_viewports` (Fail
-   и без новых расширений).
-4. MSAA 2x/8x, `vkCmdResolveImage`, blit с линейным фильтром.
-5. Вспомогательные поверхности HiZ/CCS/MCS (скорость, не корректность).
-6. Обобщить профиль WDDM-выделений на другие версии драйвера и GPU
+1. YCbCr и многоплоскостные изображения (`KHR_sampler_ycbcr_conversion`,
+   `EXT_ycbcr_image_arrays`). Остальные выключенные расширения upstream —
+   только для Linux: dma-buf, DRM, fd, `pci_bus_info`, `queue_family_foreign`.
+2. MSAA 2x/8x, `vkCmdResolveImage`, blit с линейным фильтром.
+3. Вспомогательные поверхности HiZ/CCS/MCS (скорость, не корректность).
+4. Обобщить профиль WDDM-выделений на другие версии драйвера и GPU
    Broadwell/Haswell.
 
 ### Этап 4. Полный прогон CTS
