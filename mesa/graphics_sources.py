@@ -140,7 +140,9 @@ anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct
     assert query.count(marker) == 1
     query = query.replace(marker, marker + '''   if (pCreateInfo->queryType != VK_QUERY_TYPE_OCCLUSION &&
        pCreateInfo->queryType != VK_QUERY_TYPE_PIPELINE_STATISTICS &&
-       pCreateInfo->queryType != VK_QUERY_TYPE_TIMESTAMP)
+       pCreateInfo->queryType != VK_QUERY_TYPE_TIMESTAMP &&
+       pCreateInfo->queryType != VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT &&
+       pCreateInfo->queryType != VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT)
       return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
 ''')
     return {

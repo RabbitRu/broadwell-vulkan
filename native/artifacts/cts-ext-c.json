@@ -1,0 +1,35 @@
+﻿[
+    {
+        "group":  "conditional_rendering.*",
+        "every":  2,
+        "counts":  {
+                       "NotSupported":  342,
+                       "Pass":  158
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "transform_feedback.simple.*",
+        "every":  6,
+        "counts":  {
+                       "NotSupported":  951,
+                       "Pass":  363
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "transform_feedback.primitives_generated_query.*",
+        "every":  40,
+        "counts":  {
+                       "NotSupported":  1598,
+                       "Pass":  1099
+                   },
+        "notPassing":  [
+
+                       ]
+    }
+]

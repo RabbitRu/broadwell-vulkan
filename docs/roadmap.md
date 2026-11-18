@@ -16,8 +16,8 @@ Intel `20.19.15.5171`, без Intel UMD и D3D12. Потолок для этой
 
 ## 1. Сделано
 
-Сейчас ICD объявляет **Vulkan 1.3** и 96 расширений устройства. Выборочный
-прогон CTS по 22 группам (~2660 тестов): 1454 Pass, 1 Fail — известное
+Сейчас ICD объявляет **Vulkan 1.3** и 99 расширений устройства. Выборочный
+прогон CTS по 22 группам (~2660 тестов): 1528 Pass, 1 Fail — известное
 зависание `tess_factor_barrier_bug` (этап 4) и ResourceError следующего за ним
 теста, который отдельно проходит (`native/artifacts/cts-sample.json`; свежий
 итог выборки — `build/cts-sample.json`).
@@ -96,12 +96,23 @@ Intel `20.19.15.5171`, без Intel UMD и D3D12. Потолок для этой
     `EXT_line_rasterization`, `EXT_non_seamless_cube_map`,
     `EXT_primitive_topology_list_restart`, `EXT_provoking_vertex`,
     `EXT_vertex_attribute_divisor`, `KHR_push_descriptor`, `KHR_maintenance5`,
-    `EXT_buffer_device_address`.
+    `EXT_buffer_device_address`;
+  - предикаты и transform feedback (3): `EXT_conditional_rendering`,
+    `EXT_transform_feedback`, `EXT_primitives_generated_query` (в белые списки
+    `vkCreateBuffer` и `vkCreateQueryPool` добавлены их флаги буферов и типы
+    запросов) — 1620 Pass (`conditional_rendering`, `transform_feedback.simple`,
+    каждый 40-й из `transform_feedback.primitives_generated_query`).
 - Командные буферы: цепочка BO без ограничения размера, secondary command
   buffers (копируются в primary).
 - Events: отдельный BO; `MI_SEMAPHORE_WAIT` в WDDM-контексте не работает,
   поэтому `vkCmdWaitEvents` вне рендеринга разрезает батч, и очередь ждёт
-  события на CPU.
+  события на CPU. Внутри прохода рендеринга ждать нечего: события там могут
+  быть установлены только раньше по порядку отправки (установка с хоста после
+  отправки запрещена, `VUID-vkCmdWaitEvents-pEvents-01163`), а очередь
+  выполняет всё строго по порядку, поэтому остаётся только барьер памяти.
+  Проверено режимом 8 теста отрисовки: инстансы записываются передачами,
+  событие ставится после них, отрисовка ждёт его внутри прохода — все пиксели
+  совпадают.
 - Барьеры — штатные HasVK: сбросы и инвалидации кэшей по маскам стадий и
   доступа, а не полный сброс на каждый барьер. CTS `memory.pipeline_barrier`,
   барьеры `synchronization`/`synchronization2`, `synchronization.basic`:
@@ -204,26 +215,19 @@ WDDM-контексте (непривилегированный PPGTT-батч),
 ## 2. Осталось
 
 ### Этап 3. Полнота относительно HasVK
-1. `vkCmdWaitEvents` внутри прохода рендеринга сейчас молча пропускается
-   (`MI_SEMAPHORE_WAIT` не работает, а разрезать батч внутри прохода нельзя):
-   нужен корректный путь — например, ожидание события до начала прохода или
-   отказ с ошибкой.
-2. YCbCr и многоплоскостные изображения.
-3. Расширения HasVK, выключенные из-за отказов CTS (выяснить и исправить):
+1. YCbCr и многоплоскостные изображения.
+2. Расширения HasVK, выключенные из-за отказов CTS (выяснить и исправить):
    `VK_EXT_depth_clip_control` (все 60 тестов: глубина смещена на 0,5 —
    режим −1…1 не действует, хотя масштаб viewport в коде есть),
    `VK_EXT_sample_locations` (Crash), `VK_KHR_maintenance6` (6 Fail в
    `memory.binding.maintenance6`), `VK_EXT/KHR_robustness2` (2 Fail в
    выборке `robustness.robustness2`).
-4. Ещё не включённые: `conditional_rendering`, `transform_feedback`,
-   `primitives_generated_query`; `descriptor_indexing` HasVK для Gen8 не
-   объявляет.
-5. Ошибка depth clamp с четырьмя viewport:
+3. Ошибка depth clamp с четырьмя viewport:
    `draw.renderpass.depth_clamp.d32_sfloat_s8_uint_clamp_four_viewports` (Fail
    и без новых расширений).
-6. MSAA 2x/8x, `vkCmdResolveImage`, blit с линейным фильтром.
-7. Вспомогательные поверхности HiZ/CCS/MCS (скорость, не корректность).
-8. Обобщить профиль WDDM-выделений на другие версии драйвера и GPU
+4. MSAA 2x/8x, `vkCmdResolveImage`, blit с линейным фильтром.
+5. Вспомогательные поверхности HiZ/CCS/MCS (скорость, не корректность).
+6. Обобщить профиль WDDM-выделений на другие версии драйвера и GPU
    Broadwell/Haswell.
 
 ### Этап 4. Полный прогон CTS

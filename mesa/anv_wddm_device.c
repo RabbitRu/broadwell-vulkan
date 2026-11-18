@@ -176,6 +176,8 @@ static const char *const verified_device_extensions[] = {
    "VK_EXT_primitive_topology_list_restart", "VK_EXT_provoking_vertex", 
    "VK_EXT_vertex_attribute_divisor", "VK_KHR_push_descriptor", "VK_KHR_maintenance5", 
    "VK_EXT_buffer_device_address",
+   /* Stage 3, batch C: predication, transform feedback, generated-primitives query */
+   "VK_EXT_conditional_rendering", "VK_EXT_transform_feedback", "VK_EXT_primitives_generated_query",
 };
 /* Limits, features and extensions as upstream HasVK reports them for Gen8
  * (anv_device.c, built as anv_wddm_capabilities.c), then the limits of this

@@ -1301,7 +1301,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,872 @@
+@@ -0,0 +1,874 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -1480,6 +1480,8 @@
 +   "VK_EXT_primitive_topology_list_restart", "VK_EXT_provoking_vertex", 
 +   "VK_EXT_vertex_attribute_divisor", "VK_KHR_push_descriptor", "VK_KHR_maintenance5", 
 +   "VK_EXT_buffer_device_address",
++   /* Stage 3, batch C: predication, transform feedback, generated-primitives query */
++   "VK_EXT_conditional_rendering", "VK_EXT_transform_feedback", "VK_EXT_primitives_generated_query",
 +};
 +/* Limits, features and extensions as upstream HasVK reports them for Gen8
 + * (anv_device.c, built as anv_wddm_capabilities.c), then the limits of this
@@ -2312,7 +2314,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_memory.c
-@@ -0,0 +1,494 @@
+@@ -0,0 +1,495 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -2638,7 +2640,8 @@
 +      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
 +      VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
 +      VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-+      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
++      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT |
++      VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT;
 +   if (info->usage & ~allowed) return VK_ERROR_FEATURE_NOT_PRESENT;
 +   struct anv_buffer *buffer = vk_buffer_create(&device->vk, info, allocator, sizeof(*buffer));
 +   if (!buffer) return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -8243,7 +8246,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_query.c
-@@ -0,0 +1,1541 @@
+@@ -0,0 +1,1543 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -8321,7 +8324,9 @@
 +   const struct anv_physical_device *pdevice = device->physical;
 +   if (pCreateInfo->queryType != VK_QUERY_TYPE_OCCLUSION &&
 +       pCreateInfo->queryType != VK_QUERY_TYPE_PIPELINE_STATISTICS &&
-+       pCreateInfo->queryType != VK_QUERY_TYPE_TIMESTAMP)
++       pCreateInfo->queryType != VK_QUERY_TYPE_TIMESTAMP &&
++       pCreateInfo->queryType != VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT &&
++       pCreateInfo->queryType != VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT)
 +      return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
 +#if GFX_VER >= 8
 +   const VkQueryPoolPerformanceCreateInfoKHR *perf_query_info = NULL;

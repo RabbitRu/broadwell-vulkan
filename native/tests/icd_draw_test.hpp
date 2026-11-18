@@ -18,6 +18,7 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
    API(vkCreateBuffer); API(vkDestroyBuffer); API(vkGetBufferMemoryRequirements); API(vkBindBufferMemory);
    API(vkCmdBindVertexBuffers); API(vkCmdBindIndexBuffer); API(vkCmdDraw); API(vkCmdDrawIndexed);
    API(vkCmdDrawIndirect); API(vkCmdDrawIndexedIndirect); API(vkCmdExecuteCommands); API(vkCmdSetScissor);
+   API(vkCmdFillBuffer); API(vkCmdUpdateBuffer); API(vkCreateEvent); API(vkDestroyEvent); API(vkCmdSetEvent); API(vkCmdWaitEvents);
 #undef API
    using ReadImage = int (*)(VkImage, void *, uint64_t, uint32_t *);
    auto read_image = reinterpret_cast<ReadImage>(GetProcAddress(GetModuleHandleW(L"vulkan_hasvk_wddm.dll"), "hasvk_wddm_icd_read_image"));
@@ -81,7 +82,7 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
    const VkDrawIndirectCommand direct_command{6, 1, 10, 0}; memcpy(reinterpret_cast<char *>(indirect) + 16, &direct_command, sizeof(direct_command));
    const VkDrawIndexedIndirectCommand indexed_command{6, 1, 3, 16, 0}; memcpy(reinterpret_cast<char *>(indirect) + 64, &indexed_command, sizeof(indexed_command));
    const VkBuffer vertex_buffer = make_buffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertex_data, sizeof(vertex_data));
-   const VkBuffer instance_buffer = make_buffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, instance_data, sizeof(instance_data));
+   const VkBuffer instance_buffer = make_buffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, instance_data, sizeof(instance_data));
    const VkBuffer index16_buffer = make_buffer(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, index16, sizeof(index16));
    const VkBuffer index32_buffer = make_buffer(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, index32, sizeof(index32));
    const VkBuffer indirect_buffer = make_buffer(VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, indirect, sizeof(indirect));
@@ -96,7 +97,8 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
    struct Case { uint32_t size; VkImageTiling tiling; unsigned mode; };
    for (const Case &test_case : {Case{128, VK_IMAGE_TILING_LINEAR, 0}, Case{128, VK_IMAGE_TILING_OPTIMAL, 0}, Case{256, VK_IMAGE_TILING_LINEAR, 0}, Case{256, VK_IMAGE_TILING_OPTIMAL, 0},
                                  Case{128, VK_IMAGE_TILING_OPTIMAL, 1}, Case{128, VK_IMAGE_TILING_OPTIMAL, 2}, Case{128, VK_IMAGE_TILING_OPTIMAL, 3},
-                                 Case{128, VK_IMAGE_TILING_OPTIMAL, 4}, Case{128, VK_IMAGE_TILING_OPTIMAL, 5}, Case{128, VK_IMAGE_TILING_OPTIMAL, 6}, Case{128, VK_IMAGE_TILING_OPTIMAL, 7}}) {
+                                 Case{128, VK_IMAGE_TILING_OPTIMAL, 4}, Case{128, VK_IMAGE_TILING_OPTIMAL, 5}, Case{128, VK_IMAGE_TILING_OPTIMAL, 6}, Case{128, VK_IMAGE_TILING_OPTIMAL, 7},
+                                 Case{128, VK_IMAGE_TILING_OPTIMAL, 8}}) {
       const uint32_t size = test_case.size; const VkImageTiling tiling = test_case.tiling; const unsigned mode_index = test_case.mode;
       /* Debugging aid: HASVK_TEST_DRAW_MODES=4,6 runs only the listed modes. */
       { char filter[64]; const DWORD length = GetEnvironmentVariableA("HASVK_TEST_DRAW_MODES", filter, sizeof(filter));
@@ -228,6 +230,18 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
          check(vkEndCommandBuffer(secondaries[1]), "End secondary without framebuffer");
       }
       VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; check(vkBeginCommandBuffer(command, &begin), "Begin draw command buffer");
+      /* Mode 8: the instance data is first zeroed and then rewritten by transfers
+       * of this command buffer, an event is set after them, and the draws wait
+       * for it inside the render pass (where the batch cannot be split). */
+      VkEvent event{};
+      if (mode == 8) {
+         VkEventCreateInfo ei{VK_STRUCTURE_TYPE_EVENT_CREATE_INFO}; check(vkCreateEvent(device, &ei, nullptr, &event), "Create draw event");
+         vkCmdFillBuffer(command, instance_buffer, 48, sizeof(instances), 0);
+         VkMemoryBarrier waw{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; waw.srcAccessMask = waw.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+         vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &waw, 0, nullptr, 0, nullptr);
+         vkCmdUpdateBuffer(command, instance_buffer, 48, sizeof(instances), instances);
+         vkCmdSetEvent(command, event, VK_PIPELINE_STAGE_TRANSFER_BIT);
+      }
       VkClearValue clears[2]{}; clears[0].color.float32[3] = 1;
       if (mode_index == 4) clears[0].color.float32[0] = 0.2f;
       VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; rp.renderPass = case_pass; rp.framebuffer = framebuffer;
@@ -237,6 +251,10 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
       else {
          const VkRect2D left_half{{0, 0}, {size / 2, size}};
          if (mode == 7) vkCmdSetScissor(command, 0, 1, &left_half);
+         if (mode == 8) {
+            VkMemoryBarrier rw{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; rw.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; rw.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+            vkCmdWaitEvents(command, 1, &event, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 1, &rw, 0, nullptr, 0, nullptr);
+         }
          first_half(command, mode == 1 ? long_repeats : 1); second_half(command, false);
          if (mode == 6) { vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, masked_pipeline); vkCmdDraw(command, 6, 1, 20, 0); }
       }
@@ -273,9 +291,11 @@ static json test_draws(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr g
       for (const Guarded &g : buffers) require(!memcmp(g.map, g.expected.data(), g.expected.size()), "Draw input buffer or its guards changed");
       results.push_back({{"size", size}, {"vkTiling", tiling}, {"comparedPixels", size * size}, {"colouredPixels", coloured}, {"quads", 7}, {"guardsIntact", true},
          {"mode", std::vector<const char *>{"inline", "inline, chained command BOs", "two secondaries", "chained secondary", "additive blending",
-            "4x MSAA with render-pass resolve", "stencil write then stencil-masked draw", "dynamic scissor"}[mode_index]},
+            "4x MSAA with render-pass resolve", "stencil write then stencil-masked draw", "dynamic scissor",
+            "transfer-written instances, event waited inside the render pass"}[mode_index]},
          {"primaryCommandBos", primary_chunks}, {"secondaryCommandBos", secondary_chunks}});
       vkDestroyFence(device, fence, nullptr); vkDestroyCommandPool(device, pool, nullptr); vkDestroyPipeline(device, pipeline, nullptr);
+      if (event) vkDestroyEvent(device, event, nullptr);
       if (masked_pipeline) vkDestroyPipeline(device, masked_pipeline, nullptr);
       if (case_pass != render_pass) vkDestroyRenderPass(device, case_pass, nullptr);
       if (extra_view) { vkDestroyImageView(device, extra_view, nullptr); vkDestroyImage(device, extra_image, nullptr); vkFreeMemory(device, extra_memory, nullptr); }
