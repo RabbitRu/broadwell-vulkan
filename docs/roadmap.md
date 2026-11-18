@@ -16,7 +16,7 @@ Intel `20.19.15.5171`, без Intel UMD и D3D12. Потолок для этой
 
 ## 1. Сделано
 
-Сейчас ICD объявляет **Vulkan 1.3** и 61 расширение устройства. Выборочный
+Сейчас ICD объявляет **Vulkan 1.3** и 96 расширений устройства. Выборочный
 прогон CTS по 22 группам (~2660 тестов): 1454 Pass, 1 Fail — известное
 зависание `tess_factor_barrier_bug` (этап 4) и ResourceError следующего за ним
 теста, который отдельно проходит (`native/artifacts/cts-sample.json`; свежий
@@ -77,6 +77,26 @@ Intel `20.19.15.5171`, без Intel UMD и D3D12. Потолок для этой
   `image_robustness`, `tooling_info`, `shader_non_semantic_info`).
   `tools/run-cts-vk13.ps1`: проверки features и лимитов 1.3
   (`api.info.vulkan1p3*`) и группы этих расширений — 1853 Pass, 0 Fail.
+- Дополнительные расширения HasVK (этап 3), прицельный CTS
+  (`tools/run-cts-groups.ps1`), 0 Fail:
+  - шейдерные и отчётные (19): `EXT_shader_subgroup_ballot/vote`,
+    `EXT_shader_atomic_float`, `KHR_shader_clock`, `KHR_shader_expect_assume`,
+    `KHR_shader_relaxed_extended_instruction`,
+    `KHR_shader_subgroup_uniform_control_flow`, `EXT_shader_replicated_composites`,
+    `NV_compute_shader_derivatives`, `KHR_workgroup_memory_explicit_layout`,
+    `INTEL_shader_integer_functions2`, `GOOGLE_decorate_string`,
+    `GOOGLE_hlsl_functionality1`, `GOOGLE_user_type`, `EXT_shader_module_identifier`,
+    `KHR_pipeline_executable_properties`, `EXT_debug_marker`,
+    `KHR_deferred_host_operations`, `VALVE_mutable_descriptor_type` —
+    1701 Pass;
+  - состояние и растеризация (16): `EXT_border_color_swizzle`,
+    `EXT_custom_border_color` (с пулом цветов границы, как в upstream),
+    `EXT_color_write_enable`, `EXT_depth_clamp_control`, `EXT_depth_clamp_zero_one`,
+    `EXT_depth_clip_enable`, `EXT_image_2d_view_of_3d`, `EXT_image_view_min_lod`,
+    `EXT_line_rasterization`, `EXT_non_seamless_cube_map`,
+    `EXT_primitive_topology_list_restart`, `EXT_provoking_vertex`,
+    `EXT_vertex_attribute_divisor`, `KHR_push_descriptor`, `KHR_maintenance5`,
+    `EXT_buffer_device_address`.
 - Командные буферы: цепочка BO без ограничения размера, secondary command
   buffers (копируются в primary).
 - Events: отдельный BO; `MI_SEMAPHORE_WAIT` в WDDM-контексте не работает,
@@ -189,12 +209,21 @@ WDDM-контексте (непривилегированный PPGTT-батч),
    нужен корректный путь — например, ожидание события до начала прохода или
    отказ с ошибкой.
 2. YCbCr и многоплоскостные изображения.
-3. Остальные расширения HasVK: `maintenance5/6`, `push_descriptor`,
-   `robustness2`, `custom_border_color`, `line_rasterization`,
-   `conditional_rendering`, `transform_feedback`, `descriptor_indexing`.
-4. MSAA 2x/8x, `vkCmdResolveImage`, blit с линейным фильтром.
-5. Вспомогательные поверхности HiZ/CCS/MCS (скорость, не корректность).
-6. Обобщить профиль WDDM-выделений на другие версии драйвера и GPU
+3. Расширения HasVK, выключенные из-за отказов CTS (выяснить и исправить):
+   `VK_EXT_depth_clip_control` (все 60 тестов: глубина смещена на 0,5 —
+   режим −1…1 не действует, хотя масштаб viewport в коде есть),
+   `VK_EXT_sample_locations` (Crash), `VK_KHR_maintenance6` (6 Fail в
+   `memory.binding.maintenance6`), `VK_EXT/KHR_robustness2` (2 Fail в
+   выборке `robustness.robustness2`).
+4. Ещё не включённые: `conditional_rendering`, `transform_feedback`,
+   `primitives_generated_query`; `descriptor_indexing` HasVK для Gen8 не
+   объявляет.
+5. Ошибка depth clamp с четырьмя viewport:
+   `draw.renderpass.depth_clamp.d32_sfloat_s8_uint_clamp_four_viewports` (Fail
+   и без новых расширений).
+6. MSAA 2x/8x, `vkCmdResolveImage`, blit с линейным фильтром.
+7. Вспомогательные поверхности HiZ/CCS/MCS (скорость, не корректность).
+8. Обобщить профиль WDDM-выделений на другие версии драйвера и GPU
    Broadwell/Haswell.
 
 ### Этап 4. Полный прогон CTS

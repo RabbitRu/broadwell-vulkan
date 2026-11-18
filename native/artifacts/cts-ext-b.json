@@ -1,0 +1,661 @@
+﻿[
+    {
+        "group":  "pipeline.monolithic.sampler.*border*",
+        "every":  40,
+        "counts":  {
+                       "NotSupported":  331,
+                       "Pass":  1321
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "pipeline.monolithic.sampler.*",
+        "every":  400,
+        "counts":  {
+                       "NotSupported":  72,
+                       "Pass":  159
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "pipeline.monolithic.color_write_enable*",
+        "every":  4,
+        "counts":  {
+                       "Pass":  150
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "draw.renderpass.depth_clamp.*",
+        "every":  2,
+        "counts":  {
+                       "Fail":  1,
+                       "NotSupported":  18,
+                       "Pass":  40
+                   },
+        "notPassing":  [
+                           {
+                               "case":  "dEQP-VK.draw.renderpass.depth_clamp.d32_sfloat_s8_uint_clamp_four_viewports",
+                               "status":  "Fail"
+                           }
+                       ]
+    },
+    {
+        "group":  "pipeline.monolithic.depth.*depth_clip_control*",
+        "every":  1,
+        "counts":  {
+                       "Fail":  60,
+                       "NotSupported":  12
+                   },
+        "notPassing":  [
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d16_unorm_always",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d16_unorm_less",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.x8_d24_unorm_pack32_always",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.x8_d24_unorm_pack32_less",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_always",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_less",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d24_unorm_s8_uint_always",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d24_unorm_s8_uint_less",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_s8_uint_always",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_s8_uint_less",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d16_unorm_always_different_w",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d16_unorm_less_different_w",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.x8_d24_unorm_pack32_always_different_w",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.x8_d24_unorm_pack32_less_different_w",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_always_different_w",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_less_different_w",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d24_unorm_s8_uint_always_different_w",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d24_unorm_s8_uint_less_different_w",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_s8_uint_always_different_w",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_s8_uint_less_different_w",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d16_unorm_always_viewport_before_static",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d16_unorm_less_viewport_before_static",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.x8_d24_unorm_pack32_always_viewport_before_static",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.x8_d24_unorm_pack32_less_viewport_before_static",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_always_viewport_before_static",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_less_viewport_before_static",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d24_unorm_s8_uint_always_viewport_before_static",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d24_unorm_s8_uint_less_viewport_before_static",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_s8_uint_always_viewport_before_static",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_s8_uint_less_viewport_before_static",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d16_unorm_always_viewport_before_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d16_unorm_less_viewport_before_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.x8_d24_unorm_pack32_always_viewport_before_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.x8_d24_unorm_pack32_less_viewport_before_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_always_viewport_before_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_less_viewport_before_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d24_unorm_s8_uint_always_viewport_before_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d24_unorm_s8_uint_less_viewport_before_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_s8_uint_always_viewport_before_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_s8_uint_less_viewport_before_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d16_unorm_always_viewport_before_two_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d16_unorm_less_viewport_before_two_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.x8_d24_unorm_pack32_always_viewport_before_two_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.x8_d24_unorm_pack32_less_viewport_before_two_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_always_viewport_before_two_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_less_viewport_before_two_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d24_unorm_s8_uint_always_viewport_before_two_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d24_unorm_s8_uint_less_viewport_before_two_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_s8_uint_always_viewport_before_two_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_s8_uint_less_viewport_before_two_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d16_unorm_always_viewport_after_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d16_unorm_less_viewport_after_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.x8_d24_unorm_pack32_always_viewport_after_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.x8_d24_unorm_pack32_less_viewport_after_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_always_viewport_after_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_less_viewport_after_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d24_unorm_s8_uint_always_viewport_after_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d24_unorm_s8_uint_less_viewport_after_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_s8_uint_always_viewport_after_dynamic",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.depth.depth_clip_control.d32_sfloat_s8_uint_less_viewport_after_dynamic",
+                               "status":  "Fail"
+                           }
+                       ]
+    },
+    {
+        "group":  "pipeline.monolithic.extended_dynamic_state.*",
+        "every":  20,
+        "counts":  {
+                       "NotSupported":  142,
+                       "Pass":  60
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "texture.mipmap.*min_lod*",
+        "every":  1,
+        "counts":  {
+                       "Pass":  60
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "rasterization.primitives.*line*",
+        "every":  3,
+        "counts":  {
+                       "NotSupported":  44,
+                       "Pass":  27
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "rasterization.provoking_vertex.draw.*",
+        "every":  1,
+        "counts":  {
+                       "Pass":  36
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "pipeline.monolithic.multisample.sample_locations_ext.*",
+        "every":  10,
+        "counts":  {
+                       "Crash":  51,
+                       "NotSupported":  33,
+                       "Pass":  1
+                   },
+        "notPassing":  [
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.verify_location.samples_2_dynamic_invariable",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.verify_location.samples_8_packed",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.verify_interpolation.samples_4",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.verify_interpolation.samples_8_dynamic_invariable",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_2.separate_renderpass_no_clear_dynamic_general_layout",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_2.separate_renderpass_load_op_clear_dynamic_secondary_cmd_buf",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_2.separate_renderpass_clear_attachments_dynamic",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_2.separate_renderpass_clear_image_same_pattern",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_2.separate_renderpass_clear_image_general_layout_event",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_2.separate_subpass_no_clear_dynamic_secondary_cmd_buf_general_layout",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_2.same_subpass_no_clear_same_pattern",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_4.separate_renderpass_no_clear_same_pattern",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_4.separate_renderpass_no_clear_general_layout_event",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_4.separate_renderpass_load_op_clear_dynamic_secondary_cmd_buf_general_layout",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_4.separate_renderpass_clear_attachments_dynamic_general_layout",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_4.separate_renderpass_clear_image_dynamic_secondary_cmd_buf",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_4.separate_subpass_no_clear_dynamic",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_4.separate_subpass_clear_attachments_secondary_cmd_buf",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_4.same_subpass_no_clear_dynamic_secondary_cmd_buf",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_8.separate_renderpass_no_clear_dynamic_secondary_cmd_buf",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_8.separate_renderpass_load_op_clear_dynamic",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_8.separate_renderpass_clear_attachments_same_pattern",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_8.separate_renderpass_clear_attachments_general_layout_event",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_8.separate_renderpass_clear_image_dynamic_secondary_cmd_buf_general_layout",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_8.separate_subpass_no_clear_dynamic_general_layout",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_8.separate_subpass_clear_attachments_secondary_cmd_buf_general_layout",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.color.samples_8.same_subpass_clear_attachments_secondary_cmd_buf",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.depth.samples_2.separate_renderpass_load_op_clear_dynamic_secondary_cmd_buf_general_layout",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.depth.samples_2.separate_renderpass_clear_attachments_dynamic_general_layout",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.depth.samples_2.separate_renderpass_clear_image_dynamic_secondary_cmd_buf",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.depth.samples_2.separate_subpass_clear_attachments",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.depth.samples_2.same_subpass_clear_attachments",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.depth.samples_4.separate_renderpass_load_op_clear_general_layout",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.depth.samples_4.separate_renderpass_clear_attachments_secondary_cmd_buf",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.depth.samples_4.separate_renderpass_clear_image",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.depth.samples_4.separate_renderpass_clear_image_secondary_cmd_buf_general_layout_event",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.depth.samples_4.separate_subpass_clear_attachments_dynamic_secondary_cmd_buf_general_layout",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.depth.samples_8.separate_renderpass_load_op_clear_dynamic",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.depth.samples_8.separate_renderpass_clear_attachments_same_pattern",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.depth.samples_8.separate_renderpass_clear_attachments_general_layout_event",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.depth.samples_8.separate_renderpass_clear_image_dynamic_secondary_cmd_buf_general_layout",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.depth.samples_8.separate_subpass_clear_attachments_general_layout",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.stencil.samples_2.separate_renderpass_load_op_clear_secondary_cmd_buf",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.stencil.samples_2.separate_renderpass_clear_attachments",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.stencil.samples_2.separate_renderpass_clear_attachments_secondary_cmd_buf_general_layout_event",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.stencil.samples_2.separate_renderpass_clear_image_event",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.stencil.samples_2.separate_subpass_clear_attachments_dynamic_general_layout",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.stencil.samples_4.separate_renderpass_load_op_clear_same_pattern",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.stencil.samples_4.separate_renderpass_load_op_clear_general_layout_event",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.stencil.samples_4.separate_renderpass_clear_attachments_dynamic_secondary_cmd_buf_general_layout",
+                               "status":  "Crash"
+                           },
+                           {
+                               "case":  "dEQP-VK.pipeline.monolithic.multisample.sample_locations_ext.draw.stencil.samples_4.separate_renderpass_clear_image_dynamic_general_layout",
+                               "status":  "Crash"
+                           }
+                       ]
+    },
+    {
+        "group":  "draw.renderpass.instanced.*divisor*",
+        "every":  30,
+        "counts":  {
+                       "NotSupported":  48
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "binding_model.shader_access.*push*",
+        "every":  5,
+        "counts":  {
+                       "Pass":  4821
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "api.maintenance5.*",
+        "every":  1,
+        "counts":  {
+                       "Pass":  10
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "pipeline.monolithic.bind_buffers_2.*",
+        "every":  1,
+        "counts":  {
+                       "Pass":  96
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "memory.binding.maintenance6.*",
+        "every":  4,
+        "counts":  {
+                       "Fail":  6,
+                       "NotSupported":  28,
+                       "Pass":  8
+                   },
+        "notPassing":  [
+                           {
+                               "case":  "dEQP-VK.memory.binding.maintenance6.regular.suballocated.buffer_33",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.memory.binding.maintenance6.regular.suballocated.buffer_1048577",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.memory.binding.maintenance6.regular.dedicated.buffer_4087",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.memory.binding.maintenance6.regular.overallocated.buffer_33",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.memory.binding.maintenance6.regular.overallocated.buffer_1048577",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.memory.binding.maintenance6.aliasing.suballocated.buffer_4087",
+                               "status":  "Fail"
+                           }
+                       ]
+    },
+    {
+        "group":  "robustness.robustness2.*",
+        "every":  400,
+        "counts":  {
+                       "Fail":  2,
+                       "NotSupported":  49,
+                       "Pass":  86
+                   },
+        "notPassing":  [
+                           {
+                               "case":  "dEQP-VK.robustness.robustness2.bind.notemplate.r32i.unroll.nonvolatile.storage_buffer_dynamic.readonly.no_fmt_qual.len_31.samples_1.1d.comp",
+                               "status":  "Fail"
+                           },
+                           {
+                               "case":  "dEQP-VK.robustness.robustness2.push.notemplate.r32ui.unroll.nonvolatile.storage_buffer.readwrite.no_fmt_qual.len_31.samples_1.1d.vert",
+                               "status":  "Fail"
+                           }
+                       ]
+    },
+    {
+        "group":  "texture.filtering.cube.*",
+        "every":  20,
+        "counts":  {
+                       "NotSupported":  2,
+                       "Pass":  40
+                   },
+        "notPassing":  [
+
+                       ]
+    }
+]

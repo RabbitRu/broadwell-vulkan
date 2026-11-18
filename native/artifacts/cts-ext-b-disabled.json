@@ -1,0 +1,57 @@
+﻿[
+    {
+        "group":  "draw.renderpass.depth_clamp.*",
+        "every":  2,
+        "counts":  {
+                       "Fail":  1,
+                       "NotSupported":  18,
+                       "Pass":  40
+                   },
+        "notPassing":  [
+                           {
+                               "case":  "dEQP-VK.draw.renderpass.depth_clamp.d32_sfloat_s8_uint_clamp_four_viewports",
+                               "status":  "Fail"
+                           }
+                       ]
+    },
+    {
+        "group":  "pipeline.monolithic.depth.*depth_clip_control*",
+        "every":  1,
+        "counts":  {
+                       "NotSupported":  72
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "pipeline.monolithic.multisample.sample_locations_ext.*",
+        "every":  10,
+        "counts":  {
+                       "NotSupported":  97
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "memory.binding.maintenance6.*",
+        "every":  4,
+        "counts":  {
+                       "NotSupported":  42
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "robustness.robustness2.*",
+        "every":  400,
+        "counts":  {
+                       "NotSupported":  137
+                   },
+        "notPassing":  [
+
+                       ]
+    }
+]

@@ -394,7 +394,14 @@ int wmain(int argc, wchar_t **argv)
             "VK_EXT_shader_replicated_composites", "VK_NV_compute_shader_derivatives", "VK_KHR_workgroup_memory_explicit_layout",
             "VK_INTEL_shader_integer_functions2", "VK_GOOGLE_decorate_string", "VK_GOOGLE_hlsl_functionality1", "VK_GOOGLE_user_type",
             "VK_EXT_shader_module_identifier", "VK_KHR_pipeline_executable_properties", "VK_EXT_debug_marker",
-            "VK_KHR_deferred_host_operations", "VK_VALVE_mutable_descriptor_type"};
+            "VK_KHR_deferred_host_operations", "VK_VALVE_mutable_descriptor_type",
+            /* stage 3, batch B */
+            "VK_EXT_border_color_swizzle", "VK_EXT_custom_border_color", "VK_EXT_color_write_enable", "VK_EXT_depth_clamp_control",
+            "VK_EXT_depth_clamp_zero_one", "VK_EXT_depth_clip_enable", "VK_EXT_image_2d_view_of_3d",
+            "VK_EXT_image_view_min_lod", "VK_EXT_line_rasterization", "VK_EXT_non_seamless_cube_map",
+            "VK_EXT_primitive_topology_list_restart", "VK_EXT_provoking_vertex", 
+            "VK_EXT_vertex_attribute_divisor", "VK_KHR_push_descriptor", "VK_KHR_maintenance5", 
+            "VK_EXT_buffer_device_address"};
          std::vector<VkExtensionProperties> extensions(extension_count);
          check(vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, extensions.data()), "Query device extensions");
          std::vector<std::string> names; for (const auto &extension : extensions) names.push_back(extension.extensionName);

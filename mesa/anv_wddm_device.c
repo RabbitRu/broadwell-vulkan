@@ -169,6 +169,13 @@ static const char *const verified_device_extensions[] = {
    "VK_INTEL_shader_integer_functions2", "VK_GOOGLE_decorate_string", "VK_GOOGLE_hlsl_functionality1", "VK_GOOGLE_user_type",
    "VK_EXT_shader_module_identifier", "VK_KHR_pipeline_executable_properties", "VK_EXT_debug_marker",
    "VK_KHR_deferred_host_operations", "VK_VALVE_mutable_descriptor_type",
+   /* Stage 3, batch B: state, rasterization, descriptors, maintenance */
+   "VK_EXT_border_color_swizzle", "VK_EXT_custom_border_color", "VK_EXT_color_write_enable", "VK_EXT_depth_clamp_control",
+   "VK_EXT_depth_clamp_zero_one", "VK_EXT_depth_clip_enable", "VK_EXT_image_2d_view_of_3d",
+   "VK_EXT_image_view_min_lod", "VK_EXT_line_rasterization", "VK_EXT_non_seamless_cube_map",
+   "VK_EXT_primitive_topology_list_restart", "VK_EXT_provoking_vertex", 
+   "VK_EXT_vertex_attribute_divisor", "VK_KHR_push_descriptor", "VK_KHR_maintenance5", 
+   "VK_EXT_buffer_device_address",
 };
 /* Limits, features and extensions as upstream HasVK reports them for Gen8
  * (anv_device.c, built as anv_wddm_capabilities.c), then the limits of this
@@ -670,6 +677,13 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle
    w->completion_thread_started = true;
    result = anv_wddm_pools_init(device);
    if (result != VK_SUCCESS) goto fail_state;
+#ifdef HASVK_WDDM_GRAPHICS
+   /* As upstream: every custom border color is reserved up front, near the
+    * dynamic state base, because the border color pointer has 24 bits. */
+   anv_state_reserved_pool_init(&device->custom_border_colors, &device->dynamic_state_pool, 4096,
+                                sizeof(struct gfx8_border_color), 64);
+   w->custom_border_colors_initialized = true;
+#endif
    device->null_surface_state = anv_state_pool_alloc(&device->surface_state_pool, device->isl_dev.ss.size, device->isl_dev.ss.align);
    isl_null_fill_state(&device->isl_dev, device->null_surface_state.map, .size = isl_extent3d(1, 1, 1));
    result = anv_device_alloc_bo(device, "workaround", 4096, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &device->workaround_bo);
@@ -714,6 +728,9 @@ fail_state:
    anv_scratch_pool_finish(device, &device->scratch_pool);
    anv_device_release_bo(device, device->workaround_bo);
    anv_device_release_bo(device, w->event_bo);
+#ifdef HASVK_WDDM_GRAPHICS
+   if (device->wddm && device->wddm->custom_border_colors_initialized) anv_state_reserved_pool_finish(&device->custom_border_colors);
+#endif
    anv_wddm_pools_finish(device);
    state_finish(w); device->wddm = NULL;
 fail_base:
@@ -733,6 +750,9 @@ VKAPI_ATTR void VKAPI_CALL anv_DestroyDevice(VkDevice handle, const VkAllocation
    anv_scratch_pool_finish(device, &device->scratch_pool);
    anv_device_release_bo(device, device->workaround_bo);
    anv_device_release_bo(device, device->wddm->event_bo);
+#ifdef HASVK_WDDM_GRAPHICS
+   if (device->wddm && device->wddm->custom_border_colors_initialized) anv_state_reserved_pool_finish(&device->custom_border_colors);
+#endif
    anv_wddm_pools_finish(device);
    state_finish(device->wddm);
    vk_device_finish(&device->vk); vk_free(&device->vk.alloc, device);

@@ -27,6 +27,7 @@ struct anv_wddm_device_state {
    struct util_vma_heap client_heap;
    struct util_vma_heap state_heap;
    bool client_heap_initialized;
+   bool custom_border_colors_initialized;
    bool device_mutex_initialized;
    uint32_t initialized_pools;
    uint64_t allocated_bytes;

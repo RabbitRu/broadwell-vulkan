@@ -1,16 +1,16 @@
 ﻿{
     "schema":  1,
-    "testedUtc":  "2026-11-18T00:36:25.4125259Z",
+    "testedUtc":  "2026-11-18T02:34:34.2315825Z",
     "hardware":  "8086:162b",
     "driverVersion":  "20.19.15.5171",
     "compilerSha256":  "60a2f0719695cf0fdc4a2a0f3f82f6fe3ae0b43a2e70d8956c1dd45b4e8332c4",
-    "probeSha256":  "2a3ceb56616d95a035a4fc16c760a2f977796ba5a1a9e29d99dd5c7274ff7269",
+    "probeSha256":  "a1a84ce598491d031b37fcfaab4b83ab73a4a81a2c4a1bdbbc3d32650d45d758",
     "cases":  [
                   {
                       "name":  "xor32-0",
-                      "initialValue":  2134675237,
-                      "expectedValue":  3775657628,
-                      "actualValue":  3775657628,
+                      "initialValue":  3294228298,
+                      "expectedValue":  1517197043,
+                      "actualValue":  1517197043,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -26,9 +26,9 @@
                   },
                   {
                       "name":  "xor32-1",
-                      "initialValue":  1576644667,
-                      "expectedValue":  3285109122,
-                      "actualValue":  3285109122,
+                      "initialValue":  2388808325,
+                      "expectedValue":  274017084,
+                      "actualValue":  274017084,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -44,9 +44,9 @@
                   },
                   {
                       "name":  "xor32-2",
-                      "initialValue":  2541415978,
-                      "expectedValue":  156080019,
-                      "actualValue":  156080019,
+                      "initialValue":  3951856144,
+                      "expectedValue":  1975251881,
+                      "actualValue":  1975251881,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -62,9 +62,9 @@
                   },
                   {
                       "name":  "lcg32-0",
-                      "initialValue":  4109312632,
-                      "expectedValue":  1376224119,
-                      "actualValue":  1376224119,
+                      "initialValue":  1502599736,
+                      "expectedValue":  1764186167,
+                      "actualValue":  1764186167,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -80,9 +80,9 @@
                   },
                   {
                       "name":  "lcg32-1",
-                      "initialValue":  3051411240,
-                      "expectedValue":  293326951,
-                      "actualValue":  293326951,
+                      "initialValue":  3214372588,
+                      "expectedValue":  576560475,
+                      "actualValue":  576560475,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -98,9 +98,9 @@
                   },
                   {
                       "name":  "lcg32-2",
-                      "initialValue":  3241944354,
-                      "expectedValue":  2744803865,
-                      "actualValue":  2744803865,
+                      "initialValue":  1022532344,
+                      "expectedValue":  548905463,
+                      "actualValue":  548905463,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -116,9 +116,9 @@
                   },
                   {
                       "name":  "mix32-0",
-                      "initialValue":  1639483545,
-                      "expectedValue":  4079135780,
-                      "actualValue":  4079135780,
+                      "initialValue":  3650524304,
+                      "expectedValue":  1078426460,
+                      "actualValue":  1078426460,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -134,9 +134,9 @@
                   },
                   {
                       "name":  "mix32-1",
-                      "initialValue":  962771123,
-                      "expectedValue":  433680974,
-                      "actualValue":  433680974,
+                      "initialValue":  264191193,
+                      "expectedValue":  988883263,
+                      "actualValue":  988883263,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -152,9 +152,9 @@
                   },
                   {
                       "name":  "mix32-2",
-                      "initialValue":  829082678,
-                      "expectedValue":  1506359938,
-                      "actualValue":  1506359938,
+                      "initialValue":  397422103,
+                      "expectedValue":  765775862,
+                      "actualValue":  765775862,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -171,8 +171,8 @@
                   {
                       "name":  "xor32-local7-count1",
                       "initialValue":  null,
-                      "expectedValue":  547638589,
-                      "actualValue":  547638589,
+                      "expectedValue":  3453544688,
+                      "actualValue":  3453544688,
                       "elementCount":  1,
                       "localSize":  [
                                         7,
@@ -189,8 +189,8 @@
                   {
                       "name":  "xor32-local7-count6",
                       "initialValue":  null,
-                      "expectedValue":  544804746,
-                      "actualValue":  544804746,
+                      "expectedValue":  2771355992,
+                      "actualValue":  2771355992,
                       "elementCount":  6,
                       "localSize":  [
                                         7,
@@ -207,8 +207,8 @@
                   {
                       "name":  "xor32-local7-count7",
                       "initialValue":  null,
-                      "expectedValue":  2338533534,
-                      "actualValue":  2338533534,
+                      "expectedValue":  209993395,
+                      "actualValue":  209993395,
                       "elementCount":  7,
                       "localSize":  [
                                         7,
@@ -225,8 +225,8 @@
                   {
                       "name":  "xor32-local7-count8",
                       "initialValue":  null,
-                      "expectedValue":  3842831715,
-                      "actualValue":  3842831715,
+                      "expectedValue":  3726839765,
+                      "actualValue":  3726839765,
                       "elementCount":  8,
                       "localSize":  [
                                         7,
@@ -243,8 +243,8 @@
                   {
                       "name":  "xor32-local7-count257",
                       "initialValue":  null,
-                      "expectedValue":  2278092714,
-                      "actualValue":  2278092714,
+                      "expectedValue":  281401584,
+                      "actualValue":  281401584,
                       "elementCount":  257,
                       "localSize":  [
                                         7,
@@ -261,8 +261,8 @@
                   {
                       "name":  "xor32-local7-count16381",
                       "initialValue":  null,
-                      "expectedValue":  532251951,
-                      "actualValue":  532251951,
+                      "expectedValue":  2438076927,
+                      "actualValue":  2438076927,
                       "elementCount":  16381,
                       "localSize":  [
                                         7,
@@ -279,8 +279,8 @@
                   {
                       "name":  "xor32-local32-count1",
                       "initialValue":  null,
-                      "expectedValue":  866235121,
-                      "actualValue":  866235121,
+                      "expectedValue":  1934950303,
+                      "actualValue":  1934950303,
                       "elementCount":  1,
                       "localSize":  [
                                         32,
@@ -297,8 +297,8 @@
                   {
                       "name":  "xor32-local32-count31",
                       "initialValue":  null,
-                      "expectedValue":  1531733453,
-                      "actualValue":  1531733453,
+                      "expectedValue":  2004908045,
+                      "actualValue":  2004908045,
                       "elementCount":  31,
                       "localSize":  [
                                         32,
@@ -315,8 +315,8 @@
                   {
                       "name":  "xor32-local32-count32",
                       "initialValue":  null,
-                      "expectedValue":  469756710,
-                      "actualValue":  469756710,
+                      "expectedValue":  2863476503,
+                      "actualValue":  2863476503,
                       "elementCount":  32,
                       "localSize":  [
                                         32,
@@ -333,8 +333,8 @@
                   {
                       "name":  "xor32-local32-count33",
                       "initialValue":  null,
-                      "expectedValue":  275944732,
-                      "actualValue":  275944732,
+                      "expectedValue":  820962616,
+                      "actualValue":  820962616,
                       "elementCount":  33,
                       "localSize":  [
                                         32,
@@ -351,8 +351,8 @@
                   {
                       "name":  "xor32-local32-count257",
                       "initialValue":  null,
-                      "expectedValue":  2895642714,
-                      "actualValue":  2895642714,
+                      "expectedValue":  2369059543,
+                      "actualValue":  2369059543,
                       "elementCount":  257,
                       "localSize":  [
                                         32,
@@ -369,8 +369,8 @@
                   {
                       "name":  "xor32-local32-count16381",
                       "initialValue":  null,
-                      "expectedValue":  4243787487,
-                      "actualValue":  4243787487,
+                      "expectedValue":  3896840822,
+                      "actualValue":  3896840822,
                       "elementCount":  16381,
                       "localSize":  [
                                         32,
@@ -387,8 +387,8 @@
                   {
                       "name":  "xor32-local64-count1",
                       "initialValue":  null,
-                      "expectedValue":  4219134397,
-                      "actualValue":  4219134397,
+                      "expectedValue":  4241963911,
+                      "actualValue":  4241963911,
                       "elementCount":  1,
                       "localSize":  [
                                         64,
@@ -405,8 +405,8 @@
                   {
                       "name":  "xor32-local64-count63",
                       "initialValue":  null,
-                      "expectedValue":  4262179344,
-                      "actualValue":  4262179344,
+                      "expectedValue":  3604333736,
+                      "actualValue":  3604333736,
                       "elementCount":  63,
                       "localSize":  [
                                         64,
@@ -423,8 +423,8 @@
                   {
                       "name":  "xor32-local64-count64",
                       "initialValue":  null,
-                      "expectedValue":  1220434900,
-                      "actualValue":  1220434900,
+                      "expectedValue":  927043881,
+                      "actualValue":  927043881,
                       "elementCount":  64,
                       "localSize":  [
                                         64,
@@ -441,8 +441,8 @@
                   {
                       "name":  "xor32-local64-count65",
                       "initialValue":  null,
-                      "expectedValue":  2704451061,
-                      "actualValue":  2704451061,
+                      "expectedValue":  2406377576,
+                      "actualValue":  2406377576,
                       "elementCount":  65,
                       "localSize":  [
                                         64,
@@ -459,8 +459,8 @@
                   {
                       "name":  "xor32-local64-count257",
                       "initialValue":  null,
-                      "expectedValue":  1492525377,
-                      "actualValue":  1492525377,
+                      "expectedValue":  2721207224,
+                      "actualValue":  2721207224,
                       "elementCount":  257,
                       "localSize":  [
                                         64,
@@ -477,8 +477,8 @@
                   {
                       "name":  "xor32-local64-count16381",
                       "initialValue":  null,
-                      "expectedValue":  1881260260,
-                      "actualValue":  1881260260,
+                      "expectedValue":  2362300773,
+                      "actualValue":  2362300773,
                       "elementCount":  16381,
                       "localSize":  [
                                         64,
@@ -495,8 +495,8 @@
                   {
                       "name":  "lcg32-local7-count1",
                       "initialValue":  null,
-                      "expectedValue":  1454288312,
-                      "actualValue":  1454288312,
+                      "expectedValue":  479732960,
+                      "actualValue":  479732960,
                       "elementCount":  1,
                       "localSize":  [
                                         7,
@@ -513,8 +513,8 @@
                   {
                       "name":  "lcg32-local7-count6",
                       "initialValue":  null,
-                      "expectedValue":  1610758473,
-                      "actualValue":  1610758473,
+                      "expectedValue":  2693514389,
+                      "actualValue":  2693514389,
                       "elementCount":  6,
                       "localSize":  [
                                         7,
@@ -531,8 +531,8 @@
                   {
                       "name":  "lcg32-local7-count7",
                       "initialValue":  null,
-                      "expectedValue":  1296300687,
-                      "actualValue":  1296300687,
+                      "expectedValue":  152109019,
+                      "actualValue":  152109019,
                       "elementCount":  7,
                       "localSize":  [
                                         7,
@@ -549,8 +549,8 @@
                   {
                       "name":  "lcg32-local7-count8",
                       "initialValue":  null,
-                      "expectedValue":  3425183648,
-                      "actualValue":  3425183648,
+                      "expectedValue":  831072440,
+                      "actualValue":  831072440,
                       "elementCount":  8,
                       "localSize":  [
                                         7,
@@ -567,8 +567,8 @@
                   {
                       "name":  "lcg32-local7-count257",
                       "initialValue":  null,
-                      "expectedValue":  639434185,
-                      "actualValue":  639434185,
+                      "expectedValue":  710921823,
+                      "actualValue":  710921823,
                       "elementCount":  257,
                       "localSize":  [
                                         7,
@@ -585,8 +585,8 @@
                   {
                       "name":  "lcg32-local7-count16381",
                       "initialValue":  null,
-                      "expectedValue":  3233335702,
-                      "actualValue":  3233335702,
+                      "expectedValue":  2233639810,
+                      "actualValue":  2233639810,
                       "elementCount":  16381,
                       "localSize":  [
                                         7,
@@ -603,8 +603,8 @@
                   {
                       "name":  "lcg32-local32-count1",
                       "initialValue":  null,
-                      "expectedValue":  309148380,
-                      "actualValue":  309148380,
+                      "expectedValue":  3298473642,
+                      "actualValue":  3298473642,
                       "elementCount":  1,
                       "localSize":  [
                                         32,
@@ -621,8 +621,8 @@
                   {
                       "name":  "lcg32-local32-count31",
                       "initialValue":  null,
-                      "expectedValue":  2082644934,
-                      "actualValue":  2082644934,
+                      "expectedValue":  332736930,
+                      "actualValue":  332736930,
                       "elementCount":  31,
                       "localSize":  [
                                         32,
@@ -639,8 +639,8 @@
                   {
                       "name":  "lcg32-local32-count32",
                       "initialValue":  null,
-                      "expectedValue":  3952846312,
-                      "actualValue":  3952846312,
+                      "expectedValue":  701323579,
+                      "actualValue":  701323579,
                       "elementCount":  32,
                       "localSize":  [
                                         32,
@@ -657,8 +657,8 @@
                   {
                       "name":  "lcg32-local32-count33",
                       "initialValue":  null,
-                      "expectedValue":  4122257066,
-                      "actualValue":  4122257066,
+                      "expectedValue":  2340947458,
+                      "actualValue":  2340947458,
                       "elementCount":  33,
                       "localSize":  [
                                         32,
@@ -675,8 +675,8 @@
                   {
                       "name":  "lcg32-local32-count257",
                       "initialValue":  null,
-                      "expectedValue":  2948559177,
-                      "actualValue":  2948559177,
+                      "expectedValue":  4273235673,
+                      "actualValue":  4273235673,
                       "elementCount":  257,
                       "localSize":  [
                                         32,
@@ -693,8 +693,8 @@
                   {
                       "name":  "lcg32-local32-count16381",
                       "initialValue":  null,
-                      "expectedValue":  2517250255,
-                      "actualValue":  2517250255,
+                      "expectedValue":  3145410372,
+                      "actualValue":  3145410372,
                       "elementCount":  16381,
                       "localSize":  [
                                         32,
@@ -711,8 +711,8 @@
                   {
                       "name":  "lcg32-local64-count1",
                       "initialValue":  null,
-                      "expectedValue":  831615288,
-                      "actualValue":  831615288,
+                      "expectedValue":  278677271,
+                      "actualValue":  278677271,
                       "elementCount":  1,
                       "localSize":  [
                                         64,
@@ -729,8 +729,8 @@
                   {
                       "name":  "lcg32-local64-count63",
                       "initialValue":  null,
-                      "expectedValue":  2961077191,
-                      "actualValue":  2961077191,
+                      "expectedValue":  2327161302,
+                      "actualValue":  2327161302,
                       "elementCount":  63,
                       "localSize":  [
                                         64,
@@ -747,8 +747,8 @@
                   {
                       "name":  "lcg32-local64-count64",
                       "initialValue":  null,
-                      "expectedValue":  75335763,
-                      "actualValue":  75335763,
+                      "expectedValue":  3854774474,
+                      "actualValue":  3854774474,
                       "elementCount":  64,
                       "localSize":  [
                                         64,
@@ -765,8 +765,8 @@
                   {
                       "name":  "lcg32-local64-count65",
                       "initialValue":  null,
-                      "expectedValue":  1285229068,
-                      "actualValue":  1285229068,
+                      "expectedValue":  665745347,
+                      "actualValue":  665745347,
                       "elementCount":  65,
                       "localSize":  [
                                         64,
@@ -783,8 +783,8 @@
                   {
                       "name":  "lcg32-local64-count257",
                       "initialValue":  null,
-                      "expectedValue":  3912505332,
-                      "actualValue":  3912505332,
+                      "expectedValue":  1157011784,
+                      "actualValue":  1157011784,
                       "elementCount":  257,
                       "localSize":  [
                                         64,
@@ -801,8 +801,8 @@
                   {
                       "name":  "lcg32-local64-count16381",
                       "initialValue":  null,
-                      "expectedValue":  4201049222,
-                      "actualValue":  4201049222,
+                      "expectedValue":  118319885,
+                      "actualValue":  118319885,
                       "elementCount":  16381,
                       "localSize":  [
                                         64,
@@ -819,8 +819,8 @@
                   {
                       "name":  "mix32-local7-count1",
                       "initialValue":  null,
-                      "expectedValue":  629532646,
-                      "actualValue":  629532646,
+                      "expectedValue":  4109981054,
+                      "actualValue":  4109981054,
                       "elementCount":  1,
                       "localSize":  [
                                         7,
@@ -837,8 +837,8 @@
                   {
                       "name":  "mix32-local7-count6",
                       "initialValue":  null,
-                      "expectedValue":  439765017,
-                      "actualValue":  439765017,
+                      "expectedValue":  1996243603,
+                      "actualValue":  1996243603,
                       "elementCount":  6,
                       "localSize":  [
                                         7,
@@ -855,8 +855,8 @@
                   {
                       "name":  "mix32-local7-count7",
                       "initialValue":  null,
-                      "expectedValue":  1078877977,
-                      "actualValue":  1078877977,
+                      "expectedValue":  282824495,
+                      "actualValue":  282824495,
                       "elementCount":  7,
                       "localSize":  [
                                         7,
@@ -873,8 +873,8 @@
                   {
                       "name":  "mix32-local7-count8",
                       "initialValue":  null,
-                      "expectedValue":  1710857891,
-                      "actualValue":  1710857891,
+                      "expectedValue":  242142588,
+                      "actualValue":  242142588,
                       "elementCount":  8,
                       "localSize":  [
                                         7,
@@ -891,8 +891,8 @@
                   {
                       "name":  "mix32-local7-count257",
                       "initialValue":  null,
-                      "expectedValue":  243956367,
-                      "actualValue":  243956367,
+                      "expectedValue":  2438845796,
+                      "actualValue":  2438845796,
                       "elementCount":  257,
                       "localSize":  [
                                         7,
@@ -909,8 +909,8 @@
                   {
                       "name":  "mix32-local7-count16381",
                       "initialValue":  null,
-                      "expectedValue":  1950754753,
-                      "actualValue":  1950754753,
+                      "expectedValue":  3033779584,
+                      "actualValue":  3033779584,
                       "elementCount":  16381,
                       "localSize":  [
                                         7,
@@ -927,8 +927,8 @@
                   {
                       "name":  "mix32-local32-count1",
                       "initialValue":  null,
-                      "expectedValue":  1712201191,
-                      "actualValue":  1712201191,
+                      "expectedValue":  736387924,
+                      "actualValue":  736387924,
                       "elementCount":  1,
                       "localSize":  [
                                         32,
@@ -945,8 +945,8 @@
                   {
                       "name":  "mix32-local32-count31",
                       "initialValue":  null,
-                      "expectedValue":  1291112836,
-                      "actualValue":  1291112836,
+                      "expectedValue":  1836815988,
+                      "actualValue":  1836815988,
                       "elementCount":  31,
                       "localSize":  [
                                         32,
@@ -963,8 +963,8 @@
                   {
                       "name":  "mix32-local32-count32",
                       "initialValue":  null,
-                      "expectedValue":  2463400577,
-                      "actualValue":  2463400577,
+                      "expectedValue":  24716561,
+                      "actualValue":  24716561,
                       "elementCount":  32,
                       "localSize":  [
                                         32,
@@ -981,8 +981,8 @@
                   {
                       "name":  "mix32-local32-count33",
                       "initialValue":  null,
-                      "expectedValue":  786155223,
-                      "actualValue":  786155223,
+                      "expectedValue":  1065807543,
+                      "actualValue":  1065807543,
                       "elementCount":  33,
                       "localSize":  [
                                         32,
@@ -999,8 +999,8 @@
                   {
                       "name":  "mix32-local32-count257",
                       "initialValue":  null,
-                      "expectedValue":  504689669,
-                      "actualValue":  504689669,
+                      "expectedValue":  1784340572,
+                      "actualValue":  1784340572,
                       "elementCount":  257,
                       "localSize":  [
                                         32,
@@ -1017,8 +1017,8 @@
                   {
                       "name":  "mix32-local32-count16381",
                       "initialValue":  null,
-                      "expectedValue":  1609452850,
-                      "actualValue":  1609452850,
+                      "expectedValue":  963370267,
+                      "actualValue":  963370267,
                       "elementCount":  16381,
                       "localSize":  [
                                         32,
@@ -1035,8 +1035,8 @@
                   {
                       "name":  "mix32-local64-count1",
                       "initialValue":  null,
-                      "expectedValue":  3102532923,
-                      "actualValue":  3102532923,
+                      "expectedValue":  2042049839,
+                      "actualValue":  2042049839,
                       "elementCount":  1,
                       "localSize":  [
                                         64,
@@ -1053,8 +1053,8 @@
                   {
                       "name":  "mix32-local64-count63",
                       "initialValue":  null,
-                      "expectedValue":  4105807415,
-                      "actualValue":  4105807415,
+                      "expectedValue":  1136724991,
+                      "actualValue":  1136724991,
                       "elementCount":  63,
                       "localSize":  [
                                         64,
@@ -1071,8 +1071,8 @@
                   {
                       "name":  "mix32-local64-count64",
                       "initialValue":  null,
-                      "expectedValue":  2016478473,
-                      "actualValue":  2016478473,
+                      "expectedValue":  2786145164,
+                      "actualValue":  2786145164,
                       "elementCount":  64,
                       "localSize":  [
                                         64,
@@ -1089,8 +1089,8 @@
                   {
                       "name":  "mix32-local64-count65",
                       "initialValue":  null,
-                      "expectedValue":  2683859301,
-                      "actualValue":  2683859301,
+                      "expectedValue":  2132606474,
+                      "actualValue":  2132606474,
                       "elementCount":  65,
                       "localSize":  [
                                         64,
@@ -1107,8 +1107,8 @@
                   {
                       "name":  "mix32-local64-count257",
                       "initialValue":  null,
-                      "expectedValue":  3919759093,
-                      "actualValue":  3919759093,
+                      "expectedValue":  3814742187,
+                      "actualValue":  3814742187,
                       "elementCount":  257,
                       "localSize":  [
                                         64,
@@ -1125,8 +1125,8 @@
                   {
                       "name":  "mix32-local64-count16381",
                       "initialValue":  null,
-                      "expectedValue":  3649519344,
-                      "actualValue":  3649519344,
+                      "expectedValue":  4291991513,
+                      "actualValue":  4291991513,
                       "elementCount":  16381,
                       "localSize":  [
                                         64,
