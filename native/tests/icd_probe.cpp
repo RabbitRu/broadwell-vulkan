@@ -387,7 +387,14 @@ int wmain(int argc, wchar_t **argv)
             "VK_EXT_inline_uniform_block", "VK_EXT_private_data", "VK_EXT_subgroup_size_control", "VK_EXT_texel_buffer_alignment",
             "VK_KHR_zero_initialize_workgroup_memory", "VK_KHR_shader_integer_dot_product", "VK_EXT_pipeline_creation_cache_control",
             "VK_EXT_pipeline_creation_feedback", "VK_EXT_shader_demote_to_helper_invocation", "VK_KHR_shader_terminate_invocation",
-            "VK_EXT_image_robustness", "VK_EXT_tooling_info", "VK_KHR_shader_non_semantic_info"};
+            "VK_EXT_image_robustness", "VK_EXT_tooling_info", "VK_KHR_shader_non_semantic_info",
+            /* stage 3, batch A */
+            "VK_EXT_shader_subgroup_ballot", "VK_EXT_shader_subgroup_vote", "VK_EXT_shader_atomic_float", "VK_KHR_shader_clock",
+            "VK_KHR_shader_expect_assume", "VK_KHR_shader_relaxed_extended_instruction", "VK_KHR_shader_subgroup_uniform_control_flow",
+            "VK_EXT_shader_replicated_composites", "VK_NV_compute_shader_derivatives", "VK_KHR_workgroup_memory_explicit_layout",
+            "VK_INTEL_shader_integer_functions2", "VK_GOOGLE_decorate_string", "VK_GOOGLE_hlsl_functionality1", "VK_GOOGLE_user_type",
+            "VK_EXT_shader_module_identifier", "VK_KHR_pipeline_executable_properties", "VK_EXT_debug_marker",
+            "VK_KHR_deferred_host_operations", "VK_VALVE_mutable_descriptor_type"};
          std::vector<VkExtensionProperties> extensions(extension_count);
          check(vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, extensions.data()), "Query device extensions");
          std::vector<std::string> names; for (const auto &extension : extensions) names.push_back(extension.extensionName);

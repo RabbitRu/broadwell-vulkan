@@ -1,0 +1,171 @@
+﻿[
+    {
+        "group":  "subgroups.ballot.*",
+        "every":  2,
+        "counts":  {
+                       "NotSupported":  4,
+                       "Pass":  8
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "subgroups.vote.*",
+        "every":  2,
+        "counts":  {
+                       "NotSupported":  118,
+                       "Pass":  212
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "subgroups.ballot_other.*",
+        "every":  2,
+        "counts":  {
+                       "NotSupported":  17,
+                       "Pass":  25
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "glsl.shader_clock.*",
+        "every":  1,
+        "counts":  {
+                       "NotSupported":  6,
+                       "Pass":  6
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "glsl.shader_expect_assume.*",
+        "every":  1,
+        "counts":  {
+                       "Pass":  141
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "glsl.atomic_operations.*float*",
+        "every":  2,
+        "counts":  {
+                       "NotSupported":  113,
+                       "Pass":  7
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "pipeline.monolithic.executable_properties.*",
+        "every":  1,
+        "counts":  {
+                       "Pass":  16
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "pipeline.monolithic.shader_module_identifier.*",
+        "every":  1,
+        "counts":  {
+                       "NotSupported":  1026,
+                       "Pass":  530
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "binding_model.mutable_descriptor.*",
+        "every":  20,
+        "counts":  {
+                       "NotSupported":  508,
+                       "Pass":  208
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "subgroups.subgroup_uniform_control_flow.*",
+        "every":  2,
+        "counts":  {
+                       "NotSupported":  42,
+                       "Pass":  43
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "spirv_assembly.instruction.*hlsl*",
+        "every":  1,
+        "counts":  {
+                       "Pass":  4
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "spirv_assembly.instruction.*decorate_string*",
+        "every":  1,
+        "counts":  {
+                       "Pass":  2
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "spirv_assembly.instruction.*relaxed*",
+        "every":  2,
+        "counts":  {
+                       "Pass":  2
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "compute.pipeline.basic.*replicated*",
+        "every":  1,
+        "counts":  {
+                       "NotSupported":  3,
+                       "Pass":  18
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "compute.pipeline.workgroup_memory_explicit_layout.*",
+        "every":  8,
+        "counts":  {
+                       "Pass":  479
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "spirv_assembly.instruction.compute.*derivatives*",
+        "every":  3,
+        "counts":  {
+                       "NotSupported":  135
+                   },
+        "notPassing":  [
+
+                       ]
+    }
+]

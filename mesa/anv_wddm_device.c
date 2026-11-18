@@ -162,6 +162,13 @@ static const char *const verified_device_extensions[] = {
    "VK_KHR_zero_initialize_workgroup_memory", "VK_KHR_shader_integer_dot_product", "VK_EXT_pipeline_creation_cache_control",
    "VK_EXT_pipeline_creation_feedback", "VK_EXT_shader_demote_to_helper_invocation", "VK_KHR_shader_terminate_invocation",
    "VK_EXT_image_robustness", "VK_EXT_tooling_info", "VK_KHR_shader_non_semantic_info",
+   /* Stage 3, batch A: shader, SPIR-V and pipeline-reporting extensions */
+   "VK_EXT_shader_subgroup_ballot", "VK_EXT_shader_subgroup_vote", "VK_EXT_shader_atomic_float", "VK_KHR_shader_clock",
+   "VK_KHR_shader_expect_assume", "VK_KHR_shader_relaxed_extended_instruction", "VK_KHR_shader_subgroup_uniform_control_flow",
+   "VK_EXT_shader_replicated_composites", "VK_NV_compute_shader_derivatives", "VK_KHR_workgroup_memory_explicit_layout",
+   "VK_INTEL_shader_integer_functions2", "VK_GOOGLE_decorate_string", "VK_GOOGLE_hlsl_functionality1", "VK_GOOGLE_user_type",
+   "VK_EXT_shader_module_identifier", "VK_KHR_pipeline_executable_properties", "VK_EXT_debug_marker",
+   "VK_KHR_deferred_host_operations", "VK_VALVE_mutable_descriptor_type",
 };
 /* Limits, features and extensions as upstream HasVK reports them for Gen8
  * (anv_device.c, built as anv_wddm_capabilities.c), then the limits of this
@@ -205,6 +212,11 @@ static void apply_upstream_capabilities(struct anv_physical_device *physical)
       for (unsigned x = 0; x < VK_DEVICE_EXTENSION_COUNT; ++x)
          if (!strcmp(vk_device_extensions[x].extensionName, verified_device_extensions[i])) e->extensions[x] = upstream_extensions.extensions[x];
    e->KHR_swapchain = true;
+   /* HASVK_WDDM_LIST_EXTENSIONS=1: upstream HasVK extensions not (yet) enabled here. */
+   if (getenv("HASVK_WDDM_LIST_EXTENSIONS"))
+      for (unsigned x = 0; x < VK_DEVICE_EXTENSION_COUNT; ++x)
+         if (upstream_extensions.extensions[x] && !e->extensions[x])
+            fprintf(stderr, "HasVK/WDDM upstream-only extension: %s\n", vk_device_extensions[x].extensionName);
 }
 #endif
 /* HASVK_WDDM_ASSERTS_TO_STDERR=1 (set by the test scripts): a failed assert or
