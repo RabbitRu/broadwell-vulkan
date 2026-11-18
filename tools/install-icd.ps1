@@ -37,7 +37,9 @@ if ($Uninstall) {
     return
 }
 
-$taskPackage = Join-Path $taskRoot 'build\icd'
+# The source tree's build\icd, or icd\ of an unpacked release package.
+$taskPackage = @((Join-Path $taskRoot 'build\icd'), (Join-Path $taskRoot 'icd')) | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'vulkan_hasvk_wddm.dll') } | Select-Object -First 1
+if (-not $taskPackage) { throw "No ICD package next to this script: run tools\build-icd.ps1 first." }
 foreach ($name in $taskFiles) { if (-not (Test-Path -LiteralPath (Join-Path $taskPackage $name))) { throw "Missing $name in ${taskPackage}: run tools\build-icd.ps1 first." } }
 # Other registered drivers stay as they are; only report them.
 if (Test-Path $taskKey) {
