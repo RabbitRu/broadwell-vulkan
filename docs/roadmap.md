@@ -16,7 +16,7 @@ Intel `20.19.15.5171`, без Intel UMD и D3D12. Потолок для этой
 
 ## 1. Сделано
 
-Сейчас ICD объявляет **Vulkan 1.3** и 104 расширения устройства. Выборочный
+Сейчас ICD объявляет **Vulkan 1.3** и 106 расширений устройства. Выборочный
 прогон CTS по 22 группам (~2660 тестов): 1574 Pass, 1 Fail — известное
 зависание `tess_factor_barrier_bug` (этап 4) и ResourceError следующего за ним
 теста, который отдельно проходит (`native/artifacts/cts-sample.json`; свежий
@@ -65,7 +65,7 @@ Intel `20.19.15.5171`, без Intel UMD и D3D12. Потолок для этой
   бинарные и timeline-семафоры (эмуляция Mesa поверх бинарного WDDM sync).
 - Лимиты, features и расширения — штатные таблицы HasVK
   (`anv_wddm_capabilities.c`), поверх них ограничения порта: без внешних
-  дескрипторов, без sparse, без capture/replay адресов, YCbCr выключен,
+  дескрипторов, без sparse, без capture/replay адресов,
   `conformanceVersion` = 0. Расширения включаются только по проверенному
   списку (`verified_device_extensions` в `anv_wddm_device.c`).
 - **Vulkan 1.3**: `apiVersion`, `vkEnumerateInstanceVersion` и манифест ICD
@@ -116,7 +116,15 @@ Intel `20.19.15.5171`, без Intel UMD и D3D12. Потолок для этой
     выключенные расширения upstream без пересборки. Прицельный CTS
     (`depth_clip_control`, `depth_clamp`, `maintenance6`, каждый 20-й из
     `robustness2`, каждый 2-й из `robustness.buffer_access` и
-    `sample_locations_ext`) — 2778 Pass, 0 Fail.
+    `sample_locations_ext`) — 2778 Pass, 0 Fail;
+  - YCbCr и многоплоскостные изображения (2): `KHR_sampler_ycbcr_conversion`
+    (с feature `samplerYcbcrConversion`, которая теперь следует за
+    расширением), `EXT_ycbcr_image_arrays`. Код upstream заработал без правок
+    порта: каждый 12-й тест `ycbcr` — 872 Pass, каждый 20-й — 523 Pass,
+    `api.info.format_properties` — 225 Pass, 0 Fail. `multiplanar_xfer`
+    требует отдельной transfer-очереди (её нет и в upstream HasVK).
+    Выключенными остались только расширения для Linux: dma-buf, DRM, fd,
+    `pci_bus_info`, `queue_family_foreign`.
 - Командные буферы: цепочка BO без ограничения размера, secondary command
   buffers (копируются в primary).
 - Events: отдельный BO; `MI_SEMAPHORE_WAIT` в WDDM-контексте не работает,
@@ -230,12 +238,9 @@ WDDM-контексте (непривилегированный PPGTT-батч),
 ## 2. Осталось
 
 ### Этап 3. Полнота относительно HasVK
-1. YCbCr и многоплоскостные изображения (`KHR_sampler_ycbcr_conversion`,
-   `EXT_ycbcr_image_arrays`). Остальные выключенные расширения upstream —
-   только для Linux: dma-buf, DRM, fd, `pci_bus_info`, `queue_family_foreign`.
-2. MSAA 2x/8x, `vkCmdResolveImage`, blit с линейным фильтром.
-3. Вспомогательные поверхности HiZ/CCS/MCS (скорость, не корректность).
-4. Обобщить профиль WDDM-выделений на другие версии драйвера и GPU
+1. MSAA 2x/8x, `vkCmdResolveImage`, blit с линейным фильтром.
+2. Вспомогательные поверхности HiZ/CCS/MCS (скорость, не корректность).
+3. Обобщить профиль WDDM-выделений на другие версии драйвера и GPU
    Broadwell/Haswell.
 
 ### Этап 4. Полный прогон CTS

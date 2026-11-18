@@ -181,6 +181,8 @@ static const char *const verified_device_extensions[] = {
    /* Stage 3: off after CTS failures, fixed in the port (robust_buffer_access,
     * per-bind status, vkGetPhysicalDeviceMultisamplePropertiesEXT) */
    "VK_EXT_robustness2", "VK_KHR_robustness2", "VK_KHR_maintenance6", "VK_EXT_sample_locations",
+   /* Stage 3: YCbCr sampling and multi-planar images */
+   "VK_KHR_sampler_ycbcr_conversion", "VK_EXT_ycbcr_image_arrays",
 };
 /* Limits, features and extensions as upstream HasVK reports them for Gen8
  * (anv_device.c, built as anv_wddm_capabilities.c), then the limits of this
@@ -212,7 +214,6 @@ static void apply_upstream_capabilities(struct anv_physical_device *physical)
    p->sparseAddressSpaceSize = 0;
    physical->vk.supported_features = upstream_features;
    struct vk_features *f = &physical->vk.supported_features;
-   f->samplerYcbcrConversion = false;   /* multi-planar images not verified on this port yet */
    f->protectedMemory = false;
    /* No address that stays valid across processes or runs. */
    f->bufferDeviceAddressCaptureReplay = false;
@@ -239,6 +240,8 @@ static void apply_upstream_capabilities(struct anv_physical_device *physical)
             at += length;
          }
       }
+   /* YCbCr sampling (core feature of 1.1) goes with its extension. */
+   f->samplerYcbcrConversion = f->samplerYcbcrConversion && e->KHR_sampler_ycbcr_conversion;
    /* HASVK_WDDM_LIST_EXTENSIONS=1: upstream HasVK extensions not (yet) enabled here. */
    if (getenv("HASVK_WDDM_LIST_EXTENSIONS"))
       for (unsigned x = 0; x < VK_DEVICE_EXTENSION_COUNT; ++x)

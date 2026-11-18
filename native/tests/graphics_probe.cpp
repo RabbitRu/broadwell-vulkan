@@ -61,14 +61,16 @@ int wmain(int argc, wchar_t **argv)
          VkPhysicalDevice16BitStorageFeatures storage16{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES}; storage16.pNext = &multiview;
          VkPhysicalDeviceVariablePointersFeatures pointers{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES}; pointers.pNext = &storage16;
          VkPhysicalDeviceShaderDrawParametersFeatures draw{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES}; draw.pNext = &pointers;
-         VkPhysicalDeviceFeatures2 all{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2}; all.pNext = &draw;
+         VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcr{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES}; ycbcr.pNext = &draw;
+         VkPhysicalDeviceFeatures2 all{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2}; all.pNext = &ycbcr;
          features2(physical, &all);
          report["vulkan11Features"] = {{"multiview", multiview.multiview != 0}, {"storageBuffer16BitAccess", storage16.storageBuffer16BitAccess != 0},
-            {"variablePointersStorageBuffer", pointers.variablePointersStorageBuffer != 0}, {"shaderDrawParameters", draw.shaderDrawParameters != 0}};
+            {"variablePointersStorageBuffer", pointers.variablePointersStorageBuffer != 0}, {"shaderDrawParameters", draw.shaderDrawParameters != 0},
+            {"samplerYcbcrConversion", ycbcr.samplerYcbcrConversion != 0}};
          /* All false when the ICD manifest declares 1.0: the loader then emulates
           * vkGetPhysicalDeviceFeatures2 and leaves pNext untouched. */
-         require(multiview.multiview && storage16.storageBuffer16BitAccess && pointers.variablePointersStorageBuffer && draw.shaderDrawParameters,
-            "Vulkan 1.1 features not visible through the loader");
+         require(multiview.multiview && storage16.storageBuffer16BitAccess && pointers.variablePointersStorageBuffer && draw.shaderDrawParameters &&
+            ycbcr.samplerYcbcrConversion, "Vulkan 1.1 features not visible through the loader");
       }
       require(supported.occlusionQueryPrecise == VK_TRUE && supported.pipelineStatisticsQuery == VK_TRUE, "Query features not advertised");
       uint32_t families = 1; VkQueueFamilyProperties family{}; vkGetPhysicalDeviceQueueFamilyProperties(physical, &families, &family);

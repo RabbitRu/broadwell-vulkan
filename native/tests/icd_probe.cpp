@@ -405,7 +405,9 @@ int wmain(int argc, wchar_t **argv)
             /* stage 3, batch C */
             "VK_EXT_conditional_rendering", "VK_EXT_transform_feedback", "VK_EXT_primitives_generated_query",
             /* stage 3, fixed after CTS failures */
-            "VK_EXT_robustness2", "VK_KHR_robustness2", "VK_KHR_maintenance6", "VK_EXT_sample_locations"};
+            "VK_EXT_robustness2", "VK_KHR_robustness2", "VK_KHR_maintenance6", "VK_EXT_sample_locations",
+            /* stage 3, YCbCr */
+            "VK_KHR_sampler_ycbcr_conversion", "VK_EXT_ycbcr_image_arrays"};
          std::vector<VkExtensionProperties> extensions(extension_count);
          check(vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, extensions.data()), "Query device extensions");
          std::vector<std::string> names; for (const auto &extension : extensions) names.push_back(extension.extensionName);

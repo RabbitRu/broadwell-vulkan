@@ -1,0 +1,56 @@
+﻿{
+    "sampled":  [
+                    {
+                        "value":  [
+                                      {
+                                          "group":  "ycbcr.*",
+                                          "every":  20,
+                                          "counts":  {
+                                                         "NotSupported":  2532,
+                                                         "Pass":  523
+                                                     },
+                                          "notPassing":  [
+
+                                                         ]
+                                      },
+                                      {
+                                          "group":  "api.copy_and_blit.multiplanar_xfer.*",
+                                          "every":  4,
+                                          "counts":  {
+                                                         "NotSupported":  554
+                                                     },
+                                          "notPassing":  [
+
+                                                         ]
+                                      },
+                                      {
+                                          "group":  "api.info.format_properties.*",
+                                          "every":  1,
+                                          "counts":  {
+                                                         "Pass":  225
+                                                     },
+                                          "notPassing":  [
+
+                                                         ]
+                                      }
+                                  ],
+                        "Count":  3
+                    }
+                ],
+    "denser":  [
+                   {
+                       "run":  "ycbcr2-ycbcr",
+                       "counts":  {
+                                      "NotSupported":  4220,
+                                      "Pass":  872
+                                  }
+                   },
+                   {
+                       "run":  "ycbcr2-memory-binding",
+                       "counts":  {
+                                      "NotSupported":  36,
+                                      "Pass":  20
+                                  }
+                   }
+               ]
+}
