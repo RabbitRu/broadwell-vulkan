@@ -1,0 +1,12 @@
+filled: 85 allocations, 511.9 MiB of a 512.0 MiB heap in 94 ms
+pre-recorded submission with a full heap: correct
+recording 20000 commands with a full heap: vkEndCommandBuffer = 0
+20000-command buffer with a full heap: correct
+20000-command buffer after freeing: correct
+refilled: 511.9 MiB (first time 511.9 MiB)
+PASS: heap exhaustion returns VK_ERROR_OUT_OF_DEVICE_MEMORY, work survives it, memory is reusable
+
+--- stderr
+SIMD32 shader inefficient
+FS SIMD8 shader: 5 inst, 0 loops, 18 cycles, 0:0 spills:fills, 1 sends, scheduled with mode top-down, Promoted 0 constants, compacted 80 to 64 bytes.
+FS SIMD16 shader: 5 inst, 0 loops, 26 cycles, 0:0 spills:fills, 1 sends, scheduled with mode top-down, Promoted 0 constants, compacted 80 to 64 bytes.
