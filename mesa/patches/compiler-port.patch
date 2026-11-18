@@ -214,7 +214,17 @@
  };
  static const VkPresentModeKHR present_modes_dxgi[] = {
     VK_PRESENT_MODE_IMMEDIATE_KHR,
-@@ -607,10 +628,18 @@
+@@ -559,7 +580,8 @@
+    if (chain->dxgi)
+       return VK_SUCCESS;
+ 
+-   chain->chain_dc = GetDC(chain->wnd);
++   if (!chain->chain_dc)
++      chain->chain_dc = GetDC(chain->wnd);
+    image->sw.dc = CreateCompatibleDC(chain->chain_dc);
+    HBITMAP bmp = NULL;
+ 
+@@ -607,10 +629,19 @@
     struct wsi_win32_swapchain *chain =
        (struct wsi_win32_swapchain *) drv_chain;
  
@@ -225,7 +235,9 @@
     for (uint32_t i = 0; i < chain->base.image_count; i++)
        wsi_win32_image_finish(chain, allocator, &chain->images[i]);
  
-    DeleteDC(chain->chain_dc);
+-   DeleteDC(chain->chain_dc);
++   if (chain->chain_dc)
++      ReleaseDC(chain->wnd, chain->chain_dc);
 +
 +   if (getenv("HASVK_WDDM_PRESENT_STATS"))
 +      fprintf(stderr, "HasVK/WDDM present stats: %llu redirected, %llu gdi\n",
@@ -233,7 +245,7 @@
  
     if (chain->surface->current_swapchain == chain)
        chain->surface->current_swapchain = NULL;
-@@ -671,6 +700,84 @@
+@@ -671,6 +702,84 @@
  
     return VK_SUCCESS;
  }
@@ -318,7 +330,7 @@
  
  static bool
  wsi_win32_find_idle_image(struct wsi_win32_swapchain *chain,
-@@ -737,8 +844,13 @@
+@@ -737,8 +846,13 @@
        return chain->status;
  
     /* acquire timeout has to be explicitly handled for sw wsi */
@@ -333,7 +345,7 @@
  
     if (wsi_win32_find_idle_image(chain, image_index))
        return VK_SUCCESS;
-@@ -820,10 +932,35 @@
+@@ -820,10 +934,35 @@
     if (chain->dxgi)
        return wsi_win32_queue_present_dxgi(chain, image, damage);
  
@@ -369,7 +381,7 @@
        memcpy(dptr, ptr, chain->extent.width * 4);
        dptr += image->sw.bmp_row_pitch;
        ptr += image->base.row_pitches[0];
-@@ -832,6 +969,13 @@
+@@ -832,6 +971,13 @@
        chain->status = VK_ERROR_MEMORY_MAP_FAILED;
  
     wsi_win32_set_image_idle(chain, image);
@@ -383,7 +395,7 @@
  
     return chain->status;
  }
-@@ -925,6 +1069,10 @@
+@@ -925,6 +1071,10 @@
  
     assert(create_info->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR);
  
@@ -394,7 +406,7 @@
     const unsigned num_images = create_info->minImageCount;
     struct wsi_win32_swapchain *chain;
     size_t size = sizeof(*chain) + num_images * sizeof(chain->images[0]);
-@@ -982,6 +1130,11 @@
+@@ -982,6 +1132,11 @@
     chain->base.queue_present = wsi_win32_queue_present;
     chain->base.present_mode = wsi_swapchain_get_present_mode(wsi_device, create_info);
     chain->extent = create_info->imageExtent;
@@ -406,7 +418,7 @@
  
     chain->wsi = wsi;
     chain->status = VK_SUCCESS;
-@@ -1091,7 +1244,7 @@
+@@ -1091,7 +1246,7 @@
     wsi->alloc = alloc;
     wsi->wsi = wsi_device;
  

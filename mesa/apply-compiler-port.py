@@ -333,9 +333,15 @@ wsi_win32_find_idle_image('''),
 
    DeleteDC(chain->chain_dc);
 '''),
+    # The window DC comes from GetDC: one per swapchain (upstream took one per
+    # image and kept the last) and released with ReleaseDC, not DeleteDC
+    # (tools/test-leaks.ps1: 2 GDI objects lost per swapchain).
+    ('   chain->chain_dc = GetDC(chain->wnd);\n',
+     '   if (!chain->chain_dc)\n      chain->chain_dc = GetDC(chain->wnd);\n'),
     ('''   DeleteDC(chain->chain_dc);
 
-   if (chain->surface->current_swapchain == chain)''', '''   DeleteDC(chain->chain_dc);
+   if (chain->surface->current_swapchain == chain)''', '''   if (chain->chain_dc)
+      ReleaseDC(chain->wnd, chain->chain_dc);
 
    if (getenv("HASVK_WDDM_PRESENT_STATS"))
       fprintf(stderr, "HasVK/WDDM present stats: %llu redirected, %llu gdi\\n",
