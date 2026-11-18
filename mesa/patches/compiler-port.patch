@@ -185,20 +185,26 @@
  };
  
  
-@@ -612,6 +621,12 @@
+@@ -607,10 +616,18 @@
+    struct wsi_win32_swapchain *chain =
+       (struct wsi_win32_swapchain *) drv_chain;
  
-    DeleteDC(chain->chain_dc);
- 
++   /* First: the driver's last window copy still reads a swapchain image. */
 +   if (chain->redirect_state && chain->wsi->wsi->win32.present_redirected_finish)
 +      chain->wsi->wsi->win32.present_redirected_finish(chain->base.device, chain->redirect_state);
++
+    for (uint32_t i = 0; i < chain->base.image_count; i++)
+       wsi_win32_image_finish(chain, allocator, &chain->images[i]);
+ 
+    DeleteDC(chain->chain_dc);
++
 +   if (getenv("HASVK_WDDM_PRESENT_STATS"))
 +      fprintf(stderr, "HasVK/WDDM present stats: %llu redirected, %llu gdi\n",
 +              (unsigned long long)chain->redirected_presents, (unsigned long long)chain->gdi_presents);
-+
+ 
     if (chain->surface->current_swapchain == chain)
        chain->surface->current_swapchain = NULL;
- 
-@@ -819,6 +834,19 @@
+@@ -819,6 +836,19 @@
  
     if (chain->dxgi)
        return wsi_win32_queue_present_dxgi(chain, image, damage);
@@ -218,7 +224,7 @@
  
     char *ptr = (char *)image->base.cpu_map;
     char *dptr = (char *)image->sw.ppvBits;
-@@ -1091,7 +1119,7 @@
+@@ -1091,7 +1121,7 @@
     wsi->alloc = alloc;
     wsi->wsi = wsi_device;
  
@@ -2235,9 +2241,9 @@
 + * async: the last kernel submission is not waited for; *seq receives its
 + * transport number and the caller must verify the command buffers
 + * (anv_wddm_check_completed) after it completed. Otherwise everything is
-+ * verified before returning. present_token != 0 (not async): the last kernel
-+ * submission is a redirected present and executable (not only pending)
-+ * command buffers are accepted (driver-internal use).
++ * verified before returning. present_token != 0: the last kernel submission
++ * is a redirected present and executable (not only pending) command buffers
++ * are accepted (driver-internal use).
 + * Caller holds submit_mutex. */
 +int anv_wddm_execute_commands(struct anv_device *device, struct vk_command_buffer *const *commands, uint32_t count,
 +                              uint32_t serial, uint64_t present_token, bool async, uint64_t *seq);
@@ -3065,7 +3071,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_command.c
-@@ -0,0 +1,506 @@
+@@ -0,0 +1,507 @@
 +/* Windows lifetime and submission backing for HasVK command buffers.
 + * Packet emission, descriptor binding and push packing use upstream HasVK.
 + *
@@ -3420,7 +3426,8 @@
 +{
 +   write_tail((uint32_t *)hasvk_wddm_bo_map(w->entry) + slot * 32, start, true);
 +   const uint32_t offset = slot * 128;
-+   const int failed = seq ? hasvk_wddm_submit_async(w->transport, w->entry, offset, 16, seq)
++   const int failed = seq ? (present_token ? hasvk_wddm_submit_present_async(w->transport, w->entry, offset, 16, present_token, seq)
++                                           : hasvk_wddm_submit_async(w->transport, w->entry, offset, 16, seq))
 +                    : present_token ? hasvk_wddm_submit_present(w->transport, w->entry, offset, 16, present_token)
 +                    : hasvk_wddm_submit_wait(w->transport, w->entry, offset, 16);
 +   if (failed) {
@@ -3519,7 +3526,7 @@
 +   }
 +   if (async) {
 +      /* Not waited for: the caller verifies [first, count) after completion. */
-+      if (submit_run(w, final_slot, start, 0, seq)) return -1;
++      if (submit_run(w, final_slot, start, present_token, seq)) return -1;
 +      for (uint32_t i = first; i < count; ++i) command_at(commands, i)->wddm->seq = *seq;
 +      return 0;
 +   }
@@ -3574,7 +3581,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_present.c
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,182 @@
 +/* Windowed present without a CPU copy and without D3D.
 + *
 + * As the Intel OpenGL ICD of the same driver package does (traced with
@@ -3600,11 +3607,23 @@
 +   VkImage image;
 +   VkCommandPool pool;
 +   VkCommandBuffer cmd;
++   uint64_t pending_seq;   /* transport number of the copy not yet waited for */
 +};
 +
++/* The previous frame's copy is submitted without waiting: wait for it and
++ * check its completion marker before the command buffer or surface is reused. */
++static int finish_pending(struct anv_device *device, struct anv_wddm_window *w)
++{
++   if (!w->pending_seq) return 0;
++   const uint64_t seq = w->pending_seq;
++   w->pending_seq = 0;
++   if (hasvk_wddm_wait_submission(device->wddm->transport, seq)) return -1;
++   return anv_wddm_check_completed(anv_cmd_buffer_from_handle(w->cmd));
++}
 +static void window_release(struct anv_device *device, struct anv_wddm_window *w)
 +{
 +   VkDevice handle = anv_device_to_handle(device);
++   if (finish_pending(device, w)) fprintf(stderr, "HasVK/WDDM: last window copy failed: %s\n", hasvk_wddm_error());
 +   if (w->pool) device->vk.dispatch_table.DestroyCommandPool(handle, w->pool, NULL);
 +   if (w->image) anv_DestroyImage(handle, w->image, NULL);
 +   if (w->bo) anv_device_release_bo(device, w->bo);
@@ -3683,6 +3702,7 @@
 +   }
 +
 +   const struct vk_device_dispatch_table *d = &device->vk.dispatch_table;
++   if (finish_pending(device, w)) return vk_errorf(device, VK_ERROR_DEVICE_LOST, "window copy: %s", hasvk_wddm_error());
 +   VkResult result = d->ResetCommandBuffer(w->cmd, 0);
 +   const VkCommandBufferBeginInfo begin = {
 +      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -3713,9 +3733,18 @@
 +              owner, GetCurrentThreadId(), (unsigned long long)w->bo->offset, (unsigned long long)w->bo->size);
 +   }
 +   struct anv_wddm_device_state *ws = device->wddm;
++   /* Not waited for here: the next present (or the release) waits for it. */
++   struct anv_cmd_buffer *cmd = anv_cmd_buffer_from_handle(w->cmd);
++   struct vk_command_buffer *one = &cmd->vk;
++   uint64_t seq = 0;
 +   mtx_lock(&ws->submit_mutex);
-+   const int failed = anv_wddm_execute_command(anv_cmd_buffer_from_handle(w->cmd), token);
++   const int failed = anv_wddm_execute_commands(device, &one, 1, 0, token, true, &seq);
 +   mtx_unlock(&ws->submit_mutex);
++   cmd->wddm->seq = 0;   /* verified by finish_pending, not by the queue's completion thread */
++   if (!failed) w->pending_seq = seq;
++   static int sync_present = -1;
++   if (sync_present < 0) sync_present = getenv("HASVK_WDDM_SYNC_PRESENT") != NULL;
++   if (!failed && sync_present && finish_pending(device, w)) return VK_ERROR_DEVICE_LOST;
 +   if (failed) {
 +      /* A present the kernel refuses (e.g. STATUS_GRAPHICS_PRESENT_OCCLUDED
 +       * while the display sleeps) is not a lost device; GDI takes this frame. */
@@ -23336,7 +23365,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.h
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,76 @@
 +#pragma once
 +#include <stdint.h>
 +#ifdef __cplusplus
@@ -23390,6 +23419,9 @@
 +int hasvk_wddm_submit_async(struct hasvk_wddm_device *device, struct hasvk_wddm_bo *commands,
 +                           uint32_t offset, uint32_t bytes, uint64_t *seq);
 +int hasvk_wddm_wait_submission(struct hasvk_wddm_device *device, uint64_t seq);
++/* Redirected present without waiting (refusal is still reported here). */
++int hasvk_wddm_submit_present_async(struct hasvk_wddm_device *device, struct hasvk_wddm_bo *commands,
++                                   uint32_t offset, uint32_t bytes, uint64_t present_token, uint64_t *seq);
 +uint64_t hasvk_wddm_completed_submission(struct hasvk_wddm_device *device);
 +int hasvk_wddm_bo_create_window_surface(struct hasvk_wddm_device *device, uint32_t width, uint32_t height,
 +                                       struct hasvk_wddm_bo **out);
@@ -23982,7 +24014,7 @@
 +} // namespace hasvk::wddm
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm_c.cpp
-@@ -0,0 +1,350 @@
+@@ -0,0 +1,356 @@
 +#include "hasvk_wddm.h"
 +#include "hasvk_wddm.hpp"
 +#include <cstdio>
@@ -24261,6 +24293,12 @@
 +{
 +   if (!seq) return failure("Missing sequence output");
 +   return submit(device, commands, offset, bytes, 0, false, seq);
++}
++extern "C" int hasvk_wddm_submit_present_async(hasvk_wddm_device *device, hasvk_wddm_bo *commands,
++                                                uint32_t offset, uint32_t bytes, uint64_t present_token, uint64_t *seq)
++{
++   if (!present_token || !seq) return failure("Missing present token or sequence output");
++   return submit(device, commands, offset, bytes, present_token, false, seq);
 +}
 +extern "C" int hasvk_wddm_wait_submission(hasvk_wddm_device *device, uint64_t seq)
 +{

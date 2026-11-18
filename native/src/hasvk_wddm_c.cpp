@@ -277,6 +277,12 @@ extern "C" int hasvk_wddm_submit_async(hasvk_wddm_device *device, hasvk_wddm_bo 
    if (!seq) return failure("Missing sequence output");
    return submit(device, commands, offset, bytes, 0, false, seq);
 }
+extern "C" int hasvk_wddm_submit_present_async(hasvk_wddm_device *device, hasvk_wddm_bo *commands,
+                                                uint32_t offset, uint32_t bytes, uint64_t present_token, uint64_t *seq)
+{
+   if (!present_token || !seq) return failure("Missing present token or sequence output");
+   return submit(device, commands, offset, bytes, present_token, false, seq);
+}
 extern "C" int hasvk_wddm_wait_submission(hasvk_wddm_device *device, uint64_t seq)
 {
    if (!device) return failure("Invalid device");

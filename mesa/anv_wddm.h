@@ -99,9 +99,9 @@ struct anv_wddm_cmd_state {
  * async: the last kernel submission is not waited for; *seq receives its
  * transport number and the caller must verify the command buffers
  * (anv_wddm_check_completed) after it completed. Otherwise everything is
- * verified before returning. present_token != 0 (not async): the last kernel
- * submission is a redirected present and executable (not only pending)
- * command buffers are accepted (driver-internal use).
+ * verified before returning. present_token != 0: the last kernel submission
+ * is a redirected present and executable (not only pending) command buffers
+ * are accepted (driver-internal use).
  * Caller holds submit_mutex. */
 int anv_wddm_execute_commands(struct anv_device *device, struct vk_command_buffer *const *commands, uint32_t count,
                               uint32_t serial, uint64_t present_token, bool async, uint64_t *seq);

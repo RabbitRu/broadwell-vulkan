@@ -352,7 +352,8 @@ static int submit_run(struct anv_wddm_device_state *w, uint32_t slot, struct anv
 {
    write_tail((uint32_t *)hasvk_wddm_bo_map(w->entry) + slot * 32, start, true);
    const uint32_t offset = slot * 128;
-   const int failed = seq ? hasvk_wddm_submit_async(w->transport, w->entry, offset, 16, seq)
+   const int failed = seq ? (present_token ? hasvk_wddm_submit_present_async(w->transport, w->entry, offset, 16, present_token, seq)
+                                           : hasvk_wddm_submit_async(w->transport, w->entry, offset, 16, seq))
                     : present_token ? hasvk_wddm_submit_present(w->transport, w->entry, offset, 16, present_token)
                     : hasvk_wddm_submit_wait(w->transport, w->entry, offset, 16);
    if (failed) {
@@ -451,7 +452,7 @@ int anv_wddm_execute_commands(struct anv_device *device, struct vk_command_buffe
    }
    if (async) {
       /* Not waited for: the caller verifies [first, count) after completion. */
-      if (submit_run(w, final_slot, start, 0, seq)) return -1;
+      if (submit_run(w, final_slot, start, present_token, seq)) return -1;
       for (uint32_t i = first; i < count; ++i) command_at(commands, i)->wddm->seq = *seq;
       return 0;
    }

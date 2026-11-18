@@ -23,11 +23,23 @@ struct anv_wddm_window {
    VkImage image;
    VkCommandPool pool;
    VkCommandBuffer cmd;
+   uint64_t pending_seq;   /* transport number of the copy not yet waited for */
 };
 
+/* The previous frame's copy is submitted without waiting: wait for it and
+ * check its completion marker before the command buffer or surface is reused. */
+static int finish_pending(struct anv_device *device, struct anv_wddm_window *w)
+{
+   if (!w->pending_seq) return 0;
+   const uint64_t seq = w->pending_seq;
+   w->pending_seq = 0;
+   if (hasvk_wddm_wait_submission(device->wddm->transport, seq)) return -1;
+   return anv_wddm_check_completed(anv_cmd_buffer_from_handle(w->cmd));
+}
 static void window_release(struct anv_device *device, struct anv_wddm_window *w)
 {
    VkDevice handle = anv_device_to_handle(device);
+   if (finish_pending(device, w)) fprintf(stderr, "HasVK/WDDM: last window copy failed: %s\n", hasvk_wddm_error());
    if (w->pool) device->vk.dispatch_table.DestroyCommandPool(handle, w->pool, NULL);
    if (w->image) anv_DestroyImage(handle, w->image, NULL);
    if (w->bo) anv_device_release_bo(device, w->bo);
@@ -106,6 +118,7 @@ VkResult anv_wddm_present_redirected(VkDevice handle, VkImage src, void *hwnd, V
    }
 
    const struct vk_device_dispatch_table *d = &device->vk.dispatch_table;
+   if (finish_pending(device, w)) return vk_errorf(device, VK_ERROR_DEVICE_LOST, "window copy: %s", hasvk_wddm_error());
    VkResult result = d->ResetCommandBuffer(w->cmd, 0);
    const VkCommandBufferBeginInfo begin = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -136,9 +149,18 @@ VkResult anv_wddm_present_redirected(VkDevice handle, VkImage src, void *hwnd, V
               owner, GetCurrentThreadId(), (unsigned long long)w->bo->offset, (unsigned long long)w->bo->size);
    }
    struct anv_wddm_device_state *ws = device->wddm;
+   /* Not waited for here: the next present (or the release) waits for it. */
+   struct anv_cmd_buffer *cmd = anv_cmd_buffer_from_handle(w->cmd);
+   struct vk_command_buffer *one = &cmd->vk;
+   uint64_t seq = 0;
    mtx_lock(&ws->submit_mutex);
-   const int failed = anv_wddm_execute_command(anv_cmd_buffer_from_handle(w->cmd), token);
+   const int failed = anv_wddm_execute_commands(device, &one, 1, 0, token, true, &seq);
    mtx_unlock(&ws->submit_mutex);
+   cmd->wddm->seq = 0;   /* verified by finish_pending, not by the queue's completion thread */
+   if (!failed) w->pending_seq = seq;
+   static int sync_present = -1;
+   if (sync_present < 0) sync_present = getenv("HASVK_WDDM_SYNC_PRESENT") != NULL;
+   if (!failed && sync_present && finish_pending(device, w)) return VK_ERROR_DEVICE_LOST;
    if (failed) {
       /* A present the kernel refuses (e.g. STATUS_GRAPHICS_PRESENT_OCCLUDED
        * while the display sleeps) is not a lost device; GDI takes this frame. */

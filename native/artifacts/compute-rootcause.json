@@ -1,0 +1,31 @@
+{
+    "schema":  1,
+    "testedUtc":  "2026-11-17T23:45:35.3771315Z",
+    "case":  "build/failures/lcg32-local32-count257-20261116",
+    "originalFailure":  "2026-11-16 13:47 local, executable d10d9e13..., \"GPU mismatch at word 16\"; source of that build is not in git (history starts 2026-11-16 17:20)",
+    "runs":  [
+                 {
+                     "cpuCacheFlushBeforeSubmit":  false,
+                     "iterations":  1000,
+                     "passed":  true,
+                     "seconds":  260.9
+                 },
+                 {
+                     "cpuCacheFlushBeforeSubmit":  false,
+                     "iterations":  100,
+                     "passed":  true
+                 },
+                 {
+                     "cpuCacheFlushBeforeSubmit":  true,
+                     "iterations":  100,
+                     "passed":  true
+                 },
+                 {
+                     "test":  "tools/test-spirv.ps1",
+                     "repeats":  5,
+                     "passed":  true
+                 }
+             ],
+    "conclusion":  "Not reproducible on the current transport (1200 iterations, 5 SPIR-V suite runs). Skipping the CPU cache write-back (HASVK_WDDM_TEST_SKIP_FLUSH=1) does not cause the failure, so the explicit flush added on 2026-11-16 was not what fixed it; the same change also started waiting for real GPU completion and checking the WDDM execution state, the more likely cause of an early read. Root cause of the original failure cannot be proven without its source.",
+    "rootCauseConfirmed":  false
+}

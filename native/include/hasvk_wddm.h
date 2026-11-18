@@ -51,6 +51,9 @@ int hasvk_wddm_submit_wait(struct hasvk_wddm_device *device, struct hasvk_wddm_b
 int hasvk_wddm_submit_async(struct hasvk_wddm_device *device, struct hasvk_wddm_bo *commands,
                            uint32_t offset, uint32_t bytes, uint64_t *seq);
 int hasvk_wddm_wait_submission(struct hasvk_wddm_device *device, uint64_t seq);
+/* Redirected present without waiting (refusal is still reported here). */
+int hasvk_wddm_submit_present_async(struct hasvk_wddm_device *device, struct hasvk_wddm_bo *commands,
+                                   uint32_t offset, uint32_t bytes, uint64_t present_token, uint64_t *seq);
 uint64_t hasvk_wddm_completed_submission(struct hasvk_wddm_device *device);
 int hasvk_wddm_bo_create_window_surface(struct hasvk_wddm_device *device, uint32_t width, uint32_t height,
                                        struct hasvk_wddm_bo **out);

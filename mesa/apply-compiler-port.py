@@ -143,12 +143,23 @@ edit('src/vulkan/wsi/wsi_common_win32.cpp', [
    char *ptr = (char *)image->base.cpu_map;
    char *dptr = (char *)image->sw.ppvBits;
 '''),
+    ('''   for (uint32_t i = 0; i < chain->base.image_count; i++)
+      wsi_win32_image_finish(chain, allocator, &chain->images[i]);
+
+   DeleteDC(chain->chain_dc);
+''', '''   /* First: the driver's last window copy still reads a swapchain image. */
+   if (chain->redirect_state && chain->wsi->wsi->win32.present_redirected_finish)
+      chain->wsi->wsi->win32.present_redirected_finish(chain->base.device, chain->redirect_state);
+
+   for (uint32_t i = 0; i < chain->base.image_count; i++)
+      wsi_win32_image_finish(chain, allocator, &chain->images[i]);
+
+   DeleteDC(chain->chain_dc);
+'''),
     ('''   DeleteDC(chain->chain_dc);
 
    if (chain->surface->current_swapchain == chain)''', '''   DeleteDC(chain->chain_dc);
 
-   if (chain->redirect_state && chain->wsi->wsi->win32.present_redirected_finish)
-      chain->wsi->wsi->win32.present_redirected_finish(chain->base.device, chain->redirect_state);
    if (getenv("HASVK_WDDM_PRESENT_STATS"))
       fprintf(stderr, "HasVK/WDDM present stats: %llu redirected, %llu gdi\\n",
               (unsigned long long)chain->redirected_presents, (unsigned long long)chain->gdi_presents);
