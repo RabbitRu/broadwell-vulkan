@@ -472,6 +472,34 @@ for function in ['anv_state_table_init', 'anv_state_table_expand_range', 'anv_st
     allocator_replacements.append((body, '#ifndef _WIN32\n' + body + '\n#endif'))
 gem_allocator = allocator_original[allocator_original.index('#define ANV_BO_CACHE_SUPPORTED_FLAGS'):]
 allocator_replacements.append((gem_allocator, '#ifndef _WIN32\n' + gem_allocator + '\n#endif\n'))
+# A block pool that cannot grow (out of memory) is retried forever upstream:
+# the application freezes inside vkCmd* when memory does not come back.
+# Retrying does help with a transient failure (CTS simulate_oom fails single
+# host allocations), so a failure is retried 64 times, 1 ms apart (os_time.h,
+# included below); callers
+# have no error path, so after that the process ends with the cause.
+# Application memory no longer competes with these pools
+# (anv_wddm_memory.c): this takes real exhaustion of the driver's own budget
+# or of the system.
+allocator_replacements.append(('''         do {
+            new.end = anv_block_pool_grow(pool, pool_state, block_size);
+         } while (new.end < new.next);''', '''#ifdef _WIN32
+         unsigned grow_failures = 0;
+#endif
+         do {
+            new.end = anv_block_pool_grow(pool, pool_state, block_size);
+#ifdef _WIN32
+            if (new.end == 0) {
+               if (++grow_failures == 64) {
+                  fprintf(stderr, "HasVK/WDDM: out of memory growing the %s pool (%u bytes); cannot continue\\n",
+                          pool->name, pool->size);
+                  abort();
+               }
+               if (grow_failures > 1) os_time_sleep(1000);
+            }
+#endif
+         } while (new.end < new.next);'''))
+allocator_replacements.append(('#include "util/futex.h"', '#include "util/futex.h"\n#include "util/os_time.h"'))
 edit(allocator_name, allocator_replacements)
 edit('src/intel/vulkan_hasvk/anv_descriptor_set.c', [
     ('#include <unistd.h>', '#ifndef _WIN32\n#include <unistd.h>\n#endif'),

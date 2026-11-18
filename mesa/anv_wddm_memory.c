@@ -65,7 +65,10 @@ anv_device_alloc_bo(struct anv_device *device, const char *name, uint64_t size,
 {
    return alloc_bo(device, name, size, flags, explicit_address, true, out);
 }
-/* cpu_map = false: GPU-only application memory (memory type 1), no CPU mapping. */
+/* cpu_map = false: GPU-only application memory (memory type 1), no CPU mapping.
+ * The anv_bo itself comes from malloc, as upstream's bo_cache: block pools grow
+ * from inside vkCmd* without an error path, so they must not depend on the
+ * application's allocation callbacks (CTS simulate_oom fails all of them). */
 static VkResult
 alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo_alloc_flags flags,
          uint64_t explicit_address, bool cpu_map, struct anv_bo **out)
@@ -79,13 +82,16 @@ alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo
    if (!size || size > ANV_WDDM_MAX_BO_BYTES)
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    size = align64(size, 4096);
-   struct anv_bo *bo = vk_zalloc(&device->vk.alloc, sizeof(*bo), 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+   struct anv_bo *bo = calloc(1, sizeof(*bo));
    if (!bo) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    struct anv_wddm_device_state *w = device->wddm;
    mtx_lock(&w->mutex);
    if (!w->bo_ids) w->bo_ids = calloc(BITSET_WORDS(ANV_WDDM_MAX_BOS + 1), sizeof(BITSET_WORD));
-   if (!w->bo_ids || w->allocation_count >= ANV_WDDM_MAX_BOS || size > ANV_WDDM_HEAP_BYTES - w->allocated_bytes) {
-      mtx_unlock(&w->mutex); vk_free(&device->vk.alloc, bo);
+   const bool user = !strcmp(name, "user");
+   const uint64_t limit = user ? anv_wddm_heap_bytes() : ANV_WDDM_INTERNAL_BYTES;
+   const uint64_t used = user ? w->user_bytes : w->allocated_bytes - w->user_bytes;
+   if (!w->bo_ids || w->allocation_count >= ANV_WDDM_MAX_BOS || size > limit - used) {
+      mtx_unlock(&w->mutex); free(bo);
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    }
    struct util_vma_heap *heap = fixed ? &w->state_heap : &w->client_heap;
@@ -94,7 +100,7 @@ alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo
    if (!address || (cpu_map ? hasvk_wddm_bo_create(w->transport, size, address, 1, &bo->wddm_bo)
                             : hasvk_wddm_bo_create_unmapped(w->transport, size, address, &bo->wddm_bo))) {
       if (address) util_vma_heap_free(heap, address, size);
-      mtx_unlock(&w->mutex); vk_free(&device->vk.alloc, bo);
+      mtx_unlock(&w->mutex); free(bo);
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    }
    bo->name = name; bo->size = size; bo->offset = intel_canonical_address(address);
@@ -117,9 +123,10 @@ alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo
       /* w->mutex is still held here. */
       hasvk_wddm_bo_destroy(bo->wddm_bo); util_vma_heap_free(heap, address, size); BITSET_CLEAR(w->bo_ids, id);
       mtx_unlock(&w->mutex);
-      vk_free(&device->vk.alloc, bo); return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      free(bo); return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    }
    w->allocated_bytes += size; ++w->allocation_count;
+   if (user) w->user_bytes += size;
    mtx_unlock(&w->mutex);
    { static int profile = -1; if (profile < 0) profile = getenv("HASVK_WDDM_PROFILE") != NULL;
      if (profile) fprintf(stderr, "WDDM BO alloc %s %llu\n", name, (unsigned long long)size); }
@@ -135,7 +142,7 @@ anv_wddm_alloc_window_surface_bo(struct anv_device *device, uint32_t width, uint
                                  struct anv_bo **out, uint32_t *share, uint64_t *pitch)
 {
    *out = NULL;
-   struct anv_bo *bo = vk_zalloc(&device->vk.alloc, sizeof(*bo), 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+   struct anv_bo *bo = calloc(1, sizeof(*bo));
    if (!bo) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    struct anv_wddm_device_state *w = device->wddm;
    mtx_lock(&w->mutex);
@@ -144,7 +151,7 @@ anv_wddm_alloc_window_surface_bo(struct anv_device *device, uint32_t width, uint
        hasvk_wddm_bo_create_window_surface(w->transport, width, height, &bo->wddm_bo) ||
        hasvk_wddm_bo_window_surface_info(bo->wddm_bo, share, pitch)) {
       if (bo->wddm_bo) hasvk_wddm_bo_destroy(bo->wddm_bo);
-      mtx_unlock(&w->mutex); vk_free(&device->vk.alloc, bo);
+      mtx_unlock(&w->mutex); free(bo);
       return vk_errorf(device, VK_ERROR_OUT_OF_DEVICE_MEMORY, "window surface: %s", hasvk_wddm_error());
    }
    bo->name = "window surface"; bo->size = hasvk_wddm_bo_size(bo->wddm_bo);
@@ -190,9 +197,10 @@ anv_device_release_bo(struct anv_device *device, struct anv_bo *bo)
       if (!bo->is_external)   /* window surfaces: the kernel chose and frees the address */
          util_vma_heap_free(bo->has_fixed_address ? &w->state_heap : &w->client_heap, intel_48b_address(bo->offset), bo->size);
       w->allocated_bytes -= bo->size; --w->allocation_count; BITSET_CLEAR(w->bo_ids, bo->gem_handle);
+      if (bo->name && !strcmp(bo->name, "user")) w->user_bytes -= bo->size;
    }
    mtx_unlock(&w->mutex);
-   vk_free(&device->vk.alloc, bo);
+   free(bo);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL

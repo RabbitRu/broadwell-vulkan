@@ -26,7 +26,13 @@ int main(int argc, char **argv)
       SuspendThread(thread);
       CONTEXT ctx{}; ctx.ContextFlags = CONTEXT_FULL;
       if (GetThreadContext(thread, &ctx)) {
-         printf("thread %lu:\n", te.th32ThreadID);
+         {  /* the current instruction, even when the walk below fails */
+            char buffer[sizeof(SYMBOL_INFO) + 512]{};
+            auto *symbol = (SYMBOL_INFO *)buffer; symbol->SizeOfStruct = sizeof(SYMBOL_INFO); symbol->MaxNameLen = 511;
+            DWORD64 displacement = 0;
+            printf("thread %lu: rip %s+0x%llx\n", te.th32ThreadID, SymFromAddr(process, ctx.Rip, &displacement, symbol) ? symbol->Name : "?",
+                   (unsigned long long)displacement);
+         }
          STACKFRAME64 frame{};
          frame.AddrPC.Offset = ctx.Rip; frame.AddrPC.Mode = AddrModeFlat;
          frame.AddrFrame.Offset = ctx.Rbp; frame.AddrFrame.Mode = AddrModeFlat;

@@ -669,7 +669,7 @@
  #ifdef genX
 --- a/src/intel/vulkan_hasvk/anv_allocator.c
 +++ b/src/intel/vulkan_hasvk/anv_allocator.c
-@@ -22,14 +22,20 @@
+@@ -22,15 +22,22 @@
   */
  
  #include <stdlib.h>
@@ -688,9 +688,11 @@
  #include "util/anon_file.h"
 +#endif
  #include "util/futex.h"
++#include "util/os_time.h"
  
  #ifdef HAVE_VALGRIND
-@@ -137,10 +143,14 @@
+ #define VG_NOACCESS_READ(__ptr) ({                       \
+@@ -137,10 +144,14 @@
  
  #define ANV_STATE_TABLE_CLEANUP_INIT ((struct anv_state_table_cleanup){0})
  #define ANV_STATE_ENTRY_SIZE (sizeof(struct anv_free_entry))
@@ -705,7 +707,7 @@
  VkResult
  anv_state_table_init(struct anv_state_table *table,
                      struct anv_device *device,
-@@ -183,6 +193,8 @@
+@@ -183,6 +194,8 @@
     return result;
  }
  
@@ -714,7 +716,7 @@
  static VkResult
  anv_state_table_expand_range(struct anv_state_table *table, uint32_t size)
  {
-@@ -224,6 +236,7 @@
+@@ -224,6 +237,7 @@
     return VK_SUCCESS;
  }
  
@@ -722,7 +724,7 @@
  static VkResult
  anv_state_table_grow(struct anv_state_table *table)
  {
-@@ -258,6 +271,7 @@
+@@ -258,6 +272,7 @@
     return result;
  }
  
@@ -730,7 +732,7 @@
  void
  anv_state_table_finish(struct anv_state_table *table)
  {
-@@ -273,6 +287,7 @@
+@@ -273,6 +288,7 @@
     close(table->fd);
  }
  
@@ -738,7 +740,7 @@
  VkResult
  anv_state_table_add(struct anv_state_table *table, uint32_t *idx,
                      uint32_t count)
-@@ -363,6 +378,7 @@
+@@ -363,6 +379,7 @@
  anv_block_pool_expand_range(struct anv_block_pool *pool,
                              uint32_t center_bo_offset, uint32_t size);
  
@@ -746,7 +748,7 @@
  VkResult
  anv_block_pool_init(struct anv_block_pool *pool,
                      struct anv_device *device,
-@@ -432,6 +448,8 @@
+@@ -432,6 +449,8 @@
     return result;
  }
  
@@ -755,7 +757,7 @@
  void
  anv_block_pool_finish(struct anv_block_pool *pool)
  {
-@@ -449,6 +467,8 @@
+@@ -449,6 +468,8 @@
        close(pool->fd);
  }
  
@@ -764,7 +766,7 @@
  static VkResult
  anv_block_pool_expand_range(struct anv_block_pool *pool,
                              uint32_t center_bo_offset, uint32_t size)
-@@ -562,6 +582,7 @@
+@@ -562,6 +583,7 @@
     return VK_SUCCESS;
  }
  
@@ -772,7 +774,29 @@
  /** Returns current memory map of the block pool.
   *
   * The returned pointer points to the map for the memory at the specified
-@@ -957,7 +978,11 @@
+@@ -773,8 +795,21 @@
+           * hit futex_wait below.
+           */
+          new.next = state.next + block_size;
++#ifdef _WIN32
++         unsigned grow_failures = 0;
++#endif
+          do {
+             new.end = anv_block_pool_grow(pool, pool_state, block_size);
++#ifdef _WIN32
++            if (new.end == 0) {
++               if (++grow_failures == 64) {
++                  fprintf(stderr, "HasVK/WDDM: out of memory growing the %s pool (%u bytes); cannot continue\n",
++                          pool->name, pool->size);
++                  abort();
++               }
++               if (grow_failures > 1) os_time_sleep(1000);
++            }
++#endif
+          } while (new.end < new.next);
+ 
+          old.u64 = __sync_lock_test_and_set(&pool_state->u64, new.u64);
+@@ -957,7 +992,11 @@
        state_i->alloc_size = block_size;
        state_i->offset = pool->start_offset + chunk_offset + block_size * i;
        state_i->map = anv_block_pool_map(&pool->block_pool,
@@ -784,7 +808,7 @@
                                          state_i->alloc_size);
     }
  
-@@ -1042,6 +1067,9 @@
+@@ -1042,6 +1081,9 @@
        if (state) {
           unsigned chunk_size = anv_state_pool_get_bucket_size(b);
           int32_t chunk_offset = state->offset;
@@ -794,7 +818,7 @@
  
           /* First lets update the state we got to its new size. offset and map
            * remain the same.
-@@ -1470,7 +1498,7 @@
+@@ -1470,7 +1512,7 @@
        return NULL; /* TODO */
  
     struct anv_bo *current_bo =
@@ -803,7 +827,7 @@
     if (current_bo) {
        anv_device_release_bo(device, bo);
        return current_bo;
-@@ -1500,6 +1528,7 @@
+@@ -1500,6 +1542,7 @@
     pthread_mutex_destroy(&cache->mutex);
  }
  
@@ -811,7 +835,7 @@
  #define ANV_BO_CACHE_SUPPORTED_FLAGS \
     (EXEC_OBJECT_WRITE | \
      EXEC_OBJECT_ASYNC | \
-@@ -2021,3 +2050,5 @@
+@@ -2021,3 +2064,5 @@
      */
     pthread_mutex_unlock(&cache->mutex);
  }
@@ -1945,7 +1969,7 @@
 +    * type 1 is GPU-only memory without a CPU mapping. */
 +   physical->memory.heap_count = 1;
 +   physical->memory.type_count = 2;
-+   physical->memory.heaps[0] = (struct anv_memory_heap){.size = ANV_WDDM_HEAP_BYTES, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
++   physical->memory.heaps[0] = (struct anv_memory_heap){.size = anv_wddm_heap_bytes(), .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
 +   physical->memory.types[0] = (struct anv_memory_type){
 +      .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
 +                       VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
@@ -2081,7 +2105,7 @@
 +   memset(properties, 0, sizeof(*properties));
 +   properties->memoryHeapCount = physical->memory.heap_count;
 +   properties->memoryTypeCount = physical->memory.type_count;
-+   properties->memoryHeaps[0] = (VkMemoryHeap){ANV_WDDM_HEAP_BYTES, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
++   properties->memoryHeaps[0] = (VkMemoryHeap){anv_wddm_heap_bytes(), VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
 +   for (uint32_t i = 0; i < physical->memory.type_count; ++i)
 +      properties->memoryTypes[i] = (VkMemoryType){physical->memory.types[i].propertyFlags, physical->memory.types[i].heapIndex};
 +}
@@ -2588,7 +2612,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm.h
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,169 @@
 +/* Private Windows platform state for the HasVK port. */
 +#pragma once
 +#include "anv_private.h"
@@ -2602,6 +2626,23 @@
 + * budget is what the single Vulkan heap reports. */
 +#define ANV_WDDM_MAX_BO_BYTES (1ull << 30)   /* = hasvk::wddm::kMaxLinearAllocationBytes */
 +#define ANV_WDDM_HEAP_BYTES (3ull << 30)
++#define ANV_WDDM_INTERNAL_BYTES (1ull << 30)
++/* The heap size reported and enforced: ANV_WDDM_HEAP_BYTES, or
++ * HASVK_WDDM_HEAP_MB (64 MiB .. 3 GiB) for out-of-memory tests that must not
++ * exhaust the machine's own memory. */
++static inline uint64_t
++anv_wddm_heap_bytes(void)
++{
++   static uint64_t bytes;
++   if (!bytes) {
++      const char *mb = getenv("HASVK_WDDM_HEAP_MB");
++      uint64_t value = mb ? strtoull(mb, NULL, 10) << 20 : ANV_WDDM_HEAP_BYTES;
++      if (value < (64ull << 20)) value = 64ull << 20;
++      if (value > ANV_WDDM_HEAP_BYTES) value = ANV_WDDM_HEAP_BYTES;
++      bytes = value;
++   }
++   return bytes;
++}
 +#define ANV_WDDM_MAX_BOS 65536u
 +#define ANV_WDDM_EVENT_SLOTS 4096u   /* 8 bytes each in one BO */
 +#define ANV_WDDM_ENTRY_SLOTS 64u     /* 128 bytes each in the 8192-byte entry BO */
@@ -2621,7 +2662,12 @@
 +   bool custom_border_colors_initialized;
 +   bool device_mutex_initialized;
 +   uint32_t initialized_pools;
-+   uint64_t allocated_bytes;
++   /* All BOs; of them, application memory (vkAllocateMemory, name "user"),
++    * which alone is limited by the reported heap. Driver-internal BOs (state
++    * pools, command blocks, query and descriptor pools) have their own limit,
++    * ANV_WDDM_INTERNAL_BYTES: an application that fills the heap can still
++    * record and submit work. */
++   uint64_t allocated_bytes, user_bytes;
 +   uint32_t allocation_count;
 +   /* BO ids index the per-batch dependency bitsets, so they are recycled
 +    * rather than growing with every allocation the device ever made. */
@@ -2738,7 +2784,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_memory.c
-@@ -0,0 +1,503 @@
+@@ -0,0 +1,511 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -2806,7 +2852,10 @@
 +{
 +   return alloc_bo(device, name, size, flags, explicit_address, true, out);
 +}
-+/* cpu_map = false: GPU-only application memory (memory type 1), no CPU mapping. */
++/* cpu_map = false: GPU-only application memory (memory type 1), no CPU mapping.
++ * The anv_bo itself comes from malloc, as upstream's bo_cache: block pools grow
++ * from inside vkCmd* without an error path, so they must not depend on the
++ * application's allocation callbacks (CTS simulate_oom fails all of them). */
 +static VkResult
 +alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo_alloc_flags flags,
 +         uint64_t explicit_address, bool cpu_map, struct anv_bo **out)
@@ -2820,13 +2869,16 @@
 +   if (!size || size > ANV_WDDM_MAX_BO_BYTES)
 +      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 +   size = align64(size, 4096);
-+   struct anv_bo *bo = vk_zalloc(&device->vk.alloc, sizeof(*bo), 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
++   struct anv_bo *bo = calloc(1, sizeof(*bo));
 +   if (!bo) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 +   struct anv_wddm_device_state *w = device->wddm;
 +   mtx_lock(&w->mutex);
 +   if (!w->bo_ids) w->bo_ids = calloc(BITSET_WORDS(ANV_WDDM_MAX_BOS + 1), sizeof(BITSET_WORD));
-+   if (!w->bo_ids || w->allocation_count >= ANV_WDDM_MAX_BOS || size > ANV_WDDM_HEAP_BYTES - w->allocated_bytes) {
-+      mtx_unlock(&w->mutex); vk_free(&device->vk.alloc, bo);
++   const bool user = !strcmp(name, "user");
++   const uint64_t limit = user ? anv_wddm_heap_bytes() : ANV_WDDM_INTERNAL_BYTES;
++   const uint64_t used = user ? w->user_bytes : w->allocated_bytes - w->user_bytes;
++   if (!w->bo_ids || w->allocation_count >= ANV_WDDM_MAX_BOS || size > limit - used) {
++      mtx_unlock(&w->mutex); free(bo);
 +      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 +   }
 +   struct util_vma_heap *heap = fixed ? &w->state_heap : &w->client_heap;
@@ -2835,7 +2887,7 @@
 +   if (!address || (cpu_map ? hasvk_wddm_bo_create(w->transport, size, address, 1, &bo->wddm_bo)
 +                            : hasvk_wddm_bo_create_unmapped(w->transport, size, address, &bo->wddm_bo))) {
 +      if (address) util_vma_heap_free(heap, address, size);
-+      mtx_unlock(&w->mutex); vk_free(&device->vk.alloc, bo);
++      mtx_unlock(&w->mutex); free(bo);
 +      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 +   }
 +   bo->name = name; bo->size = size; bo->offset = intel_canonical_address(address);
@@ -2858,9 +2910,10 @@
 +      /* w->mutex is still held here. */
 +      hasvk_wddm_bo_destroy(bo->wddm_bo); util_vma_heap_free(heap, address, size); BITSET_CLEAR(w->bo_ids, id);
 +      mtx_unlock(&w->mutex);
-+      vk_free(&device->vk.alloc, bo); return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++      free(bo); return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 +   }
 +   w->allocated_bytes += size; ++w->allocation_count;
++   if (user) w->user_bytes += size;
 +   mtx_unlock(&w->mutex);
 +   { static int profile = -1; if (profile < 0) profile = getenv("HASVK_WDDM_PROFILE") != NULL;
 +     if (profile) fprintf(stderr, "WDDM BO alloc %s %llu\n", name, (unsigned long long)size); }
@@ -2876,7 +2929,7 @@
 +                                 struct anv_bo **out, uint32_t *share, uint64_t *pitch)
 +{
 +   *out = NULL;
-+   struct anv_bo *bo = vk_zalloc(&device->vk.alloc, sizeof(*bo), 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
++   struct anv_bo *bo = calloc(1, sizeof(*bo));
 +   if (!bo) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 +   struct anv_wddm_device_state *w = device->wddm;
 +   mtx_lock(&w->mutex);
@@ -2885,7 +2938,7 @@
 +       hasvk_wddm_bo_create_window_surface(w->transport, width, height, &bo->wddm_bo) ||
 +       hasvk_wddm_bo_window_surface_info(bo->wddm_bo, share, pitch)) {
 +      if (bo->wddm_bo) hasvk_wddm_bo_destroy(bo->wddm_bo);
-+      mtx_unlock(&w->mutex); vk_free(&device->vk.alloc, bo);
++      mtx_unlock(&w->mutex); free(bo);
 +      return vk_errorf(device, VK_ERROR_OUT_OF_DEVICE_MEMORY, "window surface: %s", hasvk_wddm_error());
 +   }
 +   bo->name = "window surface"; bo->size = hasvk_wddm_bo_size(bo->wddm_bo);
@@ -2931,9 +2984,10 @@
 +      if (!bo->is_external)   /* window surfaces: the kernel chose and frees the address */
 +         util_vma_heap_free(bo->has_fixed_address ? &w->state_heap : &w->client_heap, intel_48b_address(bo->offset), bo->size);
 +      w->allocated_bytes -= bo->size; --w->allocation_count; BITSET_CLEAR(w->bo_ids, bo->gem_handle);
++      if (bo->name && !strcmp(bo->name, "user")) w->user_bytes -= bo->size;
 +   }
 +   mtx_unlock(&w->mutex);
-+   vk_free(&device->vk.alloc, bo);
++   free(bo);
 +}
 +
 +VKAPI_ATTR VkResult VKAPI_CALL

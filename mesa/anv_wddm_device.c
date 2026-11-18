@@ -313,7 +313,7 @@ static VkResult enumerate(struct vk_instance *base)
     * type 1 is GPU-only memory without a CPU mapping. */
    physical->memory.heap_count = 1;
    physical->memory.type_count = 2;
-   physical->memory.heaps[0] = (struct anv_memory_heap){.size = ANV_WDDM_HEAP_BYTES, .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
+   physical->memory.heaps[0] = (struct anv_memory_heap){.size = anv_wddm_heap_bytes(), .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
    physical->memory.types[0] = (struct anv_memory_type){
       .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                        VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
@@ -449,7 +449,7 @@ VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceMemoryProperties(VkPhysicalDevic
    memset(properties, 0, sizeof(*properties));
    properties->memoryHeapCount = physical->memory.heap_count;
    properties->memoryTypeCount = physical->memory.type_count;
-   properties->memoryHeaps[0] = (VkMemoryHeap){ANV_WDDM_HEAP_BYTES, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
+   properties->memoryHeaps[0] = (VkMemoryHeap){anv_wddm_heap_bytes(), VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
    for (uint32_t i = 0; i < physical->memory.type_count; ++i)
       properties->memoryTypes[i] = (VkMemoryType){physical->memory.types[i].propertyFlags, physical->memory.types[i].heapIndex};
 }

@@ -11,6 +11,23 @@
  * budget is what the single Vulkan heap reports. */
 #define ANV_WDDM_MAX_BO_BYTES (1ull << 30)   /* = hasvk::wddm::kMaxLinearAllocationBytes */
 #define ANV_WDDM_HEAP_BYTES (3ull << 30)
+#define ANV_WDDM_INTERNAL_BYTES (1ull << 30)
+/* The heap size reported and enforced: ANV_WDDM_HEAP_BYTES, or
+ * HASVK_WDDM_HEAP_MB (64 MiB .. 3 GiB) for out-of-memory tests that must not
+ * exhaust the machine's own memory. */
+static inline uint64_t
+anv_wddm_heap_bytes(void)
+{
+   static uint64_t bytes;
+   if (!bytes) {
+      const char *mb = getenv("HASVK_WDDM_HEAP_MB");
+      uint64_t value = mb ? strtoull(mb, NULL, 10) << 20 : ANV_WDDM_HEAP_BYTES;
+      if (value < (64ull << 20)) value = 64ull << 20;
+      if (value > ANV_WDDM_HEAP_BYTES) value = ANV_WDDM_HEAP_BYTES;
+      bytes = value;
+   }
+   return bytes;
+}
 #define ANV_WDDM_MAX_BOS 65536u
 #define ANV_WDDM_EVENT_SLOTS 4096u   /* 8 bytes each in one BO */
 #define ANV_WDDM_ENTRY_SLOTS 64u     /* 128 bytes each in the 8192-byte entry BO */
@@ -30,7 +47,12 @@ struct anv_wddm_device_state {
    bool custom_border_colors_initialized;
    bool device_mutex_initialized;
    uint32_t initialized_pools;
-   uint64_t allocated_bytes;
+   /* All BOs; of them, application memory (vkAllocateMemory, name "user"),
+    * which alone is limited by the reported heap. Driver-internal BOs (state
+    * pools, command blocks, query and descriptor pools) have their own limit,
+    * ANV_WDDM_INTERNAL_BYTES: an application that fills the heap can still
+    * record and submit work. */
+   uint64_t allocated_bytes, user_bytes;
    uint32_t allocation_count;
    /* BO ids index the per-batch dependency bitsets, so they are recycled
     * rather than growing with every allocation the device ever made. */

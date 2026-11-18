@@ -27,6 +27,8 @@ if ($taskMesaBuild.graphicsModulesBuilt) {
     $taskAttempt.stage='wsi'
     & (Join-Path $PSScriptRoot 'build-icd.ps1') -SkipBuild | Out-Null
     & (Join-Path $PSScriptRoot 'test-wsi.ps1') -SkipBuild
+    $taskAttempt.stage='oom'
+    & (Join-Path $PSScriptRoot 'test-oom.ps1') -SkipBuild
 }
 $taskAttempt.stage='csharp-controls'
 & (Join-Path $taskRoot '.tools\python\python.exe') (Join-Path $PSScriptRoot 'render-readback.py')
