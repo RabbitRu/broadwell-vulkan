@@ -628,7 +628,27 @@
  }
  
  static inline bool
-@@ -3762,6 +3790,10 @@
+@@ -3635,12 +3663,19 @@
+ void
+ anv_dump_pipe_bits(enum anv_pipe_bits bits);
+ 
++#ifdef _WIN32
++extern bool anv_wddm_profile_pipe_bits_enabled;
++void anv_wddm_profile_pipe_bits(uint32_t bits, const char *reason);
++#endif
+ static inline void
+ anv_add_pending_pipe_bits(struct anv_cmd_buffer* cmd_buffer,
+                           enum anv_pipe_bits bits,
+                           const char* reason)
+ {
+    cmd_buffer->state.pending_pipe_bits |= bits;
++#ifdef _WIN32
++   if (anv_wddm_profile_pipe_bits_enabled && bits) anv_wddm_profile_pipe_bits(bits, reason);
++#endif
+    if (INTEL_DEBUG(DEBUG_PIPE_CONTROL) && bits)
+    {
+       fputs("pc: add ", stderr);
+@@ -3762,6 +3797,10 @@
                                 VkPerformanceConfigurationINTEL,
                                 VK_OBJECT_TYPE_PERFORMANCE_CONFIGURATION_INTEL)
  
@@ -639,7 +659,7 @@
  #define anv_genX(devinfo, thing) ({             \
     __typeof(&gfx7_##thing) genX_thing;          \
     switch ((devinfo)->verx10) {                 \
-@@ -3779,6 +3811,7 @@
+@@ -3779,6 +3818,7 @@
     }                                            \
     genX_thing;                                  \
  })
@@ -963,7 +983,20 @@
  
        plane = aspect - VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT;
     } else {
-@@ -623,7 +636,7 @@
+@@ -590,6 +603,12 @@
+                                  &image->planes[plane].aux_surface.isl);
+       if (!ok)
+          return VK_SUCCESS;
++#ifdef _WIN32
++      image->planes[plane].aux_usage = ISL_AUX_USAGE_HIZ;
++      return add_surface(device, image, &image->planes[plane].aux_surface,
++                         ANV_IMAGE_MEMORY_BINDING_PLANE_0 + plane,
++                         ANV_OFFSET_IMPLICIT);
++#endif
+    } else if ((aspect & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV) && image->vk.samples == 1) {
+       if (image->n_planes != 1) {
+          /* Multiplanar images seem to hit a sampler bug with CCS and R16G16
+@@ -623,7 +642,7 @@
        enum anv_image_memory_binding binding =
           ANV_IMAGE_MEMORY_BINDING_PLANE_0 + plane;
  
@@ -972,7 +1005,7 @@
           binding = ANV_IMAGE_MEMORY_BINDING_PRIVATE;
  
        result = add_surface(device, image, &image->planes[plane].aux_surface,
-@@ -849,7 +862,7 @@
+@@ -849,7 +868,7 @@
            * buffer (ANV_IMAGE_MEMORY_BINDING_PRIVATE).
            */
           if (anv_image_is_externally_shared(image) &&
@@ -981,7 +1014,7 @@
              binding = ANV_IMAGE_MEMORY_BINDING_PRIVATE;
           }
  
-@@ -913,14 +926,14 @@
+@@ -913,14 +932,14 @@
                       const struct anv_image *image)
  {
     /* Image must have a modifier if and only if it has modifier tiling. */
@@ -999,7 +1032,7 @@
  
     /* Driver must support the modifier. */
     assert(isl_drm_modifier_get_score(device->info, isl_mod_info->modifier));
-@@ -1175,6 +1188,24 @@
+@@ -1175,6 +1194,24 @@
     const struct isl_drm_modifier_info *isl_mod_info = NULL;
     VkResult r;
  
@@ -1024,7 +1057,7 @@
     vk_image_init(&device->vk, &image->vk, pCreateInfo);
  
     image->vk.usage = anv_image_create_usage(pCreateInfo, image->vk.usage);
-@@ -1198,8 +1229,10 @@
+@@ -1198,8 +1235,10 @@
        }
  
        assert(isl_mod_info);
@@ -1036,7 +1069,7 @@
     }
  
     for (int i = 0; i < ANV_IMAGE_MEMORY_BINDING_END; ++i) {
-@@ -1769,7 +1802,7 @@
+@@ -1769,7 +1808,7 @@
           UNREACHABLE("bad VkImageAspectFlags");
        }
  
@@ -1045,7 +1078,7 @@
           assert(image->n_planes == 1);
           /* If the memory binding differs between primary and aux, then the
            * returned offset will be incorrect.
-@@ -1922,7 +1955,7 @@
+@@ -1922,7 +1961,7 @@
        assert(image->vk.aspects == VK_IMAGE_ASPECT_COLOR_BIT);
  
        enum isl_aux_state aux_state =
@@ -1054,6 +1087,24 @@
  
        switch (aux_state) {
        case ISL_AUX_STATE_AUX_INVALID:
+@@ -2002,6 +2041,17 @@
+    }
+ 
+    switch (aux_usage) {
++#ifdef _WIN32
++   case ISL_AUX_USAGE_HIZ:
++      if (aux_supported) {
++         assert(clear_supported);
++         return ISL_AUX_STATE_COMPRESSED_CLEAR;
++      } else if (read_only) {
++         return ISL_AUX_STATE_RESOLVED;
++      } else {
++         return ISL_AUX_STATE_AUX_INVALID;
++      }
++#endif
+    case ISL_AUX_USAGE_CCS_D:
+       /* We only support clear in exactly one state */
+       if (layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
 --- a/src/intel/blorp/blorp_clear.c
 +++ b/src/intel/blorp/blorp_clear.c
 @@ -29,7 +29,11 @@
@@ -1578,7 +1629,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,926 @@
+@@ -0,0 +1,956 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -1994,6 +2045,15 @@
 +    * multisample resolve into mip level 3 came out wrong (CTS renderpass1
 +    * multisample_resolve.*_resolve_level_3). HiZ and MCS stay on. */
 +   BITSET_SET(intel_debug, DEBUG_NO_CCS);
++   /* A failed driver assert would otherwise open a modal CRT message box and
++    * keep the application (a game, an unattended test) waiting for a click:
++    * print it to stderr and end the process instead, without the abort()
++    * dialog or Windows Error Reporting. HASVK_WDDM_ASSERT_DIALOG=1 keeps the
++    * dialog (for attaching a debugger). */
++   if (!getenv("HASVK_WDDM_ASSERT_DIALOG")) {
++      _set_error_mode(_OUT_TO_STDERR);
++      _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
++   }
 +   *out = anv_instance_to_handle(instance);
 +   return VK_SUCCESS;
 +}
@@ -2168,6 +2228,23 @@
 +   const int failed = anv_wddm_execute_commands(device, work->command_buffers, work->command_buffer_count,
 +                                                pending->serial, present_token, true, &pending->seq);
 +   const uint64_t seq = pending->seq;   /* the completion thread frees pending */
++   static int stats = -1;
++   if (stats < 0) stats = getenv("HASVK_WDDM_STATS") != NULL;
++   if (stats && !failed) {
++      ++w->stats_submits;
++      const uint64_t now = os_time_get_nano() / 1000000;
++      if (!w->stats_last_ms) w->stats_last_ms = now;
++      if (now - w->stats_last_ms >= 5000) {
++         const double s = (now - w->stats_last_ms) / 1000.0;
++         fprintf(stderr, "HasVK/WDDM stats: %.0f submits/s, %.0f command buffers/s, %.1f MiB/s of commands, %.1f KiB per command buffer\n",
++                 w->stats_submits / s, w->stats_command_buffers / s, w->stats_command_bytes / s / 1048576.0,
++                 w->stats_command_buffers ? w->stats_command_bytes / 1024.0 / w->stats_command_buffers : 0.0);
++         w->stats_submits = w->stats_command_buffers = w->stats_command_bytes = 0; w->stats_last_ms = now;
++      }
++   }
++#ifdef HASVK_WDDM_GRAPHICS
++   anv_wddm_profile_report(device);
++#endif
 +   if (!failed) {
 +      mtx_lock(&w->mutex);
 +      list_addtail(&pending->link, &w->pending);
@@ -2284,6 +2361,10 @@
 +#endif
 +   VkResult result = vk_device_init(&device->vk, &physical->vk, &dispatch, info, allocator);
 +   if (result != VK_SUCCESS) { vk_free2(&physical->instance->vk.alloc, allocator, device); return result; }
++#ifdef HASVK_WDDM_GRAPHICS
++   /* After vk_device_init, which adds the vk_common entry points. */
++   anv_wddm_profile_install(&device->vk.dispatch_table);
++#endif
 +   anv_device_set_physical(device, physical);
 +   device->vk.command_buffer_ops = &anv_cmd_buffer_ops;
 +   /* As upstream anv_CreateDevice: shaders get bounds-checked UBO/SSBO access
@@ -2507,7 +2588,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm.h
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,147 @@
 +/* Private Windows platform state for the HasVK port. */
 +#pragma once
 +#include "anv_private.h"
@@ -2562,6 +2643,8 @@
 +    * completion_exit are protected by mutex and announced on condition. */
 +   struct list_head pending;
 +   uint64_t verified_seq;
++   /* HASVK_WDDM_STATS=1: command stream volume, printed every 5 s by submit(). */
++   uint64_t stats_command_bytes, stats_command_buffers, stats_submits, stats_last_ms;
 +   thrd_t completion_thread;
 +   bool completion_thread_started, completion_exit;
 +};
@@ -2608,6 +2691,10 @@
 +    * present, the commands run without it and *present_refused is set. */
 +   uint64_t present_token;
 +   int *present_refused;
++   /* HASVK_WDDM_PROFILE_PASSES (anv_wddm_profile.c): timestamp slot + 1 of
++    * the open render pass; since vkBeginCommandBuffer: draws, the bound
++    * graphics pipeline's kill_pixel (1 no, 2 yes) and how often it changed. */
++   uint32_t profile_slot, profile_draws, profile_kill, profile_kill_switches;
 +};
 +/* Executes command buffers in order, chaining them into as few kernel
 + * submissions as their event waits and repetitions allow. serial != 0: the
@@ -2633,6 +2720,8 @@
 +void anv_wddm_present_redirected_finish(VkDevice device, void *state);
 +#endif
 +#ifdef HASVK_WDDM_GRAPHICS
++void anv_wddm_profile_install(struct vk_device_dispatch_table *dispatch);
++void anv_wddm_profile_report(struct anv_device *device);
 +void anv_wddm_cmd_state_finish(struct anv_cmd_buffer *cmd);
 +void anv_wddm_init_border_colors(struct anv_device *device);
 +struct anv_address anv_wddm_event_address(struct anv_device *device, const struct anv_event *event);
@@ -3455,7 +3544,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_command.c
-@@ -0,0 +1,517 @@
+@@ -0,0 +1,520 @@
 +/* Windows lifetime and submission backing for HasVK command buffers.
 + * Packet emission, descriptor binding and push packing use upstream HasVK.
 + *
@@ -3883,8 +3972,11 @@
 +      *(uint64_t *)((char *)s->bo->map + marker_offset) = 0;
 +      /* Command BOs are not flushed by the transport: write back exactly this
 +       * command buffer's chunks (with its tail and marker) now. */
-+      for (uint32_t c = 0; c < s->chunk_count; ++c)
++      for (uint32_t c = 0; c < s->chunk_count; ++c) {
 +         if (hasvk_wddm_bo_flush(s->chunks[c].bo->wddm_bo)) return -1;
++         w->stats_command_bytes += s->chunks[c].length;
++      }
++      ++w->stats_command_buffers;
 +      s->run = w->runs + 1;
 +      for (uint32_t k = 0; k < s->wait_count; ++k) {
 +         uint32_t slot;
@@ -4180,6 +4272,460 @@
 +   vk_free(&device->vk.alloc, w);
 +}
 +#endif
+--- /dev/null
++++ b/src/intel/vulkan_hasvk/anv_wddm_profile.c
+@@ -0,0 +1,451 @@
++/* HASVK_WDDM_PROFILE_PASSES=1: GPU time per render pass, dispatch and
++ * transfer command, for finding where an application's frame time goes.
++ *
++ * The device dispatch table is wrapped before vk_device_init, so the loader
++ * hands the application these entry points. Each profiled command is bracketed
++ * by two bottom-of-pipe timestamps (which serialize the GPU around it, so the
++ * numbers are the command's own time) in a ring of query pairs. submit()
++ * calls anv_wddm_profile_report, which collects every pair the GPU has
++ * written, resets it from the host and every 5 s prints the most expensive
++ * buckets (render pass + extent, dispatch size, transfer kind) per frame.
++ * Render passes also carry pipeline statistics (vertices, primitives, VS/FS
++ * invocations), their attachments' aux usage (HiZ) and how often the bound
++ * pipeline's kill_pixel changed (each change toggles the Gfx8 PMA fix).
++ * The report adds the shaders of depth-only pipelines and the pipe
++ * flush/stall requests by reason (anv_add_pending_pipe_bits).
++ * HASVK_WDDM_PROFILE_DRAWS=1 additionally times every draw, by pipeline.
++ * Diagnostic only: one profiled device per process. */
++#include "anv_wddm.h"
++#include "vk_render_pass.h"
++#include "vk_framebuffer.h"
++#include "util/u_atomic.h"
++#include "util/os_time.h"
++#include <stdio.h>
++#include <stdlib.h>
++
++#define PAIRS 16384u
++#define BUCKETS 512u
++#define STATS_FLAGS (VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT | VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT | \
++   VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT | VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT | \
++   VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT | VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT)
++
++enum kind { KIND_PASS = 1, KIND_DISPATCH, KIND_COPY, KIND_BLIT, KIND_CLEAR, KIND_RESOLVE, KIND_FILL, KIND_DRAW };
++static const char *const kind_names[] = {"", "pass", "dispatch", "copy", "blit", "clear", "resolve", "fill/update", "draw"};
++
++struct meta {
++   uint32_t kind, width, height, draws;
++   uint64_t object;   /* pass: VkRenderPass; draw: anv_graphics_pipeline */
++   uint32_t aux;      /* pass: isl_aux_usage of attachment i in bits 4i..4i+3 */
++   uint32_t kill_switches;   /* pass: binds that changed pipeline->kill_pixel (PMA fix toggles) */
++};
++struct bucket {
++   struct meta key;
++   uint64_t count, ticks, draws, kill_switches;
++   uint64_t stats[6];   /* IA vertices, IA primitives, VS, clipper in, clipper out, FS invocations */
++   char text[200];   /* described when created: the render pass may be destroyed later */
++};
++static void describe(const struct meta *m, char *out, size_t size);
++
++/* Graphics pipelines seen at bind time: shader statistics, and binds of the
++ * ones without colour writes (depth-only: shadow maps). Looked up by address,
++ * never dereferenced later (the pipeline may be gone). */
++struct depth_pipeline { const void *pipeline; uint64_t binds; bool depth_only; char text[200]; };
++#define DEPTH_PIPELINES 1024u
++
++static struct {
++   struct vk_device_dispatch_table orig;
++   struct depth_pipeline depth_pipelines[DEPTH_PIPELINES];
++   uint32_t depth_pipeline_count;
++   struct anv_device *device;
++   VkQueryPool pool, stats_pool;
++   mtx_t mutex;   /* pool creation and reports */
++   uint32_t next;
++   uint32_t state[PAIRS];   /* 0 free, 1 recorded */
++   struct meta meta[PAIRS];
++   struct bucket buckets[BUCKETS];
++   uint32_t bucket_count;
++   uint64_t frames, window_start_ms, skipped;
++} g;
++
++/* anv_add_pending_pipe_bits requests, by reason (a string literal, so its
++ * address identifies it). */
++bool anv_wddm_profile_pipe_bits_enabled;
++#define PIPE_REASONS 128u
++static struct { const char *reason; uint32_t stall_bits; uint64_t count; } pipe_reasons[PIPE_REASONS];
++static uint32_t pipe_reason_count;
++static mtx_t pipe_mutex;
++void anv_wddm_profile_pipe_bits(uint32_t bits, const char *reason)
++{
++   mtx_lock(&pipe_mutex);
++   uint32_t i = 0;
++   while (i < pipe_reason_count && pipe_reasons[i].reason != reason) ++i;
++   if (i == pipe_reason_count && i < PIPE_REASONS) { pipe_reasons[i].reason = reason; pipe_reasons[i].stall_bits = 0; ++pipe_reason_count; }
++   if (i < pipe_reason_count) { ++pipe_reasons[i].count; pipe_reasons[i].stall_bits |= bits; }
++   mtx_unlock(&pipe_mutex);
++}
++
++static int draws_enabled(void)
++{
++   static int on = -1;
++   if (on < 0) on = getenv("HASVK_WDDM_PROFILE_DRAWS") != NULL;
++   return on;
++}
++
++static int enabled(void)
++{
++   static int on = -1;
++   if (on < 0) on = getenv("HASVK_WDDM_PROFILE_PASSES") != NULL;
++   return on;
++}
++
++static VkDevice device_handle(struct anv_device *device) { return anv_device_to_handle(device); }
++
++/* Returns slot + 1, or 0 if this command is not profiled. */
++static uint32_t begin(struct anv_cmd_buffer *cmd, const struct meta *meta)
++{
++   if (!cmd->wddm || (g.device && g.device != cmd->device)) return 0;
++   if (!g.pool) {
++      mtx_lock(&g.mutex);
++      if (!g.pool && !g.device) {
++         VkQueryPoolCreateInfo info = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
++                                       .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = PAIRS * 2};
++         VkQueryPool pool;
++         if (g.orig.CreateQueryPool(device_handle(cmd->device), &info, NULL, &pool) == VK_SUCCESS) {
++            g.orig.ResetQueryPool(device_handle(cmd->device), pool, 0, PAIRS * 2);
++            info.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS; info.queryCount = PAIRS;
++            info.pipelineStatistics = STATS_FLAGS;
++            VkQueryPool stats_pool;
++            if (g.orig.CreateQueryPool(device_handle(cmd->device), &info, NULL, &stats_pool) == VK_SUCCESS) {
++               g.orig.ResetQueryPool(device_handle(cmd->device), stats_pool, 0, PAIRS);
++               g.stats_pool = stats_pool; g.pool = pool;
++            }
++         }
++         g.device = cmd->device;
++      }
++      mtx_unlock(&g.mutex);
++      if (!g.pool || g.device != cmd->device) return 0;
++   }
++   const uint32_t slot = p_atomic_inc_return(&g.next) % PAIRS;
++   if (p_atomic_cmpxchg(&g.state[slot], 0, 1) != 0) { p_atomic_inc(&g.skipped); return 0; }
++   g.meta[slot] = *meta;
++   g.orig.CmdWriteTimestamp(anv_cmd_buffer_to_handle(cmd), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g.pool, slot * 2);
++   if (meta->kind == KIND_PASS) g.orig.CmdBeginQuery(anv_cmd_buffer_to_handle(cmd), g.stats_pool, slot, 0);
++   return slot + 1;
++}
++
++static void end(struct anv_cmd_buffer *cmd, uint32_t slot)
++{
++   if (slot && g.meta[slot - 1].kind == KIND_PASS) g.orig.CmdEndQuery(anv_cmd_buffer_to_handle(cmd), g.stats_pool, slot - 1);
++   if (slot) g.orig.CmdWriteTimestamp(anv_cmd_buffer_to_handle(cmd), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g.pool, (slot - 1) * 2 + 1);
++}
++
++/* ---- render passes ---- */
++static void pass_begin(VkCommandBuffer handle, const VkRenderPassBeginInfo *info)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   if (!cmd->wddm || cmd->wddm->profile_slot) return;
++   struct meta meta = {KIND_PASS, info->renderArea.extent.width, info->renderArea.extent.height, 0,
++                       (uint64_t)(uintptr_t)info->renderPass, 0};
++   VK_FROM_HANDLE(vk_framebuffer, fb, info->framebuffer);
++   if (fb && !(fb->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT))
++      for (uint32_t i = 0; i < fb->attachment_count && i < 8; ++i) {
++         ANV_FROM_HANDLE(anv_image_view, view, fb->attachments[i]);
++         meta.aux |= ((uint32_t)view->image->planes[0].aux_usage & 15) << (4 * i);
++      }
++   cmd->wddm->profile_slot = begin(cmd, &meta);
++}
++static void pass_end(VkCommandBuffer handle)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   if (!cmd->wddm || !cmd->wddm->profile_slot) return;
++   end(cmd, cmd->wddm->profile_slot);
++   cmd->wddm->profile_slot = 0;
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdBeginRenderPass(VkCommandBuffer c, const VkRenderPassBeginInfo *info, VkSubpassContents contents)
++{
++   pass_begin(c, info);
++   g.orig.CmdBeginRenderPass(c, info, contents);
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdBeginRenderPass2(VkCommandBuffer c, const VkRenderPassBeginInfo *info, const VkSubpassBeginInfo *sub)
++{
++   pass_begin(c, info);
++   g.orig.CmdBeginRenderPass2(c, info, sub);
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdEndRenderPass(VkCommandBuffer c)
++{
++   g.orig.CmdEndRenderPass(c);
++   pass_end(c);
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdEndRenderPass2(VkCommandBuffer c, const VkSubpassEndInfo *info)
++{
++   g.orig.CmdEndRenderPass2(c, info);
++   pass_end(c);
++}
++
++/* ---- draws (counted into the current pass; secondaries add theirs when executed) ---- */
++static void count_draw(VkCommandBuffer handle)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   if (!cmd->wddm) return;
++   ++cmd->wddm->profile_draws;
++   if (cmd->wddm->profile_slot) ++g.meta[cmd->wddm->profile_slot - 1].draws;
++}
++/* HASVK_WDDM_PROFILE_DRAWS=1: every draw timed on its own, by pipeline. */
++static uint32_t draw_begin(VkCommandBuffer handle, uint64_t vertices)
++{
++   count_draw(handle);
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   if (!draws_enabled() || !cmd->wddm || !cmd->state.gfx.pipeline) return 0;
++   const struct meta meta = {KIND_DRAW, 0, 0, (uint32_t)MIN2(vertices, UINT32_MAX), (uint64_t)(uintptr_t)cmd->state.gfx.pipeline, 0, 0};
++   return begin(cmd, &meta);
++}
++static void draw_end(VkCommandBuffer handle, uint32_t slot)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   end(cmd, slot);
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdDraw(VkCommandBuffer c, uint32_t a, uint32_t b, uint32_t d, uint32_t e)
++{ uint32_t s = draw_begin(c, (uint64_t)a * b); g.orig.CmdDraw(c, a, b, d, e); draw_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdDrawIndexed(VkCommandBuffer c, uint32_t a, uint32_t b, uint32_t d, int32_t e, uint32_t f)
++{ uint32_t s = draw_begin(c, (uint64_t)a * b); g.orig.CmdDrawIndexed(c, a, b, d, e, f); draw_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdDrawIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s)
++{ uint32_t t = draw_begin(c, 0); g.orig.CmdDrawIndirect(c, b, o, n, s); draw_end(c, t); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdDrawIndexedIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s)
++{ uint32_t t = draw_begin(c, 0); g.orig.CmdDrawIndexedIndirect(c, b, o, n, s); draw_end(c, t); }
++static void note_depth_pipeline(const struct anv_graphics_pipeline *pipeline)
++{
++   bool depth_only = true;
++   for (uint32_t i = 0; i < MAX_RTS; ++i)
++      if (pipeline->color_comp_writes[i]) depth_only = false;
++   mtx_lock(&g.mutex);
++   uint32_t i = 0;
++   while (i < g.depth_pipeline_count && g.depth_pipelines[i].pipeline != pipeline) ++i;
++   if (i == g.depth_pipeline_count && i < DEPTH_PIPELINES) {
++      struct depth_pipeline *d = &g.depth_pipelines[g.depth_pipeline_count++];
++      d->pipeline = pipeline; d->binds = 0; d->depth_only = depth_only;
++      int n = snprintf(d->text, sizeof(d->text), "kill %d", pipeline->kill_pixel);
++      util_dynarray_foreach(&pipeline->base.executables, struct anv_pipeline_executable, e)
++         n += snprintf(d->text + n, sizeof(d->text) - n, " | %s SIMD%u %u inst %u cycles %u sends %u spills",
++                       _mesa_shader_stage_to_abbrev(e->stage), e->stats.dispatch_width, e->stats.instructions,
++                       e->stats.cycles, e->stats.sends, e->stats.spills);
++   }
++   if (i < g.depth_pipeline_count && depth_only) ++g.depth_pipelines[i].binds;
++   mtx_unlock(&g.mutex);
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdBindPipeline(VkCommandBuffer c, VkPipelineBindPoint point, VkPipeline handle)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, c);
++   ANV_FROM_HANDLE(anv_pipeline, pipeline, handle);
++   if (cmd->wddm && point == VK_PIPELINE_BIND_POINT_GRAPHICS) {
++      const uint32_t kill = anv_pipeline_to_graphics(pipeline)->kill_pixel ? 2 : 1;
++      if (cmd->wddm->profile_kill && cmd->wddm->profile_kill != kill) {
++         ++cmd->wddm->profile_kill_switches;   /* secondaries: added to the pass that executes them */
++         if (cmd->wddm->profile_slot) ++g.meta[cmd->wddm->profile_slot - 1].kill_switches;
++      }
++      cmd->wddm->profile_kill = kill;
++      note_depth_pipeline(anv_pipeline_to_graphics(pipeline));
++   }
++   g.orig.CmdBindPipeline(c, point, handle);
++}
++static VKAPI_ATTR VkResult VKAPI_CALL wrap_BeginCommandBuffer(VkCommandBuffer c, const VkCommandBufferBeginInfo *info)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, c);
++   const VkResult result = g.orig.BeginCommandBuffer(c, info);
++   if (cmd->wddm) { cmd->wddm->profile_slot = 0; cmd->wddm->profile_draws = 0; cmd->wddm->profile_kill = 0; cmd->wddm->profile_kill_switches = 0; }
++   return result;
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdExecuteCommands(VkCommandBuffer c, uint32_t count, const VkCommandBuffer *secondaries)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, c);
++   if (cmd->wddm && cmd->wddm->profile_slot)
++      for (uint32_t i = 0; i < count; ++i) {
++         ANV_FROM_HANDLE(anv_cmd_buffer, secondary, secondaries[i]);
++         if (secondary->wddm) {
++            g.meta[cmd->wddm->profile_slot - 1].draws += secondary->wddm->profile_draws;
++            g.meta[cmd->wddm->profile_slot - 1].kill_switches += secondary->wddm->profile_kill_switches;
++         }
++      }
++   g.orig.CmdExecuteCommands(c, count, secondaries);
++}
++
++/* ---- commands outside render passes ---- */
++static uint32_t outside(VkCommandBuffer handle, uint32_t kind, uint32_t width, uint32_t height)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   if (!cmd->wddm || cmd->wddm->profile_slot) return 0;
++   const struct meta meta = {kind, width, height, 0, 0};
++   return begin(cmd, &meta);
++}
++static void outside_end(VkCommandBuffer handle, uint32_t slot)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   end(cmd, slot);
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdDispatch(VkCommandBuffer c, uint32_t x, uint32_t y, uint32_t z)
++{ uint32_t s = outside(c, KIND_DISPATCH, x, y * z); g.orig.CmdDispatch(c, x, y, z); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdDispatchIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o)
++{ uint32_t s = outside(c, KIND_DISPATCH, 0, 0); g.orig.CmdDispatchIndirect(c, b, o); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdCopyBuffer(VkCommandBuffer c, VkBuffer a, VkBuffer b, uint32_t n, const VkBufferCopy *r)
++{ uint32_t s = outside(c, KIND_COPY, 0, 0); g.orig.CmdCopyBuffer(c, a, b, n, r); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdCopyImage(VkCommandBuffer c, VkImage a, VkImageLayout al, VkImage b, VkImageLayout bl, uint32_t n, const VkImageCopy *r)
++{ uint32_t s = outside(c, KIND_COPY, n ? r[0].extent.width : 0, n ? r[0].extent.height : 0); g.orig.CmdCopyImage(c, a, al, b, bl, n, r); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdCopyBufferToImage(VkCommandBuffer c, VkBuffer a, VkImage b, VkImageLayout l, uint32_t n, const VkBufferImageCopy *r)
++{ uint32_t s = outside(c, KIND_COPY, n ? r[0].imageExtent.width : 0, n ? r[0].imageExtent.height : 1); g.orig.CmdCopyBufferToImage(c, a, b, l, n, r); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdCopyImageToBuffer(VkCommandBuffer c, VkImage a, VkImageLayout l, VkBuffer b, uint32_t n, const VkBufferImageCopy *r)
++{ uint32_t s = outside(c, KIND_COPY, n ? r[0].imageExtent.width : 0, n ? r[0].imageExtent.height : 2); g.orig.CmdCopyImageToBuffer(c, a, l, b, n, r); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdBlitImage(VkCommandBuffer c, VkImage a, VkImageLayout al, VkImage b, VkImageLayout bl, uint32_t n, const VkImageBlit *r, VkFilter f)
++{ uint32_t s = outside(c, KIND_BLIT, n ? (uint32_t)abs(r[0].dstOffsets[1].x - r[0].dstOffsets[0].x) : 0,
++                       n ? (uint32_t)abs(r[0].dstOffsets[1].y - r[0].dstOffsets[0].y) : 0);
++  g.orig.CmdBlitImage(c, a, al, b, bl, n, r, f); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdResolveImage(VkCommandBuffer c, VkImage a, VkImageLayout al, VkImage b, VkImageLayout bl, uint32_t n, const VkImageResolve *r)
++{ uint32_t s = outside(c, KIND_RESOLVE, n ? r[0].extent.width : 0, n ? r[0].extent.height : 0); g.orig.CmdResolveImage(c, a, al, b, bl, n, r); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdClearColorImage(VkCommandBuffer c, VkImage i, VkImageLayout l, const VkClearColorValue *v, uint32_t n, const VkImageSubresourceRange *r)
++{ uint32_t s = outside(c, KIND_CLEAR, 0, 0); g.orig.CmdClearColorImage(c, i, l, v, n, r); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdClearDepthStencilImage(VkCommandBuffer c, VkImage i, VkImageLayout l, const VkClearDepthStencilValue *v, uint32_t n, const VkImageSubresourceRange *r)
++{ uint32_t s = outside(c, KIND_CLEAR, 1, 0); g.orig.CmdClearDepthStencilImage(c, i, l, v, n, r); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdFillBuffer(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, VkDeviceSize size, uint32_t d)
++{ uint32_t s = outside(c, KIND_FILL, 0, 0); g.orig.CmdFillBuffer(c, b, o, size, d); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdUpdateBuffer(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, VkDeviceSize size, const void *d)
++{ uint32_t s = outside(c, KIND_FILL, 1, 0); g.orig.CmdUpdateBuffer(c, b, o, size, d); outside_end(c, s); }
++
++static VKAPI_ATTR VkResult VKAPI_CALL wrap_QueuePresentKHR(VkQueue q, const VkPresentInfoKHR *info)
++{
++   p_atomic_inc(&g.frames);
++   return g.orig.QueuePresentKHR(q, info);
++}
++
++void
++anv_wddm_profile_install(struct vk_device_dispatch_table *d)
++{
++   if (!enabled()) return;
++   static int installed;
++   if (installed++) { fprintf(stderr, "HasVK/WDDM profile: only the first device is profiled\n"); return; }
++   mtx_init(&g.mutex, mtx_plain);
++   mtx_init(&pipe_mutex, mtx_plain);
++   anv_wddm_profile_pipe_bits_enabled = true;
++   g.orig = *d;
++#define WRAP(name) if (d->name) d->name = wrap_##name
++   WRAP(CmdBeginRenderPass); WRAP(CmdBeginRenderPass2); WRAP(CmdEndRenderPass); WRAP(CmdEndRenderPass2);
++   WRAP(CmdDraw); WRAP(CmdDrawIndexed); WRAP(CmdDrawIndirect); WRAP(CmdDrawIndexedIndirect);
++   WRAP(BeginCommandBuffer); WRAP(CmdExecuteCommands); WRAP(CmdBindPipeline);
++   WRAP(CmdDispatch); WRAP(CmdDispatchIndirect); WRAP(CmdCopyBuffer); WRAP(CmdCopyImage);
++   WRAP(CmdCopyBufferToImage); WRAP(CmdCopyImageToBuffer); WRAP(CmdBlitImage); WRAP(CmdResolveImage);
++   WRAP(CmdClearColorImage); WRAP(CmdClearDepthStencilImage); WRAP(CmdFillBuffer); WRAP(CmdUpdateBuffer);
++   WRAP(QueuePresentKHR);
++#undef WRAP
++   fprintf(stderr, "HasVK/WDDM profile: timing render passes, dispatches and transfers\n");
++}
++
++static int compare_buckets(const void *a, const void *b)
++{
++   const struct bucket *x = a, *y = b;
++   return x->ticks < y->ticks ? 1 : x->ticks > y->ticks ? -1 : 0;
++}
++
++static void add(const struct meta *m, uint64_t ticks, const uint64_t *stats)
++{
++   uint32_t i = 0;
++   for (; i < g.bucket_count; ++i) {
++      const struct meta *k = &g.buckets[i].key;
++      if (k->kind == m->kind && k->object == m->object && k->width == m->width && k->height == m->height) break;
++   }
++   if (i == g.bucket_count) {
++      if (i == BUCKETS) return;
++      g.buckets[g.bucket_count++] = (struct bucket){.key = *m};
++      g.buckets[i].key.draws = 0; g.buckets[i].key.kill_switches = 0;
++      describe(m, g.buckets[i].text, sizeof(g.buckets[i].text));
++   }
++   ++g.buckets[i].count; g.buckets[i].ticks += ticks; g.buckets[i].draws += m->draws; g.buckets[i].kill_switches += m->kill_switches;
++   if (stats) for (int s = 0; s < 6; ++s) g.buckets[i].stats[s] += stats[s];
++}
++
++static void describe(const struct meta *m, char *out, size_t size)
++{
++   if (m->kind == KIND_DRAW) {
++      const char *text = "?"; bool depth_only = false;
++      for (uint32_t i = 0; i < g.depth_pipeline_count; ++i)
++         if (g.depth_pipelines[i].pipeline == (const void *)(uintptr_t)m->object) { text = g.depth_pipelines[i].text; depth_only = g.depth_pipelines[i].depth_only; }
++      snprintf(out, size, "draw %s %s", depth_only ? "depth-only" : "colour    ", text);
++      return;
++   }
++   int n = snprintf(out, size, "%-11s %4ux%-4u", kind_names[m->kind], m->width, m->height);
++   if (m->kind != KIND_PASS || !m->object) return;
++   VK_FROM_HANDLE(vk_render_pass, pass, (VkRenderPass)(uintptr_t)m->object);
++   n += snprintf(out + n, size - n, " %u subpass, att:", pass->subpass_count);
++   for (uint32_t i = 0; i < pass->attachment_count && n < (int)size - 24; ++i)
++      n += snprintf(out + n, size - n, " %d%s%s%s", pass->attachments[i].format, i < 8 && (m->aux >> (4 * i)) & 15 ? "/aux" : "",
++                    pass->attachments[i].samples > 1 ? "xMS" : "",
++                    pass->attachments[i].load_op == VK_ATTACHMENT_LOAD_OP_CLEAR ? "/clr" :
++                    pass->attachments[i].load_op == VK_ATTACHMENT_LOAD_OP_LOAD ? "/load" : "");
++}
++
++void
++anv_wddm_profile_report(struct anv_device *device)
++{
++   if (!enabled() || !g.pool || g.device != device) return;
++   if (mtx_trylock(&g.mutex) != thrd_success) return;
++   const VkDevice handle = device_handle(device);
++   const uint64_t mask = device->physical->info.timestamp_frequency ? (1ull << 36) - 1 : ~0ull;
++   for (uint32_t slot = 0; slot < PAIRS; ++slot) {
++      if (p_atomic_read(&g.state[slot]) != 1) continue;
++      uint64_t r[4];
++      if (g.orig.GetQueryPoolResults(handle, g.pool, slot * 2, 2, sizeof(r), r, 16,
++                                     VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != VK_SUCCESS ||
++          !r[1] || !r[3])
++         continue;
++      uint64_t stats[7];
++      const bool pass = g.meta[slot].kind == KIND_PASS;
++      if (pass && (g.orig.GetQueryPoolResults(handle, g.stats_pool, slot, 1, sizeof(stats), stats, sizeof(stats),
++                                              VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != VK_SUCCESS ||
++                   !stats[6]))
++         continue;
++      add(&g.meta[slot], (r[2] - r[0]) & mask, pass ? stats : NULL);
++      g.orig.ResetQueryPool(handle, g.pool, slot * 2, 2);
++      if (pass) g.orig.ResetQueryPool(handle, g.stats_pool, slot, 1);
++      p_atomic_set(&g.state[slot], 0);
++   }
++   const uint64_t now = os_time_get_nano() / 1000000;
++   if (!g.window_start_ms) g.window_start_ms = now;
++   if (now - g.window_start_ms >= 5000) {
++      const uint64_t frames = p_atomic_xchg(&g.frames, 0);
++      const double ms_per_tick = 1000.0 / device->physical->info.timestamp_frequency;
++      const double divisor = frames ? (double)frames : 1.0;
++      qsort(g.buckets, g.bucket_count, sizeof(g.buckets[0]), compare_buckets);
++      double total = 0;
++      for (uint32_t i = 0; i < g.bucket_count; ++i) total += g.buckets[i].ticks * ms_per_tick;
++      fprintf(stderr, "HasVK/WDDM profile: %llu frames in %.1f s, profiled GPU time %.2f ms/frame (%llu skipped)\n",
++              (unsigned long long)frames, (now - g.window_start_ms) / 1000.0, total / divisor, (unsigned long long)g.skipped);
++      for (uint32_t i = 0; i < g.bucket_count && i < 25; ++i) {
++         const struct bucket *b = &g.buckets[i];
++         fprintf(stderr, "  %6.2f ms/frame %5.1f/frame avg %6.3f ms draws %5.0f kill switches %4.0f | %s\n", b->ticks * ms_per_tick / divisor,
++                 b->count / divisor, b->ticks * ms_per_tick / b->count, (double)b->draws / b->count,
++                 (double)b->kill_switches / b->count, b->text);
++         if (b->key.kind == KIND_PASS && i < 8)
++            fprintf(stderr, "      per pass: %.0fk IA vertices, %.0fk prims, %.0fk VS, %.0fk clip in, %.0fk clip out, %.0fk FS\n",
++                    b->stats[0] / 1e3 / b->count, b->stats[1] / 1e3 / b->count, b->stats[2] / 1e3 / b->count,
++                    b->stats[3] / 1e3 / b->count, b->stats[4] / 1e3 / b->count, b->stats[5] / 1e3 / b->count);
++      }
++      for (uint32_t i = 0; i < g.depth_pipeline_count; ++i)
++         for (uint32_t j = i + 1; j < g.depth_pipeline_count; ++j)
++            if (g.depth_pipelines[j].binds > g.depth_pipelines[i].binds) {
++               struct depth_pipeline t = g.depth_pipelines[i]; g.depth_pipelines[i] = g.depth_pipelines[j]; g.depth_pipelines[j] = t;
++            }
++      for (uint32_t i = 0; i < g.depth_pipeline_count && i < 8; ++i)
++         fprintf(stderr, "  depth-only pipeline %5.1f binds/frame: %s\n", g.depth_pipelines[i].binds / divisor, g.depth_pipelines[i].text);
++      for (uint32_t i = 0; i < g.depth_pipeline_count; ++i) g.depth_pipelines[i].binds = 0;
++      mtx_lock(&pipe_mutex);
++      for (uint32_t i = 0; i < pipe_reason_count; ++i)
++         for (uint32_t j = i + 1; j < pipe_reason_count; ++j)
++            if (pipe_reasons[j].count > pipe_reasons[i].count) {
++               const char *r = pipe_reasons[i].reason; uint32_t b = pipe_reasons[i].stall_bits; uint64_t n = pipe_reasons[i].count;
++               pipe_reasons[i] = pipe_reasons[j]; pipe_reasons[j].reason = r; pipe_reasons[j].stall_bits = b; pipe_reasons[j].count = n;
++            }
++      for (uint32_t i = 0; i < pipe_reason_count && i < 12; ++i)
++         if (pipe_reasons[i].count)
++            fprintf(stderr, "  pipe bits %7.1f/frame bits 0x%08x: %s\n", pipe_reasons[i].count / divisor, pipe_reasons[i].stall_bits, pipe_reasons[i].reason);
++      for (uint32_t i = 0; i < pipe_reason_count; ++i) pipe_reasons[i].count = 0;
++      mtx_unlock(&pipe_mutex);
++      g.bucket_count = 0; g.skipped = 0; g.window_start_ms = now;
++   }
++   mtx_unlock(&g.mutex);
++}
 --- /dev/null
 +++ b/src/intel/wddm_compiler/vulkan_hasvk_wddm.def
 @@ -0,0 +1,16 @@
@@ -5041,7 +5587,7 @@
 +endif
 +libanv_wddm_objects = static_library('anv_wddm_objects',
 +  ['../vulkan_hasvk/anv_wddm_device.c', '../vulkan_hasvk/anv_wddm_memory.c', '../vulkan_hasvk/anv_wddm_pools.c', '../vulkan_hasvk/anv_allocator.c',
-+   '../vulkan_hasvk/anv_wddm_present.c',
++   '../vulkan_hasvk/anv_wddm_present.c', '../vulkan_hasvk/anv_wddm_profile.c',
 +   '../vulkan_hasvk/anv_descriptor_set.c',
 +   '../vulkan_hasvk/anv_image.c', '../vulkan_hasvk/anv_android_stubs.c',
 +   '../vulkan_hasvk/anv_pipeline.c', '../vulkan_hasvk/anv_pipeline_cache.c', '../vulkan_hasvk/anv_wddm_batch.c',
@@ -21374,7 +21920,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_dynamic.c
-@@ -0,0 +1,449 @@
+@@ -0,0 +1,456 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -21416,6 +21962,10 @@
 +      return;
 +
 +   cmd_buffer->state.pma_fix_enabled = enable;
++#ifdef _WIN32
++   if (anv_wddm_profile_pipe_bits_enabled)
++      anv_wddm_profile_pipe_bits(1, enable ? "PMA fix toggled on" : "PMA fix toggled off");
++#endif
 +
 +   /* According to the Broadwell PIPE_CONTROL documentation, software should
 +    * emit a PIPE_CONTROL with the CS Stall and Depth Cache Flush bits set
@@ -21748,7 +22298,10 @@
 +
 +         .ForceThreadDispatchEnable = anv_pipeline_has_stage(pipeline, MESA_SHADER_FRAGMENT) &&
 +                                      (pipeline->force_fragment_thread_dispatch ||
-+                                       anv_cmd_buffer_all_color_write_masked(cmd_buffer)) ?
++                                       (anv_cmd_buffer_all_color_write_masked(cmd_buffer) &&
++                                        (get_fs_prog_data(pipeline)->computed_depth_mode != PSCDEPTH_OFF ||
++                                         get_fs_prog_data(pipeline)->computed_stencil ||
++                                         get_fs_prog_data(pipeline)->uses_omask))) ?
 +                                      ForceON : 0,
 +      };
 +      GENX(3DSTATE_WM_pack)(NULL, wm_dwords, &wm);

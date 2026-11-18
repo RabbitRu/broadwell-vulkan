@@ -19,6 +19,39 @@ def instrumentation(source):
                   '(void)0;', source)
 
 
+def fragment_dispatch(source):
+    """Upstream forces fragment shader dispatch (3DSTATE_WM::ForceThreadDispatch)
+    for every draw whose colour writes are all masked, which includes every
+    depth-only pass: a fragment shader with no effect then runs on each pixel
+    (half the depth-only rate, measured: 10 vs 22 Gpixels/s, and shadow maps
+    are such passes). Kill and side effects already force dispatch on Gfx8
+    (pipeline->force_fragment_thread_dispatch); with masked colour writes the
+    shader can still matter only through depth, stencil or sample-mask
+    outputs, so dispatch is forced for those. Otherwise the hardware's own
+    decision stands, as with no fragment shader."""
+    old = '''         .ForceThreadDispatchEnable = anv_pipeline_has_stage(pipeline, MESA_SHADER_FRAGMENT) &&
+                                      (pipeline->force_fragment_thread_dispatch ||
+                                       anv_cmd_buffer_all_color_write_masked(cmd_buffer)) ?
+                                      ForceON : 0,'''
+    new = '''         .ForceThreadDispatchEnable = anv_pipeline_has_stage(pipeline, MESA_SHADER_FRAGMENT) &&
+                                      (pipeline->force_fragment_thread_dispatch ||
+                                       (anv_cmd_buffer_all_color_write_masked(cmd_buffer) &&
+                                        (get_fs_prog_data(pipeline)->computed_depth_mode != PSCDEPTH_OFF ||
+                                         get_fs_prog_data(pipeline)->computed_stencil ||
+                                         get_fs_prog_data(pipeline)->uses_omask))) ?
+                                      ForceON : 0,'''
+    assert source.count(old) == 1
+    source = source.replace(old, new)
+    old = '   cmd_buffer->state.pma_fix_enabled = enable;\n'
+    assert source.count(old) == 1
+    source = source.replace(old, old + '''#ifdef _WIN32
+   if (anv_wddm_profile_pipe_bits_enabled)
+      anv_wddm_profile_pipe_bits(1, enable ? "PMA fix toggled on" : "PMA fix toggled off");
+#endif
+''')
+    return source
+
+
 def generate_graphics_sources(originals):
     def read(name):
         return (originals / ('src/intel/vulkan_hasvk/' + name)).read_text(encoding='utf-8')
@@ -171,6 +204,6 @@ anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct
         'src/intel/wddm_compiler/anv_wddm_graphics_state.c': state,
         'src/intel/wddm_compiler/anv_wddm_graphics_blorp.c': blorp,
         'src/intel/wddm_compiler/anv_wddm_graphics_blorp_exec.c': instrumentation(read('genX_blorp_exec.c')),
-        'src/intel/wddm_compiler/anv_wddm_graphics_dynamic.c': read('gfx8_cmd_buffer.c').replace('#include <unistd.h>', ''),
+        'src/intel/wddm_compiler/anv_wddm_graphics_dynamic.c': fragment_dispatch(read('gfx8_cmd_buffer.c').replace('#include <unistd.h>', '')),
         'src/intel/wddm_compiler/anv_wddm_graphics_pipeline.c': read('genX_pipeline.c').replace('#include <unistd.h>', ''),
     }

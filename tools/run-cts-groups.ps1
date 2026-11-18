@@ -6,7 +6,8 @@ param([Parameter(Mandatory)][string]$Prefix, [Parameter(Mandatory)][string[]]$Gr
 $ErrorActionPreference = 'Continue'
 $root = Split-Path $PSScriptRoot -Parent
 $out = @()
-foreach ($entry in $Groups) {
+# "powershell -File" passes 'a:1','b:2' as one string: split on commas too.
+foreach ($entry in ($Groups | ForEach-Object { $_ -split ',' } | Where-Object { $_ })) {
     $pattern, $every = $entry -split ':'
     if (-not $every) { $every = 1 }
     $name = $Prefix + '-' + (($pattern -replace '[^A-Za-z0-9]+', '-').Trim('-'))

@@ -425,8 +425,11 @@ int anv_wddm_execute_commands(struct anv_device *device, struct vk_command_buffe
       *(uint64_t *)((char *)s->bo->map + marker_offset) = 0;
       /* Command BOs are not flushed by the transport: write back exactly this
        * command buffer's chunks (with its tail and marker) now. */
-      for (uint32_t c = 0; c < s->chunk_count; ++c)
+      for (uint32_t c = 0; c < s->chunk_count; ++c) {
          if (hasvk_wddm_bo_flush(s->chunks[c].bo->wddm_bo)) return -1;
+         w->stats_command_bytes += s->chunks[c].length;
+      }
+      ++w->stats_command_buffers;
       s->run = w->runs + 1;
       for (uint32_t k = 0; k < s->wait_count; ++k) {
          uint32_t slot;

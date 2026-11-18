@@ -52,6 +52,8 @@ struct anv_wddm_device_state {
     * completion_exit are protected by mutex and announced on condition. */
    struct list_head pending;
    uint64_t verified_seq;
+   /* HASVK_WDDM_STATS=1: command stream volume, printed every 5 s by submit(). */
+   uint64_t stats_command_bytes, stats_command_buffers, stats_submits, stats_last_ms;
    thrd_t completion_thread;
    bool completion_thread_started, completion_exit;
 };
@@ -98,6 +100,10 @@ struct anv_wddm_cmd_state {
     * present, the commands run without it and *present_refused is set. */
    uint64_t present_token;
    int *present_refused;
+   /* HASVK_WDDM_PROFILE_PASSES (anv_wddm_profile.c): timestamp slot + 1 of
+    * the open render pass; since vkBeginCommandBuffer: draws, the bound
+    * graphics pipeline's kill_pixel (1 no, 2 yes) and how often it changed. */
+   uint32_t profile_slot, profile_draws, profile_kill, profile_kill_switches;
 };
 /* Executes command buffers in order, chaining them into as few kernel
  * submissions as their event waits and repetitions allow. serial != 0: the
@@ -123,6 +129,8 @@ VkCommandBuffer anv_wddm_present_redirected_record(VkDevice device, VkQueue queu
 void anv_wddm_present_redirected_finish(VkDevice device, void *state);
 #endif
 #ifdef HASVK_WDDM_GRAPHICS
+void anv_wddm_profile_install(struct vk_device_dispatch_table *dispatch);
+void anv_wddm_profile_report(struct anv_device *device);
 void anv_wddm_cmd_state_finish(struct anv_cmd_buffer *cmd);
 void anv_wddm_init_border_colors(struct anv_device *device);
 struct anv_address anv_wddm_event_address(struct anv_device *device, const struct anv_event *event);

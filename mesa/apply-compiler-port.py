@@ -429,6 +429,19 @@ edit('src/intel/vulkan_hasvk/anv_private.h', [
     ('struct anv_device_memory {\n   struct vk_object_base                        base;', 'struct anv_device_memory {\n   struct vk_object_base                        base;\n#ifdef _WIN32\n   uint64_t wddm_allocation_size;\n#endif'),
     ('#define anv_genX(devinfo, thing) ({', '#ifdef _WIN32\n/* The WDDM adapter gate accepts only Gen8. */\n#define anv_genX(devinfo, thing) (&gfx8_##thing)\n#else\n#define anv_genX(devinfo, thing) ({'),
     ('})\n\n/* Gen-specific function declarations */', '})\n#endif\n\n/* Gen-specific function declarations */'),
+    # HASVK_WDDM_PROFILE_PASSES: pipe flush/stall requests counted by reason.
+    ('''   cmd_buffer->state.pending_pipe_bits |= bits;
+   if (INTEL_DEBUG(DEBUG_PIPE_CONTROL) && bits)''', '''   cmd_buffer->state.pending_pipe_bits |= bits;
+#ifdef _WIN32
+   if (anv_wddm_profile_pipe_bits_enabled && bits) anv_wddm_profile_pipe_bits(bits, reason);
+#endif
+   if (INTEL_DEBUG(DEBUG_PIPE_CONTROL) && bits)'''),
+    ('static inline void\nanv_add_pending_pipe_bits(', '''#ifdef _WIN32
+extern bool anv_wddm_profile_pipe_bits_enabled;
+void anv_wddm_profile_pipe_bits(uint32_t bits, const char *reason);
+#endif
+static inline void
+anv_add_pending_pipe_bits('''),
 ])
 # Keep Mesa's lock-free state/block allocators and free lists. Only the Linux
 # mmap backing and GEM BO implementation are replaced on Windows.
@@ -542,6 +555,47 @@ image_after = image_after.replace('   vk_image_init(&device->vk, &image->vk, pCr
 #endif
 #endif
    vk_image_init(&device->vk, &image->vk, pCreateInfo);''')
+# HiZ for depth attachments. Upstream hasvk computes the HiZ surface and then
+# drops it: enabling it (aux_usage + the surface itself) went away together with
+# HiZ+CCS (Gfx9+), while every HiZ path (WM_HZ_OP clears, depth/HiZ resolves at
+# layout transitions, 3DSTATE_HIER_DEPTH_BUFFER, the Gfx8 PMA fix) stayed.
+# Without it, depth-only passes run ~10x slower than Intel's own driver
+# (shadow maps: The Talos Principle spent 14 of 20 ms per frame there).
+hiz_old = '''      ok = isl_surf_get_hiz_surf(&device->isl_dev,
+                                 &image->planes[plane].primary_surface.isl,
+                                 &image->planes[plane].aux_surface.isl);
+      if (!ok)
+         return VK_SUCCESS;
+'''
+assert image_after.count(hiz_old) == 1
+image_after = image_after.replace(hiz_old, hiz_old + '''#ifdef _WIN32
+      image->planes[plane].aux_usage = ISL_AUX_USAGE_HIZ;
+      return add_surface(device, image, &image->planes[plane].aux_surface,
+                         ANV_IMAGE_MEMORY_BINDING_PLANE_0 + plane,
+                         ANV_OFFSET_IMPLICIT);
+#endif
+''')
+# ...and its layout states, as anv had them for ISL_AUX_USAGE_HIZ: valid HiZ
+# (fast-clearable) where the layout allows it, RESOLVED in read-only layouts
+# that must not use it (Gfx8 cannot sample with HiZ), otherwise invalid.
+hiz_state_old = '''   switch (aux_usage) {
+   case ISL_AUX_USAGE_CCS_D:
+      /* We only support clear in exactly one state */'''
+assert image_after.count(hiz_state_old) == 1
+image_after = image_after.replace(hiz_state_old, '''   switch (aux_usage) {
+#ifdef _WIN32
+   case ISL_AUX_USAGE_HIZ:
+      if (aux_supported) {
+         assert(clear_supported);
+         return ISL_AUX_STATE_COMPRESSED_CLEAR;
+      } else if (read_only) {
+         return ISL_AUX_STATE_RESOLVED;
+      } else {
+         return ISL_AUX_STATE_AUX_INVALID;
+      }
+#endif
+   case ISL_AUX_USAGE_CCS_D:
+      /* We only support clear in exactly one state */''')
 edit(image_name, [(image_before, image_after)])
 # A shader upload that fails (out of memory) is returned to the caller, which
 # skips the operation; the driver marks the command buffer failed. Upstream
@@ -675,6 +729,7 @@ owned_sources = {
     'src/intel/vulkan_hasvk/anv_wddm_batch.c': (ROOT / 'mesa/anv_wddm_batch.c').read_text(encoding='utf-8'),
     'src/intel/vulkan_hasvk/anv_wddm_command.c': (ROOT / 'mesa/anv_wddm_command.c').read_text(encoding='utf-8'),
     'src/intel/vulkan_hasvk/anv_wddm_present.c': (ROOT / 'mesa/anv_wddm_present.c').read_text(encoding='utf-8'),
+    'src/intel/vulkan_hasvk/anv_wddm_profile.c': (ROOT / 'mesa/anv_wddm_profile.c').read_text(encoding='utf-8'),
     'src/intel/wddm_compiler/vulkan_hasvk_wddm.def': (ROOT / 'mesa/anv_wddm.def').read_text(encoding='utf-8'),
     'src/intel/wddm_compiler/elk_compile_probe.c': (ROOT / 'mesa/elk_compile_probe.c').read_text(encoding='utf-8'),
     'src/intel/wddm_compiler/elk_abi_probe.cpp': (ROOT / 'mesa/elk_abi_probe.cpp').read_text(encoding='utf-8'),
@@ -784,7 +839,7 @@ if get_option('hasvk-wddm-graphics')
 endif
 libanv_wddm_objects = static_library('anv_wddm_objects',
   ['../vulkan_hasvk/anv_wddm_device.c', '../vulkan_hasvk/anv_wddm_memory.c', '../vulkan_hasvk/anv_wddm_pools.c', '../vulkan_hasvk/anv_allocator.c',
-   '../vulkan_hasvk/anv_wddm_present.c',
+   '../vulkan_hasvk/anv_wddm_present.c', '../vulkan_hasvk/anv_wddm_profile.c',
    '../vulkan_hasvk/anv_descriptor_set.c',
    '../vulkan_hasvk/anv_image.c', '../vulkan_hasvk/anv_android_stubs.c',
    '../vulkan_hasvk/anv_pipeline.c', '../vulkan_hasvk/anv_pipeline_cache.c', '../vulkan_hasvk/anv_wddm_batch.c',

@@ -14,7 +14,7 @@ static json test_graphics(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAdd
    API(vkCreateBuffer); API(vkDestroyBuffer); API(vkGetBufferMemoryRequirements); API(vkBindBufferMemory);
    API(vkGetImageSubresourceLayout); API(vkCreateSampler); API(vkDestroySampler);
    API(vkCreateDescriptorSetLayout); API(vkDestroyDescriptorSetLayout); API(vkCreateDescriptorPool); API(vkDestroyDescriptorPool);
-   API(vkAllocateDescriptorSets); API(vkUpdateDescriptorSets); API(vkCmdBindDescriptorSets);
+   API(vkAllocateDescriptorSets); API(vkUpdateDescriptorSets); API(vkCmdBindDescriptorSets); API(vkCmdCopyImageToBuffer);
 #undef API
    using ReadImage = int (*)(VkImage, void *, uint64_t, uint32_t *);
    using ReadCommand = int (*)(VkCommandBuffer, const void **, uint32_t *);
@@ -124,8 +124,10 @@ static json test_graphics(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAdd
       VkImageView view{}; check(vkCreateImageView(device, &vi, nullptr, &view), "Create render target view");
       VkImage depth_image{}; VkImageView depth_view{}; VkDeviceMemory depth_memory{}; void *depth_map{};
       uint64_t depth_offset{}, depth_bytes{}, depth_size{};
+      VkBuffer depth_readback{}; VkDeviceMemory depth_readback_memory{}; void *depth_readback_map{};
+      const uint64_t readback_offset = 4096, readback_size = uint64_t(size) * size * 2, readback_bytes = readback_offset + readback_size + 4096;
       if (textured) {
-         VkImageCreateInfo di = ii; di.format = VK_FORMAT_D16_UNORM; di.tiling = VK_IMAGE_TILING_OPTIMAL; di.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+         VkImageCreateInfo di = ii; di.format = VK_FORMAT_D16_UNORM; di.tiling = VK_IMAGE_TILING_OPTIMAL; di.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
          check(vkCreateImage(device, &di, nullptr, &depth_image), "Create D16 depth image");
          VkMemoryRequirements dr{}; vkGetImageMemoryRequirements(device, depth_image, &dr);
          depth_offset = (std::max)(4096ull, dr.alignment); depth_size = dr.size; depth_bytes = depth_offset + dr.size + 4096; ai.allocationSize = depth_bytes;
@@ -134,6 +136,15 @@ static json test_graphics(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAdd
          check(vkMapMemory(device, depth_memory, 0, VK_WHOLE_SIZE, 0, &depth_map), "Map depth allocation"); memset(depth_map, 0x51, depth_bytes);
          VkImageViewCreateInfo dv = vi; dv.image = depth_image; dv.format = di.format; dv.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
          check(vkCreateImageView(device, &dv, nullptr, &depth_view), "Create D16 depth view");
+         // Depth is read back through Vulkan: with HiZ the depth surface itself
+         // is only valid after the resolve that the TRANSFER_SRC transition does.
+         VkBufferCreateInfo rb{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; rb.size = readback_size; rb.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+         check(vkCreateBuffer(device, &rb, nullptr, &depth_readback), "Create D16 readback buffer");
+         ai.allocationSize = readback_bytes;
+         check(vkAllocateMemory(device, &ai, nullptr, &depth_readback_memory), "Allocate D16 readback buffer");
+         check(vkBindBufferMemory(device, depth_readback, depth_readback_memory, readback_offset), "Bind D16 readback buffer");
+         check(vkMapMemory(device, depth_readback_memory, 0, VK_WHOLE_SIZE, 0, &depth_readback_map), "Map D16 readback buffer");
+         memset(depth_readback_map, 0x5a, readback_bytes);
       }
       VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO}; fi.renderPass = render_pass;
       VkImageView views[2] = {view, depth_view}; fi.attachmentCount = textured ? 2 : 1; fi.pAttachments = views; fi.width = fi.height = size; fi.layers = 1;
@@ -183,8 +194,17 @@ static json test_graphics(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAdd
          }
       } else vkCmdDraw(command, 3, 1, 0, 0);
       vkCmdEndRenderPass(command);
-      VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+      if (textured) {
+         VkImageMemoryBarrier db{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER}; db.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+         db.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT; db.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+         db.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; db.srcQueueFamilyIndex = db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+         db.image = depth_image; db.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+         vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &db);
+         VkBufferImageCopy region{}; region.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}; region.imageExtent = {size, size, 1};
+         vkCmdCopyImageToBuffer(command, depth_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, depth_readback, 1, &region);
+      }
+      VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT; barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
       check(vkEndCommandBuffer(command), "End graphics command buffer");
       const auto case_dir = fs::path("diagnostics") / ((textured ? "textured-" : "triangle-") + std::to_string(size) + "-" + std::to_string(tiling) + "-depth" + std::to_string(depth_case)); fs::create_directories(case_dir);
       const void *commands{}; uint32_t command_bytes{}; require(!read_command(command, &commands, &command_bytes), "Cannot inspect command batch");
@@ -197,7 +217,7 @@ static json test_graphics(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAdd
       require(!read_image(image, pixels.data(), pixels.size() * 4, &actual_tiling), "Read actual GPU image");
       std::ofstream(case_dir / "pixels.rgba", std::ios::binary).write(reinterpret_cast<const char *>(pixels.data()), pixels.size() * 4);
       std::vector<uint16_t> depth_pixels(size * size);
-      if (textured) require(!read_image(depth_image, depth_pixels.data(), depth_pixels.size() * 2, &actual_tiling), "Read actual D16 pixels");
+      if (textured) memcpy(depth_pixels.data(), static_cast<const char *>(depth_readback_map) + readback_offset, readback_size);
       uint32_t green = 0, compared = 0;
       for (uint32_t y = 0; y < size; ++y) for (uint32_t x = 0; x < size; ++x) {
          const uint32_t actual = pixels[y * size + x];
@@ -225,6 +245,9 @@ static json test_graphics(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAdd
       if (textured) {
          const auto dguards = static_cast<const uint8_t *>(depth_map);
          for (uint64_t i = 0; i < depth_bytes; ++i) if (i < depth_offset || i >= depth_offset + depth_size) require(dguards[i] == 0x51, "Depth allocation guard overwritten");
+         const auto rguards = static_cast<const uint8_t *>(depth_readback_map);
+         for (uint64_t i = 0; i < readback_bytes; ++i) if (i < readback_offset || i >= readback_offset + readback_size) require(rguards[i] == 0x5a, "Depth readback guard overwritten");
+         vkUnmapMemory(device, depth_readback_memory); vkDestroyBuffer(device, depth_readback, nullptr); vkFreeMemory(device, depth_readback_memory, nullptr);
          require(!memcmp(uniform_map, uniform_expected.data(), uniform_bytes), "UBO data/guards overwritten");
          const auto tguards = static_cast<const uint8_t *>(texture_map);
          for (uint64_t i = 0; i < texture_bytes; ++i) if (i < texture_offset || i >= texture_offset + texture_size) require(tguards[i] == 0x29, "Texture allocation guard overwritten");

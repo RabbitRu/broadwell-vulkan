@@ -413,6 +413,15 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateInstance(const VkInstanceCreateInfo *in
     * multisample resolve into mip level 3 came out wrong (CTS renderpass1
     * multisample_resolve.*_resolve_level_3). HiZ and MCS stay on. */
    BITSET_SET(intel_debug, DEBUG_NO_CCS);
+   /* A failed driver assert would otherwise open a modal CRT message box and
+    * keep the application (a game, an unattended test) waiting for a click:
+    * print it to stderr and end the process instead, without the abort()
+    * dialog or Windows Error Reporting. HASVK_WDDM_ASSERT_DIALOG=1 keeps the
+    * dialog (for attaching a debugger). */
+   if (!getenv("HASVK_WDDM_ASSERT_DIALOG")) {
+      _set_error_mode(_OUT_TO_STDERR);
+      _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+   }
    *out = anv_instance_to_handle(instance);
    return VK_SUCCESS;
 }
@@ -587,6 +596,23 @@ static VkResult submit(struct vk_queue *queue, struct vk_queue_submit *work)
    const int failed = anv_wddm_execute_commands(device, work->command_buffers, work->command_buffer_count,
                                                 pending->serial, present_token, true, &pending->seq);
    const uint64_t seq = pending->seq;   /* the completion thread frees pending */
+   static int stats = -1;
+   if (stats < 0) stats = getenv("HASVK_WDDM_STATS") != NULL;
+   if (stats && !failed) {
+      ++w->stats_submits;
+      const uint64_t now = os_time_get_nano() / 1000000;
+      if (!w->stats_last_ms) w->stats_last_ms = now;
+      if (now - w->stats_last_ms >= 5000) {
+         const double s = (now - w->stats_last_ms) / 1000.0;
+         fprintf(stderr, "HasVK/WDDM stats: %.0f submits/s, %.0f command buffers/s, %.1f MiB/s of commands, %.1f KiB per command buffer\n",
+                 w->stats_submits / s, w->stats_command_buffers / s, w->stats_command_bytes / s / 1048576.0,
+                 w->stats_command_buffers ? w->stats_command_bytes / 1024.0 / w->stats_command_buffers : 0.0);
+         w->stats_submits = w->stats_command_buffers = w->stats_command_bytes = 0; w->stats_last_ms = now;
+      }
+   }
+#ifdef HASVK_WDDM_GRAPHICS
+   anv_wddm_profile_report(device);
+#endif
    if (!failed) {
       mtx_lock(&w->mutex);
       list_addtail(&pending->link, &w->pending);
@@ -703,6 +729,10 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle
 #endif
    VkResult result = vk_device_init(&device->vk, &physical->vk, &dispatch, info, allocator);
    if (result != VK_SUCCESS) { vk_free2(&physical->instance->vk.alloc, allocator, device); return result; }
+#ifdef HASVK_WDDM_GRAPHICS
+   /* After vk_device_init, which adds the vk_common entry points. */
+   anv_wddm_profile_install(&device->vk.dispatch_table);
+#endif
    anv_device_set_physical(device, physical);
    device->vk.command_buffer_ops = &anv_cmd_buffer_ops;
    /* As upstream anv_CreateDevice: shaders get bounds-checked UBO/SSBO access

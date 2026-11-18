@@ -155,7 +155,8 @@ static json test_copies(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr 
       require(!read_image(a.image, direct.data(), direct.size() * 4, &actual_tiling) && !memcmp(direct.data(), data(read_a), direct.size() * 4), "Independent image read differs from GPU readback");
 
       /* Depth clear and vkCmdClearAttachments. */
-      Image depth = make_image(VK_FORMAT_D16_UNORM, W, H, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_TILING_OPTIMAL);
+      Image depth = make_image(VK_FORMAT_D16_UNORM, W, H, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | transfer, VK_IMAGE_TILING_OPTIMAL);
+      Guarded read_depth; make_buffer(read_depth, W * H * 2);
       Image target_image = make_image(VK_FORMAT_R8G8B8A8_UNORM, W, H, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, tiling);
       VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO}; vi.image = target_image.image; vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
       vi.format = VK_FORMAT_R8G8B8A8_UNORM; vi.subresourceRange = range;
@@ -175,6 +176,11 @@ static json test_copies(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr 
       transition(command, depth.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
       const VkClearDepthStencilValue depth_value{0.25f, 0}; const VkImageSubresourceRange depth_range{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
       vkCmdClearDepthStencilImage(command, depth.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &depth_value, 1, &depth_range);
+      /* Read back through Vulkan: a HiZ-cleared depth surface is valid only after
+       * the resolve done by the TRANSFER_SRC transition. */
+      transition(command, depth.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+      VkBufferImageCopy depth_download{}; depth_download.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}; depth_download.imageExtent = {W, H, 1};
+      vkCmdCopyImageToBuffer(command, depth.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, read_depth.buffer, 1, &depth_download);
       VkClearValue red{}; red.color.float32[0] = red.color.float32[3] = 1;
       VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; rp.renderPass = render_pass; rp.framebuffer = framebuffer;
       rp.renderArea = {{0, 0}, {W, H}}; rp.clearValueCount = 1; rp.pClearValues = &red;
@@ -184,9 +190,9 @@ static json test_copies(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr 
       vkCmdClearAttachments(command, 1, &clear_attachment, 1, &clear_rect);
       vkCmdEndRenderPass(command);
       run(command, "Depth clear and ClearAttachments");
-      std::vector<uint16_t> depth_pixels(W * H);
-      require(!read_image(depth.image, depth_pixels.data(), depth_pixels.size() * 2, &actual_tiling), "Read cleared depth");
+      std::vector<uint16_t> depth_pixels(W * H); memcpy(depth_pixels.data(), read_depth.map + 4096, W * H * 2);
       for (uint16_t value : depth_pixels) require(std::abs(static_cast<int>(value) - 16384) <= 1, "ClearDepthStencilImage value wrong");
+      memcpy(data(read_depth), depth_pixels.data(), W * H * 2); verify(read_depth, "Depth readback guards");
       require(!read_image(target_image.image, direct.data(), direct.size() * 4, &actual_tiling), "Read ClearAttachments target");
       for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
          const bool inside = x >= 10 && x < 30 && y >= 6 && y < 18;
@@ -196,7 +202,7 @@ static json test_copies(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr 
          {"clearColorImage", true}, {"clearDepthStencilImage", true}, {"clearAttachments", true}, {"guardsIntact", true}});
       vkDestroyFramebuffer(device, framebuffer, nullptr); vkDestroyRenderPass(device, render_pass, nullptr); vkDestroyImageView(device, view, nullptr);
       for (Image *image : {&a, &b, &c, &depth, &target_image}) { vkDestroyImage(device, image->image, nullptr); vkFreeMemory(device, image->memory, nullptr); }
-      for (Guarded *g : {&read_a, &read_b, &read_c}) {
+      for (Guarded *g : {&read_a, &read_b, &read_c, &read_depth}) {
          all_buffers.erase(std::find(all_buffers.begin(), all_buffers.end(), g));
          vkUnmapMemory(device, g->memory); vkDestroyBuffer(device, g->buffer, nullptr); vkFreeMemory(device, g->memory, nullptr);
       }

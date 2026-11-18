@@ -1,0 +1,17 @@
+#version 450
+// ALU throughput: 8 independent FMA chains x 512 iterations per invocation
+// (8192 FLOP per invocation, 2 per FMA). The result is stored so the
+// compiler cannot drop the loop.
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) buffer Data { float v[]; };
+void main()
+{
+   float a = float(gl_GlobalInvocationID.x) * 1e-7, b = a + 0.1, c = a + 0.2, d = a + 0.3;
+   float e = a + 0.4, f = a + 0.5, g = a + 0.6, h = a + 0.7;
+   const float m = 0.9999, k = 0.0001;
+   for (uint i = 0u; i < 512u; ++i) {
+      a = fma(a, m, k); b = fma(b, m, k); c = fma(c, m, k); d = fma(d, m, k);
+      e = fma(e, m, k); f = fma(f, m, k); g = fma(g, m, k); h = fma(h, m, k);
+   }
+   v[gl_GlobalInvocationID.x & 1023u] = a + b + c + d + e + f + g + h;
+}
