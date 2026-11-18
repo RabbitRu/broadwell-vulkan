@@ -166,7 +166,10 @@ edit('src/vulkan/wsi/wsi_common_win32.cpp', [
     ('   chain->extent = create_info->imageExtent;\n',
      '   chain->extent = create_info->imageExtent;\n'
      '   chain->rgba_order = create_info->imageFormat == VK_FORMAT_R8G8B8A8_UNORM ||\n'
-     '                       create_info->imageFormat == VK_FORMAT_R8G8B8A8_SRGB;\n'),
+     '                       create_info->imageFormat == VK_FORMAT_R8G8B8A8_SRGB;\n'
+     '#ifdef HASVK_WDDM_GDI\n'
+     '   chain->base.present_cmd = wsi_win32_present_cmd;\n'
+     '#endif\n'),
     # A window whose client area no longer matches the swapchain: acquire
     # reports OUT_OF_DATE (as other Windows drivers do), present SUBOPTIMAL.
     ('''   /* acquire timeout has to be explicitly handled for sw wsi */
@@ -183,6 +186,19 @@ edit('src/vulkan/wsi/wsi_common_win32.cpp', [
 '''),
     ('''static bool
 wsi_win32_find_idle_image(''', '''#ifdef HASVK_WDDM_GDI
+/* The driver's window copy of image_index for this present, or VK_NULL_HANDLE
+ * (the frame then goes through GDI). */
+static VkCommandBuffer
+wsi_win32_present_cmd(struct wsi_swapchain *drv_chain, VkQueue queue, uint32_t image_index)
+{
+   struct wsi_win32_swapchain *chain = (struct wsi_win32_swapchain *)drv_chain;
+   if (!chain->wsi->wsi->win32.present_redirected_record)
+      return VK_NULL_HANDLE;
+   return chain->wsi->wsi->win32.present_redirected_record(chain->base.device, queue,
+                                                          chain->images[image_index].base.image, image_index,
+                                                          chain->surface->base.hwnd, chain->extent,
+                                                          &chain->redirect_state);
+}
 /* Client area size equals the swapchain extent. A minimized window (0x0) is
  * not a mismatch: the swapchain stays usable until the window is restored, so
  * applications are not pushed into recreating it with a zero extent. */
@@ -254,11 +270,9 @@ wsi_win32_find_idle_image('''),
 ''', '''#ifdef HASVK_WDDM_GDI
    const bool extent_matches = wsi_win32_extent_matches(chain);
 #endif
-   if (chain->wsi->wsi->win32.present_redirected &&
-       chain->wsi->wsi->win32.present_redirected(chain->base.device, image->base.image, chain->surface->base.hwnd,
-                                                 chain->extent, &chain->redirect_state) == VK_SUCCESS) {
+   if (image->base.redirected) {
+      /* The window copy and the present went with WSI's present submission. */
       ++chain->redirected_presents;
-      chain->base.blit_unneeded = true;   /* the next frames skip the copy for GDI */
       wsi_win32_set_image_idle(chain, image);
 #ifdef HASVK_WDDM_GDI
       if (chain->base.present_mode == VK_PRESENT_MODE_FIFO_KHR)
@@ -269,9 +283,6 @@ wsi_win32_find_idle_image('''),
       return chain->status;
    }
    ++chain->gdi_presents;
-   /* GDI shows the CPU copy: made from the next frame on (this frame shows
-    * the last copied one if the copy was skipped). */
-   chain->base.blit_unneeded = false;
 
    char *ptr = (char *)image->base.cpu_map;
    char *dptr = (char *)image->sw.ppvBits;
@@ -339,30 +350,57 @@ edit('src/vulkan/wsi/wsi_common.h', [
 ''', '''      VkResult (*create_image_memory)(VkDevice device, void *resource,
                                       const VkAllocationCallbacks *alloc,
                                       VkDeviceMemory *out);
-      /* Present image into window hwnd without a CPU copy; *state is per
-       * swapchain, owned by the driver and released by
-       * present_redirected_finish. Anything but VK_SUCCESS falls back to GDI. */
-      VkResult (*present_redirected)(VkDevice device, VkImage image, void *hwnd,
-                                     VkExtent2D extent, void **state);
+      /* Records the copy of swapchain image index into window hwnd for a
+       * present without a CPU copy; WSI submits it in its present submission
+       * on queue. *state is per swapchain, owned by the driver and released by
+       * present_redirected_finish. VK_NULL_HANDLE: this frame goes to GDI. */
+      VkCommandBuffer (*present_redirected_record)(VkDevice device, VkQueue queue, VkImage image,
+                                                   uint32_t index, void *hwnd, VkExtent2D extent,
+                                                   void **state);
       void (*present_redirected_finish)(VkDevice device, void *state);
 '''),
 ])
 edit('src/vulkan/wsi/wsi_common_private.h', [
     ('   struct {\n      enum wsi_swapchain_blit_type type;\n',
-     '   /* Set by the platform while presents need no CPU-visible copy (redirected\n'
-     '    * present on the WDDM port); the buffer blit is then skipped. */\n'
-     '   bool blit_unneeded;\n\n'
+     '   /* Set while presents need no CPU-visible copy (redirected present on\n'
+     '    * the WDDM port); the buffer blit is then skipped. */\n'
+     '   bool blit_unneeded;\n'
+     '   /* WDDM port: the platform\'s window copy for image_index, submitted in\n'
+     '    * the present submission; VK_NULL_HANDLE when the frame goes to GDI. */\n'
+     '   VkCommandBuffer (*present_cmd)(struct wsi_swapchain *swap_chain, VkQueue queue,\n'
+     '                                  uint32_t image_index);\n\n'
      '   struct {\n      enum wsi_swapchain_blit_type type;\n'),
+    ('   bool acquired;\n   uint64_t present_serial;\n',
+     '   bool acquired;\n   uint64_t present_serial;\n'
+     '   /* WDDM port: this present\'s window copy went into the submission. */\n'
+     '   bool redirected;\n'),
 ])
 edit('src/vulkan/wsi/wsi_common.c', [
     ('''         if (swapchain->blit.type != WSI_SWAPCHAIN_NO_BLIT) {
             command_buffer_infos[command_buffer_count++] = (VkCommandBufferSubmitInfo) {''',
-     '''         if (swapchain->blit.type != WSI_SWAPCHAIN_NO_BLIT && !swapchain->blit_unneeded) {
+     '''         image->redirected = false;
+         if (swapchain->present_cmd) {
+            /* WDDM port: the window copy rides in this submission, after the
+             * application's work on the in-order queue: no CPU wait and no
+             * extra submission. Only a GDI frame needs the CPU copy. */
+            VkCommandBuffer redirect =
+               swapchain->present_cmd(swapchain, vk_queue_to_handle(queue), image_index);
+            image->redirected = redirect != VK_NULL_HANDLE;
+            swapchain->blit_unneeded = image->redirected;
+            if (redirect) {
+               command_buffer_infos[command_buffer_count++] = (VkCommandBufferSubmitInfo) {
+                  .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                  .commandBuffer = redirect,
+               };
+            }
+         }
+
+         if (swapchain->blit.type != WSI_SWAPCHAIN_NO_BLIT && !swapchain->blit_unneeded) {
             command_buffer_infos[command_buffer_count++] = (VkCommandBufferSubmitInfo) {'''),
     ('      if (wsi->sw) {\n         wsi->WaitForFences',
      '''#ifdef HASVK_WDDM_GDI
-      /* CPU presentation of a hardware image must wait for its GPU copy. */
-      if (true) {
+      /* A GDI frame shows the CPU copy: wait for it (redirected frames do not). */
+      if (!image->redirected) {
 #else
       if (wsi->sw) {
 #endif

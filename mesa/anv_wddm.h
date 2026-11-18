@@ -93,6 +93,11 @@ struct anv_wddm_cmd_state {
    uint64_t run;
    /* Transport submission of its last non-blocking execution, until verified. */
    uint64_t seq;
+   /* Window copy recorded for a redirected present: the kernel submission
+    * that ends with this buffer carries the token. If the kernel refuses the
+    * present, the commands run without it and *present_refused is set. */
+   uint64_t present_token;
+   int *present_refused;
 };
 /* Executes command buffers in order, chaining them into as few kernel
  * submissions as their event waits and repetitions allow. serial != 0: the
@@ -113,7 +118,8 @@ void anv_wddm_wait_verified(struct anv_device *device, uint64_t seq);
 VkResult anv_wddm_alloc_window_surface_bo(struct anv_device *device, uint32_t width, uint32_t height,
                                           struct anv_bo **out, uint32_t *share, uint64_t *pitch);
 #ifdef HASVK_WDDM_GRAPHICS
-VkResult anv_wddm_present_redirected(VkDevice device, VkImage image, void *hwnd, VkExtent2D extent, void **state);
+VkCommandBuffer anv_wddm_present_redirected_record(VkDevice device, VkQueue queue, VkImage image, uint32_t index,
+                                                   void *hwnd, VkExtent2D extent, void **state);
 void anv_wddm_present_redirected_finish(VkDevice device, void *state);
 #endif
 #ifdef HASVK_WDDM_GRAPHICS

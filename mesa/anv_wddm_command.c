@@ -357,7 +357,9 @@ static int submit_run(struct anv_wddm_device_state *w, uint32_t slot, struct anv
                     : present_token ? hasvk_wddm_submit_present(w->transport, w->entry, offset, 16, present_token)
                     : hasvk_wddm_submit_wait(w->transport, w->entry, offset, 16);
    if (failed) {
-      fprintf(stderr, "WDDM command submission: %s\n", hasvk_wddm_error());
+      /* A refused present is retried without it by the caller: report it once. */
+      static unsigned refused_reports;
+      if (!present_token || refused_reports++ < 2) fprintf(stderr, "WDDM command submission: %s\n", hasvk_wddm_error());
       return -1;
    }
    if (seq) w->slot_seq[slot] = *seq;
@@ -452,7 +454,15 @@ int anv_wddm_execute_commands(struct anv_device *device, struct vk_command_buffe
    }
    if (async) {
       /* Not waited for: the caller verifies [first, count) after completion. */
-      if (submit_run(w, final_slot, start, present_token, seq)) return -1;
+      if (submit_run(w, final_slot, start, present_token, seq)) {
+         if (!present_token) return -1;
+         /* The kernel refused the present (STATUS_GRAPHICS_PRESENT_OCCLUDED
+          * while the display sleeps): run the same commands without it and
+          * let WSI show the next frame through GDI. */
+         if (submit_run(w, final_slot, start, 0, seq)) return -1;
+         for (uint32_t i = 0; i < count; ++i)
+            if (command_at(commands, i)->wddm->present_refused) p_atomic_set(command_at(commands, i)->wddm->present_refused, 1);
+      }
       for (uint32_t i = first; i < count; ++i) command_at(commands, i)->wddm->seq = *seq;
       return 0;
    }

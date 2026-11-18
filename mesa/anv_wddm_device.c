@@ -367,7 +367,7 @@ static VkResult enumerate(struct vk_instance *base)
     * surface, no CPU copy); HASVK_WDDM_PRESENT=gdi keeps the GDI path. */
    const char *present = getenv("HASVK_WDDM_PRESENT");
    if (!present || strcmp(present, "gdi")) {
-      physical->wsi_device.win32.present_redirected = anv_wddm_present_redirected;
+      physical->wsi_device.win32.present_redirected_record = anv_wddm_present_redirected_record;
       physical->wsi_device.win32.present_redirected_finish = anv_wddm_present_redirected_finish;
    }
 #endif
@@ -577,10 +577,15 @@ static VkResult submit(struct vk_queue *queue, struct vk_queue_submit *work)
    for (uint32_t i = 0; i < work->command_buffer_count; ++i)
       pending->commands[i] = container_of(work->command_buffers[i], struct anv_cmd_buffer, vk);
    memcpy(pending->signals, work->signals, work->signal_count * sizeof(*pending->signals));
+   /* A window copy recorded for a redirected present (WSI's present
+    * submission) makes this kernel submission the present. */
+   uint64_t present_token = 0;
+   for (uint32_t i = 0; i < work->command_buffer_count; ++i)
+      if (pending->commands[i]->wddm->present_token) present_token = pending->commands[i]->wddm->present_token;
    mtx_lock(&w->submit_mutex);
    pending->serial = ++w->next_serial;
    const int failed = anv_wddm_execute_commands(device, work->command_buffers, work->command_buffer_count,
-                                                pending->serial, 0, true, &pending->seq);
+                                                pending->serial, present_token, true, &pending->seq);
    const uint64_t seq = pending->seq;   /* the completion thread frees pending */
    if (!failed) {
       mtx_lock(&w->mutex);
