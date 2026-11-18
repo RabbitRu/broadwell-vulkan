@@ -4,243 +4,307 @@
         "matched":  321144,
         "selected":  215,
         "executed":  215,
-        "seconds":  28.6,
+        "seconds":  5.1,
         "counts":  {
                        "NotSupported":  147,
                        "Pass":  68
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "pipeline.monolithic",
         "matched":  293309,
         "selected":  98,
         "executed":  98,
-        "seconds":  14.8,
+        "seconds":  4.7,
         "counts":  {
                        "NotSupported":  51,
                        "Pass":  47
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "renderpasses.renderpass1",
         "matched":  19678,
         "selected":  99,
         "executed":  99,
-        "seconds":  34.1,
+        "seconds":  5.4,
         "counts":  {
                        "NotSupported":  13,
                        "Pass":  86
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "draw.renderpass",
         "matched":  12889,
         "selected":  86,
         "executed":  86,
-        "seconds":  27.6,
+        "seconds":  3.9,
         "counts":  {
                        "NotSupported":  15,
                        "Pass":  71
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "compute.pipeline",
         "matched":  20282,
         "selected":  68,
         "executed":  68,
-        "seconds":  3.7,
+        "seconds":  3.9,
         "counts":  {
                        "NotSupported":  52,
                        "Pass":  16
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "image",
         "matched":  142323,
         "selected":  143,
         "executed":  143,
-        "seconds":  8.1,
+        "seconds":  4.1,
         "counts":  {
                        "NotSupported":  121,
                        "Pass":  22
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "binding_model",
         "matched":  146470,
         "selected":  147,
         "executed":  147,
-        "seconds":  58,
+        "seconds":  5.6,
         "counts":  {
                        "NotSupported":  49,
                        "Pass":  98
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "texture",
         "matched":  16303,
         "selected":  136,
         "executed":  136,
-        "seconds":  60.6,
+        "seconds":  4.6,
         "counts":  {
                        "NotSupported":  75,
                        "Pass":  61
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "glsl",
         "matched":  23929,
         "selected":  150,
         "executed":  150,
-        "seconds":  112.5,
+        "seconds":  7,
         "counts":  {
                        "NotSupported":  28,
                        "Pass":  122
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "ubo",
         "matched":  9844,
         "selected":  141,
         "executed":  141,
-        "seconds":  47,
+        "seconds":  5.9,
         "counts":  {
                        "NotSupported":  14,
                        "Pass":  127
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "ssbo",
         "matched":  12224,
         "selected":  136,
         "executed":  136,
-        "seconds":  32.8,
+        "seconds":  5.3,
         "counts":  {
                        "NotSupported":  1,
                        "Pass":  135
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "query_pool",
         "matched":  18256,
         "selected":  141,
         "executed":  141,
-        "seconds":  71.2,
+        "seconds":  4.3,
         "counts":  {
                        "NotSupported":  1,
                        "Pass":  140
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "memory",
         "matched":  6267,
         "selected":  126,
         "executed":  126,
-        "seconds":  28.8,
+        "seconds":  4.9,
         "counts":  {
                        "NotSupported":  28,
                        "Pass":  98
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "synchronization",
         "matched":  64823,
         "selected":  145,
         "executed":  145,
-        "seconds":  29.6,
+        "seconds":  5.1,
         "counts":  {
                        "NotSupported":  120,
                        "Pass":  25
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "rasterization",
         "matched":  15079,
         "selected":  138,
         "executed":  138,
-        "seconds":  4.7,
+        "seconds":  3.6,
         "counts":  {
                        "NotSupported":  132,
                        "Pass":  6
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "dynamic_state",
         "matched":  671,
         "selected":  112,
         "executed":  112,
-        "seconds":  3.8,
+        "seconds":  3.6,
         "counts":  {
                        "NotSupported":  95,
                        "Pass":  17
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "spirv_assembly",
         "matched":  61618,
         "selected":  147,
         "executed":  147,
-        "seconds":  28.6,
+        "seconds":  7.8,
         "counts":  {
                        "NotSupported":  72,
                        "Pass":  75
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "clipping",
         "matched":  308,
         "selected":  103,
         "executed":  103,
-        "seconds":  27.6,
+        "seconds":  4.3,
         "counts":  {
                        "Pass":  103
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "fragment_operations",
         "matched":  151,
         "selected":  76,
         "executed":  76,
-        "seconds":  18.5,
+        "seconds":  3.4,
         "counts":  {
                        "NotSupported":  15,
                        "Pass":  60,
                        "QualityWarning":  1
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "geometry",
         "matched":  199,
         "selected":  100,
         "executed":  100,
-        "seconds":  20.7,
+        "seconds":  4.5,
         "counts":  {
                        "NotSupported":  4,
                        "Pass":  96
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "tessellation",
         "matched":  1103,
         "selected":  138,
         "executed":  138,
-        "seconds":  41.1,
+        "seconds":  10.8,
         "counts":  {
-                       "Fail":  1,
                        "NotSupported":  36,
-                       "Pass":  100,
-                       "ResourceError":  1
-                   }
+                       "Pass":  102
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     },
     {
         "group":  "wsi.win32",
         "matched":  3874,
         "selected":  16,
         "executed":  16,
-        "seconds":  1.9,
+        "seconds":  2.8,
         "counts":  {
                        "NotSupported":  15,
                        "Pass":  1
-                   }
+                   },
+        "flakyUnderParallel":  [
+
+                               ]
     }
 ]

@@ -84,6 +84,7 @@ private:
    D3DKMT_HANDLE adapter_ = 0, device_ = 0, context_ = 0;
    D3DKMT_CREATEPAGINGQUEUE paging_{};
    HANDLE completed_ = nullptr;
+   HANDLE paging_event_ = nullptr;   // signalled by the kernel at a paging fence value
    uint64_t driver_version_ = 0;
    LUID luid_{};
    std::vector<Buffer *> buffers_;

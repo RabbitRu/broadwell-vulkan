@@ -92,16 +92,26 @@ Device::Device(uint32_t client_hint, std::vector<uint8_t> context_private, bool 
    } catch (...) { close(); throw; }
 }
 
+/* Paging operations (GPU VA mapping, residency) complete on the paging queue's
+ * monitored fence. The kernel signals an event when it reaches the value:
+ * polling with Sleep(1) cost a whole timer tick (~15.6 ms) per wait, twice per
+ * allocation, and left CTS processes idle most of the time. */
 void Device::wait_paging(uint64_t fence, DWORD timeout_ms)
 {
-   const ULONGLONG start = GetTickCount64();
    auto *value = static_cast<volatile uint64_t *>(paging_.FenceValueCPUVirtualAddress);
-   while (*value < fence) {
-      if (GetTickCount64() - start >= timeout_ms) {
-         abort_context();
-         throw std::runtime_error("GPU paging fence timed out");
-      }
-      Sleep(1);
+   if (*value >= fence) return;
+   if (!paging_event_ && !(paging_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr)))
+      throw Error("CreateEventW", HRESULT_FROM_WIN32(GetLastError()));
+   D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU wait{};
+   wait.hDevice = device_;
+   wait.ObjectCount = 1;
+   wait.ObjectHandleArray = &paging_.hSyncObject;
+   wait.FenceValueArray = &fence;
+   wait.hAsyncEvent = paging_event_;
+   check(D3DKMTWaitForSynchronizationObjectFromCpu(&wait), "Wait for paging fence");
+   if (WaitForSingleObject(paging_event_, timeout_ms) != WAIT_OBJECT_0 || *value < fence) {
+      abort_context();
+      throw std::runtime_error("GPU paging fence timed out");
    }
 }
 
@@ -266,6 +276,7 @@ void Device::close() noexcept
 {
    abort_context();
    if (completed_) { CloseHandle(completed_); completed_ = nullptr; }
+   if (paging_event_) { CloseHandle(paging_event_); paging_event_ = nullptr; }
    for (auto &entry : pending_) CloseHandle(entry.second);
    for (HANDLE event : free_events_) CloseHandle(event);
    pending_.clear(); free_events_.clear();
