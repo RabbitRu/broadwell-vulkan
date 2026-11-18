@@ -337,7 +337,7 @@ static VkResult enumerate(struct vk_instance *base)
    p->vendorID = 0x8086; p->deviceID = 0x162b; p->deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
    memcpy(p->deviceLUID, &adapter.luid_low, 4); memcpy(p->deviceLUID + 4, &adapter.luid_high, 4);
    p->deviceLUIDValid = true; p->deviceNodeMask = 1;
-   snprintf(p->deviceName, sizeof(p->deviceName), "Intel Iris 6100 HasVK/WDDM experimental compute");
+   snprintf(p->deviceName, sizeof(p->deviceName), "Intel Iris 6100 (HasVK/WDDM)");
    /* Bump when shader/descriptor ABI changes (00002: A64 buffer access). */
    memcpy(p->pipelineCacheUUID, "HASVK-WDDM-00002", VK_UUID_SIZE);
    p->maxMemoryAllocationCount = 4096;
