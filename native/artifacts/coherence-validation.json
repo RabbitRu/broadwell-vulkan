@@ -1,0 +1,28 @@
+{
+  "cases": [
+    {
+      "bytes": 65536,
+      "iterations": 200,
+      "mismatches": 0,
+      "seconds": 0.1124782,
+      "sink": 0
+    },
+    {
+      "bytes": 1048576,
+      "iterations": 200,
+      "mismatches": 0,
+      "seconds": 0.4007006,
+      "sink": 0
+    },
+    {
+      "bytes": 4194304,
+      "iterations": 60,
+      "mismatches": 0,
+      "seconds": 0.3799835,
+      "sink": 0
+    }
+  ],
+  "cpuFlush": false,
+  "mismatches": 0,
+  "passed": true
+}

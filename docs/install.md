@@ -59,6 +59,7 @@ $env:VK_DRIVER_FILES = "<папка пакета>\icd\intel_hasvk_wddm_icd.json"
 | `HASVK_WDDM_PRESENT_STATS=1` | сколько кадров прошло через окно и через GDI |
 | `HASVK_WDDM_NO_AUX=1` | без вспомогательных поверхностей HiZ/MCS |
 | `HASVK_WDDM_SYNC_SUBMIT=1` | ждать каждую отправку (медленнее, для отладки) |
+| `HASVK_WDDM_CPU_FLUSH=1` | сбрасывать кэш CPU вокруг отправок (не нужно на этой GPU; для диагностики) |
 
 ## Ограничения
 

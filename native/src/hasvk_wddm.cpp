@@ -92,6 +92,14 @@ Device::Device(uint32_t client_hint, std::vector<uint8_t> context_private, bool 
    } catch (...) { close(); throw; }
 }
 
+/* CPU cache write-back/invalidation around GPU work: off by default, the GPU
+ * is coherent with the CPU caches on this machine (see Device::submit). */
+static bool cpu_flush_enabled()
+{
+   static const bool enabled = GetEnvironmentVariableA("HASVK_WDDM_CPU_FLUSH", nullptr, 0) > 0;
+   return enabled;
+}
+
 /* Paging operations (GPU VA mapping, residency) complete on the paging queue's
  * monitored fence. The kernel signals an event when it reaches the value:
  * polling with Sleep(1) cost a whole timer tick (~15.6 ms) per wait, twice per
@@ -134,7 +142,8 @@ void Device::retire_oldest()
       const uint32_t state = execution_state();
       if (state != D3DKMT_DEVICEEXECUTION_ACTIVE)
          throw std::runtime_error("WDDM device is not active after submission (execution state " + std::to_string(state) + ")");
-      for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 2) buffer->flush();
+      if (cpu_flush_enabled())   /* see submit(): coherent, no invalidation needed */
+         for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 2) buffer->flush();
       _mm_mfence();
    } catch (...) { abort_context(); throw; }
    completed_seq_ = pending_.front().first;
@@ -177,14 +186,12 @@ uint64_t Device::submit(uint64_t commands, uint32_t bytes, const std::vector<uin
    LONG refused = 0;
    try {
       MemoryBarrier();
-      // The private allocation profile does not establish a documented CPU
-      // cache policy. Publish CPU writes explicitly instead of assuming KMT
-      // Lock2 mappings and every GPU access path are mutually snooped.
       LARGE_INTEGER t1, t2;
-      /* HASVK_WDDM_TEST_SKIP_FLUSH=1 (experiments only): do not write back CPU
-       * caches before submitting, to show what the flush protects against. */
-      static const bool skip_flush = GetEnvironmentVariableA("HASVK_WDDM_TEST_SKIP_FLUSH", nullptr, 0) > 0;
-      if (!skip_flush)
+      /* GPU access to these allocations is coherent with the CPU caches
+       * (shared LLC; native/tests/coherence_probe.cpp: CPU-written, CPU-read
+       * and CPU-dirtied lines in L2/L3 and beyond, both directions). CPU
+       * write-back happens only with HASVK_WDDM_CPU_FLUSH=1 (diagnostics). */
+      if (cpu_flush_enabled())
          for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 1) buffer->flush();
       _mm_mfence();
       QueryPerformanceCounter(&t1);
@@ -215,6 +222,7 @@ void Buffer::flush(uint64_t offset, uint64_t bytes) const
 {
    if (offset > bytes_ || bytes > bytes_ - offset) throw std::runtime_error("Flush range outside the buffer");
    if (!cpu_) return;   // window surfaces have no CPU mapping
+   if (!cpu_flush_enabled()) return;   /* coherent: explicit flushes are no-ops too */
    /* Every flush, implicit (around submissions) or explicit, is counted in
     * the device profile. */
    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
