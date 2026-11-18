@@ -103,6 +103,10 @@ VkCommandBuffer anv_wddm_present_redirected_record(VkDevice handle, VkQueue queu
    if (w->queue && w->queue != queue) window_idle(device, w);
    w->queue = queue;
 
+   /* DWM redirects top-level windows only: a child window's content is part of
+    * its parent's surface. Its frames go through GDI, which draws into the
+    * child's own DC (the redirected token for a child HWND is unverified). */
+   if (GetAncestor(hwnd, GA_ROOT) != hwnd) return VK_NULL_HANDLE;
    /* Window size and the client area's offset inside it, in the window's own
     * (possibly DPI-virtualized) coordinates. */
    RECT outer, client;

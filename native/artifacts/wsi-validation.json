@@ -1,6 +1,6 @@
 {
-  "compositionObservable": false,
-  "displayState": 0,
+  "compositionObservable": true,
+  "displayState": 1,
   "extents": {
     "current": [
       256,
@@ -45,7 +45,22 @@
       "width": 256
     }
   ],
-  "note": "display off or session locked: frames went through the GDI fallback",
+  "geometry": [
+    {
+      "expected": "bf4080",
+      "height": 150,
+      "mismatches": 0,
+      "width": 200,
+      "window": "borderless popup"
+    },
+    {
+      "expected": "bf4080",
+      "height": 120,
+      "mismatches": 0,
+      "width": 160,
+      "window": "child window"
+    }
+  ],
   "passed": true,
   "presentModes": [
     2,
@@ -53,10 +68,10 @@
     0
   ],
   "presentTiming": {
-    "fifoMsPerFrame": 16.683825,
-    "immediateMsPerFrame": 2.4019049999999997,
-    "mailboxMsPerFrame": 2.5336966666666667,
-    "observable": false
+    "fifoMsPerFrame": 16.68715,
+    "immediateMsPerFrame": 2.287158333333333,
+    "mailboxMsPerFrame": 2.037645,
+    "observable": true
   },
   "resize": {
     "acquireAfterResize": -1000001004,

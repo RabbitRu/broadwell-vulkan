@@ -154,12 +154,25 @@ static VkResult frame(Vk &vk, Chain &c, const VkClearColorValue &colour)
    p.swapchainCount = 1; p.pSwapchains = &c.handle; p.pImageIndices = &index;
    return vk.vkQueuePresentKHR(vk.queue, &p);
 }
-/* Every pixel of the client area equals expected (+-1 per channel). */
+/* Every pixel of the client area equals expected (+-1 per channel). A child
+ * window is captured through its top-level parent (DWM composes only that):
+ * the child's rectangle inside the parent's client area. */
 static json verify(HWND hwnd, const Chain &c, uint32_t expected)
 {
    settle(150);
    int width = 0, height = 0;
-   const std::vector<uint32_t> pixels = capture(hwnd, width, height);
+   std::vector<uint32_t> pixels;
+   const HWND root = GetAncestor(hwnd, GA_ROOT);
+   if (root != hwnd) {
+      int root_width = 0, root_height = 0;
+      const std::vector<uint32_t> all = capture(root, root_width, root_height);
+      RECT r; GetClientRect(hwnd, &r); MapWindowPoints(hwnd, root, reinterpret_cast<POINT *>(&r), 2);
+      width = r.right - r.left; height = r.bottom - r.top;
+      require(r.left >= 0 && r.top >= 0 && r.right <= root_width && r.bottom <= root_height, "Child window outside its parent");
+      for (int y = r.top; y < r.bottom; ++y) for (int x = r.left; x < r.right; ++x) pixels.push_back(all[static_cast<size_t>(y) * root_width + x]);
+   } else {
+      pixels = capture(hwnd, width, height);
+   }
    require(width == static_cast<int>(c.extent.width) && height == static_cast<int>(c.extent.height), "Client area differs from the swapchain");
    uint64_t mismatches = 0; uint32_t first_bad = 0;
    for (uint32_t p : pixels) {
@@ -361,8 +374,42 @@ int wmain(int argc, wchar_t **argv)
       }
       report["resize"] = resize;
 
+      /* 4. Window geometry: a borderless popup and a child window of the main
+       * window, each with its own surface and swapchain. */
       vk.vkDeviceWaitIdle(vk.device);
-      vk.vkDestroySwapchainKHR(vk.device, chain.handle, nullptr);
+      vk.vkDestroySwapchainKHR(vk.device, chain.handle, nullptr); chain = {};
+      json geometry = json::array();
+      auto create_surface = reinterpret_cast<PFN_vkCreateWin32SurfaceKHR>(vk.gipa(vk.instance, "vkCreateWin32SurfaceKHR"));
+      auto destroy_surface = reinterpret_cast<PFN_vkDestroySurfaceKHR>(vk.gipa(vk.instance, "vkDestroySurfaceKHR"));
+      const VkSurfaceKHR main_surface = vk.surface;
+      struct Shape { const char *name; DWORD style; HWND parent; int x, y, w, h; };
+      for (const Shape &shape : {Shape{"borderless popup", WS_POPUP | WS_VISIBLE, nullptr, 420, 80, 200, 150},
+                                 Shape{"child window", WS_CHILD | WS_VISIBLE, hwnd, 40, 30, 160, 120}}) {
+         HWND other = CreateWindowExW(0, wc.lpszClassName, L"", shape.style, shape.x, shape.y, shape.w, shape.h,
+                                      shape.parent, nullptr, wc.hInstance, nullptr);
+         require(other != nullptr, std::string("Create ") + shape.name);
+         if (!shape.parent) ShowWindow(other, SW_SHOWNOACTIVATE);
+         settle(200);
+         VkWin32SurfaceCreateInfoKHR oci{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR}; oci.hinstance = wc.hInstance; oci.hwnd = other;
+         check(create_surface(vk.instance, &oci, nullptr, &vk.surface), std::string("Surface for ") + shape.name);
+         Chain c = create_chain(vk, VK_FORMAT_B8G8R8A8_UNORM, VK_PRESENT_MODE_FIFO_KHR, VK_NULL_HANDLE);
+         require(c.extent.width == static_cast<uint32_t>(shape.w) && c.extent.height == static_cast<uint32_t>(shape.h),
+                 std::string("Surface extent of ") + shape.name);
+         const VkClearColorValue other_colour{{0.75f, 0.25f, 0.5f, 1.0f}};
+         for (int i = 0; i < 3; ++i) check(frame(vk, c, other_colour), std::string("Present to ") + shape.name);
+         json seen = verify(other, c, static_cast<uint32_t>(unorm(0.75f)) << 16 | static_cast<uint32_t>(unorm(0.25f)) << 8 | unorm(0.5f));
+         seen["window"] = shape.name;
+         geometry.push_back(seen);
+         vk.vkDeviceWaitIdle(vk.device);
+         vk.vkDestroySwapchainKHR(vk.device, c.handle, nullptr);
+         destroy_surface(vk.instance, vk.surface, nullptr);
+         vk.surface = main_surface;
+         DestroyWindow(other); pump();
+         require(seen["mismatches"] == 0, std::string("Wrong pixels in ") + shape.name);
+      }
+      report["geometry"] = geometry;
+
+      vk.vkDeviceWaitIdle(vk.device);
       reinterpret_cast<PFN_vkDestroySemaphore>(gdpa(vk.device, "vkDestroySemaphore"))(vk.device, vk.acquired, nullptr);
       reinterpret_cast<PFN_vkDestroySemaphore>(gdpa(vk.device, "vkDestroySemaphore"))(vk.device, vk.rendered, nullptr);
       reinterpret_cast<PFN_vkDestroyFence>(gdpa(vk.device, "vkDestroyFence"))(vk.device, vk.fence, nullptr);
