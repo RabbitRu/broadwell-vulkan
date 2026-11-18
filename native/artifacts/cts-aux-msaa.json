@@ -1,0 +1,70 @@
+﻿[
+    {
+        "run":  "aux2-api-copy-and-blit-core-resolve-image",
+        "counts":  {
+                       "NotSupported":  126,
+                       "Pass":  114
+                   }
+    },
+    {
+        "run":  "msaa-api-copy-and-blit-core-blit-image-linear",
+        "counts":  {
+                       "NotSupported":  983,
+                       "Pass":  329
+                   }
+    },
+    {
+        "run":  "msaa-pipeline-monolithic-multisample-raster-samples",
+        "counts":  {
+                       "NotSupported":  30,
+                       "Pass":  12
+                   }
+    },
+    {
+        "run":  "msaa-pipeline-monolithic-multisample-min-sample-shading",
+        "counts":  {
+                       "NotSupported":  90,
+                       "Pass":  30
+                   }
+    },
+    {
+        "run":  "aux3-pipeline-monolithic-depth",
+        "counts":  {
+                       "NotSupported":  1744,
+                       "Pass":  1095
+                   }
+    },
+    {
+        "run":  "aux4-api-image-clearing-core",
+        "counts":  {
+                       "NotSupported":  101,
+                       "Pass":  123
+                   }
+    },
+    {
+        "run":  "aux4-pipeline-monolithic-multisample",
+        "counts":  {
+                       "NotSupported":  121,
+                       "Pass":  47
+                   }
+    },
+    {
+        "run":  "aux4-renderpasses-renderpass2-suballocation-multisample-resolve",
+        "counts":  {
+                       "NotSupported":  4,
+                       "Pass":  213
+                   }
+    },
+    {
+        "run":  "aux4-draw-renderpass-depth-bias",
+        "counts":  {
+                       "Pass":  6
+                   }
+    },
+    {
+        "run":  "rp-default",
+        "counts":  {
+                       "Pass":  6
+                   }
+    }
+]

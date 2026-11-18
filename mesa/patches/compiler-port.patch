@@ -773,7 +773,7 @@
  
     /* Driver must support the modifier. */
     assert(isl_drm_modifier_get_score(device->info, isl_mod_info->modifier));
-@@ -1175,6 +1188,18 @@
+@@ -1175,6 +1188,24 @@
     const struct isl_drm_modifier_info *isl_mod_info = NULL;
     VkResult r;
  
@@ -787,12 +787,18 @@
 +       (pCreateInfo->tiling != VK_IMAGE_TILING_LINEAR && pCreateInfo->tiling != VK_IMAGE_TILING_OPTIMAL) ||
 +       (pCreateInfo->usage & ~VK_IMAGE_USAGE_STORAGE_BIT)) return VK_ERROR_FORMAT_NOT_SUPPORTED;
 +#endif
++#ifndef HASVK_WDDM_GRAPHICS
 +   create_info->isl_extra_usage_flags |= ISL_SURF_USAGE_DISABLE_AUX_BIT;
++#else
++   /* Graphics: upstream's HiZ and MCS (CCS is off, see anv_CreateInstance).
++    * HASVK_WDDM_NO_AUX=1 disables every auxiliary surface (investigation). */
++   if (getenv("HASVK_WDDM_NO_AUX")) create_info->isl_extra_usage_flags |= ISL_SURF_USAGE_DISABLE_AUX_BIT;
++#endif
 +#endif
     vk_image_init(&device->vk, &image->vk, pCreateInfo);
  
     image->vk.usage = anv_image_create_usage(pCreateInfo, image->vk.usage);
-@@ -1198,8 +1223,10 @@
+@@ -1198,8 +1229,10 @@
        }
  
        assert(isl_mod_info);
@@ -804,7 +810,7 @@
     }
  
     for (int i = 0; i < ANV_IMAGE_MEMORY_BINDING_END; ++i) {
-@@ -1769,7 +1796,7 @@
+@@ -1769,7 +1802,7 @@
           UNREACHABLE("bad VkImageAspectFlags");
        }
  
@@ -813,7 +819,7 @@
           assert(image->n_planes == 1);
           /* If the memory binding differs between primary and aux, then the
            * returned offset will be incorrect.
-@@ -1922,7 +1949,7 @@
+@@ -1922,7 +1955,7 @@
        assert(image->vk.aspects == VK_IMAGE_ASPECT_COLOR_BIT);
  
        enum isl_aux_state aux_state =
@@ -1301,7 +1307,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,915 @@
+@@ -0,0 +1,919 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -1711,6 +1717,10 @@
 +    * depth_clip_control and any viewport with minDepth != 0. */
 +   instance->drirc.quality.lower_depth_range_rate = 1.0f;
 +   process_intel_debug_variable();
++   /* No CCS_D: on this GPU it only speeds up colour fast clears, and with it a
++    * multisample resolve into mip level 3 came out wrong (CTS renderpass1
++    * multisample_resolve.*_resolve_level_3). HiZ and MCS stay on. */
++   BITSET_SET(intel_debug, DEBUG_NO_CCS);
 +   *out = anv_instance_to_handle(instance);
 +   return VK_SUCCESS;
 +}

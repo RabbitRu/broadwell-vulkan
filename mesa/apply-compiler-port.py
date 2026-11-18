@@ -323,7 +323,13 @@ image_after = image_after.replace('   vk_image_init(&device->vk, &image->vk, pCr
        (pCreateInfo->tiling != VK_IMAGE_TILING_LINEAR && pCreateInfo->tiling != VK_IMAGE_TILING_OPTIMAL) ||
        (pCreateInfo->usage & ~VK_IMAGE_USAGE_STORAGE_BIT)) return VK_ERROR_FORMAT_NOT_SUPPORTED;
 #endif
+#ifndef HASVK_WDDM_GRAPHICS
    create_info->isl_extra_usage_flags |= ISL_SURF_USAGE_DISABLE_AUX_BIT;
+#else
+   /* Graphics: upstream's HiZ and MCS (CCS is off, see anv_CreateInstance).
+    * HASVK_WDDM_NO_AUX=1 disables every auxiliary surface (investigation). */
+   if (getenv("HASVK_WDDM_NO_AUX")) create_info->isl_extra_usage_flags |= ISL_SURF_USAGE_DISABLE_AUX_BIT;
+#endif
 #endif
    vk_image_init(&device->vk, &image->vk, pCreateInfo);''')
 edit(image_name, [(image_before, image_after)])

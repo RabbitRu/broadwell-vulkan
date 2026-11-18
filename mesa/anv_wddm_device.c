@@ -407,6 +407,10 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateInstance(const VkInstanceCreateInfo *in
     * depth_clip_control and any viewport with minDepth != 0. */
    instance->drirc.quality.lower_depth_range_rate = 1.0f;
    process_intel_debug_variable();
+   /* No CCS_D: on this GPU it only speeds up colour fast clears, and with it a
+    * multisample resolve into mip level 3 came out wrong (CTS renderpass1
+    * multisample_resolve.*_resolve_level_3). HiZ and MCS stay on. */
+   BITSET_SET(intel_debug, DEBUG_NO_CCS);
    *out = anv_instance_to_handle(instance);
    return VK_SUCCESS;
 }
