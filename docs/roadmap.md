@@ -147,6 +147,10 @@ Intel `20.19.15.5171`, без Intel UMD и D3D12. Потолок для этой
   `renderpass2...multisample_resolve` — 213, каждый 3-й из
   `pipeline.monolithic.depth` — 1095, 3113 тестов `stencil`, каждый 100-й из
   `image_clearing.core` — 123, `depth_bias` — 6; 0 Fail.
+- Единственный отказ выборок CTS, `tessellation.misc_draw.tess_factor_barrier_bug`,
+  — не зависание, а нагрузка дольше 2-секундного TDR Windows: ≈6,0·10⁸
+  атомиков в одну ячейку при измеренных 287 млн/с на этой GPU (≥2,1 с).
+  Записан в `docs/cts-expected-failures.md`.
 - Командные буферы: цепочка BO без ограничения размера, secondary command
   buffers (копируются в primary).
 - Events: отдельный BO; `MI_SEMAPHORE_WAIT` в WDDM-контексте не работает,
@@ -262,11 +266,10 @@ WDDM-контексте (непривилегированный PPGTT-батч),
 ### Этап 4. Полный прогон CTS
 1. Полный mustpass для объявленной версии по группам (сейчас — только
    выборки); параллельный запуск нескольких процессов `deqp-vk`.
-2. Список ожидаемых отказов с причинами.
-3. Известное: `tessellation.misc_draw.tess_factor_barrier_bug` вешает GPU
-   (сброс по TDR, тест получает `VK_ERROR_DEVICE_LOST` через ~4 с; раньше
-   изредка проходил) — выяснить, зависание это или нагрузка дольше 2 с;
-   ошибка CTS 1.4.5.5 с `shaderDrawParameters` на устройствах 1.1.
+   Объём: 2,89 млн тестов в списках `vk-default`; при наблюдаемых ~4–5
+   тестах/с — несколько суток работы GPU с периодическими TDR.
+2. Список ожидаемых отказов с причинами — начат
+   (`docs/cts-expected-failures.md`), пополняется по итогам полного прогона.
 
 ### Этап 5. Вывод на экран
 1. `VK_ERROR_OUT_OF_DATE_KHR`/`SUBOPTIMAL`, пересоздание с `oldSwapchain`,

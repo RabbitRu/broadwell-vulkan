@@ -1,0 +1,9 @@
+#version 450
+// Same-address atomic throughput, the load of CTS tess_factor_barrier_bug's
+// vertex shader: every invocation adds 512 times to one counter.
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) buffer Data { uint counter; };
+void main()
+{
+   for (uint i = 0u; i < 512u; ++i) atomicAdd(counter, i);
+}
