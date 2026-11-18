@@ -3,7 +3,9 @@
  * back to front (every pixel passes), timed by GPU timestamps around the
  * render pass. Fragment stage: none, an empty shader, or an alpha test.
  * Compare with d3d11_depth_fill_probe.
- * Usage: depth_fill_probe.exe <vert.spv> <frag.spv|none> [reps] [layers] */
+ * [order] 1 = front to back (only the first layer passes the depth test);
+ * fragment shader invocations are reported (pipeline statistics).
+ * Usage: depth_fill_probe.exe <vert.spv> <frag.spv|none> [reps] [layers] [order] */
 #define NOMINMAX
 #define VK_NO_PROTOTYPES
 #include <windows.h>
@@ -29,6 +31,7 @@ int main(int argc, char **argv)
    const bool has_fs = strcmp(argv[2], "none") != 0;
    const int reps = argc > 3 ? atoi(argv[3]) : 200;
    const uint32_t layers = argc > 4 ? atoi(argv[4]) : 8, size = 1536;
+   const int32_t front_to_back = argc > 5 ? atoi(argv[5]) : 0;
    std::vector<uint32_t> vs = load(argv[1]), fs = has_fs ? load(argv[2]) : std::vector<uint32_t>();
    HMODULE loader = LoadLibraryA("vulkan-1.dll");
    auto gipa = (PFN_vkGetInstanceProcAddr)GetProcAddress(loader, "vkGetInstanceProcAddr");
@@ -48,7 +51,7 @@ int main(int argc, char **argv)
    F(vkCmdBindPipeline); F(vkCmdBindDescriptorSets); F(vkCmdDraw); F(vkCreateQueryPool); F(vkCmdResetQueryPool); F(vkCmdWriteTimestamp);
    F(vkGetQueryPoolResults); F(vkQueueSubmit); F(vkQueueWaitIdle); F(vkCreateImage); F(vkGetImageMemoryRequirements); F(vkBindImageMemory);
    F(vkCreateImageView); F(vkCreateSampler); F(vkCmdPipelineBarrier); F(vkCmdClearColorImage); F(vkCreateRenderPass); F(vkCreateFramebuffer);
-   F(vkCmdBeginRenderPass); F(vkCmdEndRenderPass);
+   F(vkCmdBeginRenderPass); F(vkCmdEndRenderPass); F(vkCmdPushConstants); F(vkCmdBeginQuery); F(vkCmdEndQuery);
    VkQueue queue; vkGetDeviceQueue(d, 0, 0, &queue);
    auto make_image = [&](VkFormat format, uint32_t extent, VkImageUsageFlags usage, VkImageAspectFlags aspect, VkImage *image, VkImageView *view) {
       VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; ii.imageType = VK_IMAGE_TYPE_2D; ii.format = format;
@@ -84,7 +87,9 @@ int main(int argc, char **argv)
    VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; li.bindingCount = 1; li.pBindings = &binding;
    VkDescriptorSetLayout sl; CHECK(vkCreateDescriptorSetLayout(d, &li, nullptr, &sl));
+   VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT, 0, 4};
    VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO}; pli.setLayoutCount = 1; pli.pSetLayouts = &sl;
+   pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &range;
    VkPipelineLayout layout; CHECK(vkCreatePipelineLayout(d, &pli, nullptr, &layout));
    VkShaderModuleCreateInfo smi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO}; smi.codeSize = vs.size() * 4; smi.pCode = vs.data();
    VkShaderModule vmod, fmod = VK_NULL_HANDLE; CHECK(vkCreateShaderModule(d, &smi, nullptr, &vmod));
@@ -121,6 +126,10 @@ int main(int argc, char **argv)
    VkCommandBuffer cmd; CHECK(vkAllocateCommandBuffers(d, &ca, &cmd));
    VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO}; qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = 2;
    VkQueryPool qp; CHECK(vkCreateQueryPool(d, &qi, nullptr, &qp));
+   VkQueryPoolCreateInfo si{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO}; si.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS; si.queryCount = 1;
+   si.pipelineStatistics = VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT;
+   VkQueryPool sp; CHECK(vkCreateQueryPool(d, &si, nullptr, &sp));
+   uint64_t fs_invocations = 0;
    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
    VkSubmitInfo s{VK_STRUCTURE_TYPE_SUBMIT_INFO}; s.commandBufferCount = 1; s.pCommandBuffers = &cmd;
    {  /* opaque texture: the alpha test never discards, but the compiler cannot know */
@@ -140,24 +149,28 @@ int main(int argc, char **argv)
    for (int rep = 0; rep < reps; ++rep) {
       CHECK(vkResetCommandBuffer(cmd, 0));
       CHECK(vkBeginCommandBuffer(cmd, &begin));
-      vkCmdResetQueryPool(cmd, qp, 0, 2);
+      vkCmdResetQueryPool(cmd, qp, 0, 2); vkCmdResetQueryPool(cmd, sp, 0, 1);
       vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp, 0);
       VkClearValue clear{}; clear.depthStencil.depth = 1.0f;
       VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; rbi.renderPass = pass; rbi.framebuffer = framebuffer;
       rbi.renderArea = scissor; rbi.clearValueCount = 1; rbi.pClearValues = &clear;
+      vkCmdBeginQuery(cmd, sp, 0, 0);
       vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+      vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 4, &front_to_back);
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, nullptr);
       vkCmdDraw(cmd, 3, layers, 0, 0);
       vkCmdEndRenderPass(cmd);
+      vkCmdEndQuery(cmd, sp, 0);
       vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp, 1);
       CHECK(vkEndCommandBuffer(cmd));
       CHECK(vkQueueSubmit(queue, 1, &s, VK_NULL_HANDLE)); CHECK(vkQueueWaitIdle(queue));
       uint64_t ts[2]; CHECK(vkGetQueryPoolResults(d, qp, 0, 2, sizeof(ts), ts, 8, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
       const double ms = (ts[1] - ts[0]) * props.limits.timestampPeriod / 1e6;
       if (ms < best) best = ms;
+      CHECK(vkGetQueryPoolResults(d, sp, 0, 1, 8, &fs_invocations, 8, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
    }
-   printf("vulkan %s: best %.3f ms for %u layers -> %.2f Gpixels/s\n", has_fs ? argv[2] : "no FS", best, layers,
-          (double)size * size * layers / (best / 1000) / 1e9);
+   printf("vulkan %s %s: best %.3f ms for %u layers -> %.2f Gpixels/s, %.2fM FS invocations\n", has_fs ? strrchr(argv[2], '\\') ? strrchr(argv[2], '\\') + 1 : argv[2] : "no FS",
+          front_to_back ? "front-to-back" : "back-to-front", best, layers, (double)size * size * layers / (best / 1000) / 1e9, fs_invocations / 1e6);
    return 0;
 }

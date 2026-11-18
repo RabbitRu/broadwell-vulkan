@@ -12,6 +12,9 @@ shows a modal crash dialog), shows any other modal dialog, or exceeds
   -Env NAME=v,...    extra environment variables (HASVK_WDDM_PROFILE_PASSES=1, ...)
   -Extra '...'       extra Talos command line (+cvar value ...)
   -Tag name          output name in build\talos (stdout/stderr and Talos.log copy)
+  -D3D11Proxy dll    Direct3D11 only: the timing proxy (native\tests\d3d11_proxy)
+                     is copied next to Talos.exe for this run and removed
+                     afterwards; its per-pass report goes to build\talos\<Tag>.d3d11-profile.txt
 #>
 param(
    [ValidateSet('Vulkan', 'Direct3D11')][string]$Api = 'Vulkan',
@@ -20,6 +23,7 @@ param(
    [string]$Extra = '',
    [string]$Tag = '',
    [int]$TimeoutSeconds = 300,
+   [string]$D3D11Proxy = '',
    [string]$Game = 'C:\Program Files (x86)\Steam\steamapps\common\The Talos Principle'
 )
 $ErrorActionPreference = 'Stop'
@@ -38,14 +42,28 @@ public delegate bool EnumProc(System.IntPtr hwnd, System.IntPtr lparam);
 [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr hwnd);
 [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
 public static extern int GetClassName(System.IntPtr hwnd, System.Text.StringBuilder name, int size);
+public delegate bool EnumChildProc(System.IntPtr hwnd, System.IntPtr lparam);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern System.IntPtr SendMessage(System.IntPtr hwnd, uint msg, System.IntPtr w, System.IntPtr l);
+public static System.IntPtr DialogWindow;
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool EnumChildWindows(System.IntPtr parent, EnumChildProc proc, System.IntPtr lparam);
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int GetWindowText(System.IntPtr hwnd, System.Text.StringBuilder text, int size);
+public static string DialogText = "";
+/* Answers a Yes/No message box with No (WM_COMMAND IDNO). */
+public static void AnswerNo() { SendMessage(DialogWindow, 0x0111 /* WM_COMMAND */, (System.IntPtr)7 /* IDNO */, System.IntPtr.Zero); }
 public static bool HasDialog(uint pid) {
    bool found = false;
    EnumWindows((h, l) => {
       uint owner; GetWindowThreadProcessId(h, out owner);
       if (owner != pid || !IsWindowVisible(h)) return true;
       var name = new System.Text.StringBuilder(64); GetClassName(h, name, 64);
-      if (name.ToString() == "#32770") { found = true; return false; }   // dialog box class
-      return true;
+      if (name.ToString() != "#32770") return true;   // dialog box class
+      found = true; DialogWindow = h;
+      var all = new System.Text.StringBuilder();
+      var title = new System.Text.StringBuilder(512); GetWindowText(h, title, 512); all.Append(title).Append(" | ");
+      EnumChildWindows(h, (c, x) => { var t = new System.Text.StringBuilder(1024); GetWindowText(c, t, 1024); if (t.Length > 0) all.Append(t).Append(" | "); return true; }, System.IntPtr.Zero);
+      DialogText = all.ToString();
+      return false;
    }, System.IntPtr.Zero);
    return found;
 }
@@ -75,19 +93,44 @@ foreach ($pair in ($Env | ForEach-Object { $_ -split ',' } | Where-Object { $_ }
    "  env $name=$value"
 }
 
+$proxyTarget = Join-Path (Split-Path $exe) 'd3d11.dll'
+$proxyPlaced = $false
+if ($D3D11Proxy) {
+   if ($Api -ne 'Direct3D11') { throw '-D3D11Proxy needs -Api Direct3D11' }
+   if (Test-Path -LiteralPath $proxyTarget) { throw "$proxyTarget already exists; not overwriting the game's file" }
+   $proxyLog = Join-Path $out "$Tag.d3d11-profile.txt"
+   if (Test-Path $proxyLog) { Remove-Item $proxyLog -Force }
+   $start.EnvironmentVariables['D3D11_PROFILE_LOG'] = $proxyLog
+}
+try {
+if ($D3D11Proxy) { Copy-Item -LiteralPath $D3D11Proxy -Destination $proxyTarget; $proxyPlaced = $true }
 $watch = [Diagnostics.Stopwatch]::StartNew()
 $p = [Diagnostics.Process]::Start($start)
 $stdout = $p.StandardOutput.ReadToEndAsync()
 $stderr = $p.StandardError.ReadToEndAsync()
 $verdict = ''
+$safeModeAnswered = $false
 while (-not $p.WaitForExit(1000)) {
    if ($watch.Elapsed.TotalSeconds -gt $TimeoutSeconds) { $verdict = "timeout after $TimeoutSeconds s"; break }
    $crashed = $false
    try { $crashed = [bool](Select-String -Path $log -Pattern 'Crashed!' -SimpleMatch -Quiet) } catch {}
    if ($crashed) { $verdict = 'crashed (Talos.log)'; break }
-   if ([TalosRun.Win]::HasDialog([uint32]$p.Id)) { Start-Sleep 2; $verdict = 'modal dialog'; break }
+   if ([TalosRun.Win]::HasDialog([uint32]$p.Id)) {
+      Start-Sleep 2; [void][TalosRun.Win]::HasDialog([uint32]$p.Id)
+      # After an unclean exit Serious Engine offers safe mode: decline it (the
+      # player's normal settings) and carry on; anything else ends the run.
+      if ([TalosRun.Win]::DialogText -match 'safe mode' -and -not $safeModeAnswered) {
+         [TalosRun.Win]::AnswerNo(); $safeModeAnswered = $true; "  answered No to: $([TalosRun.Win]::DialogText)"; continue
+      }
+      $verdict = 'modal dialog: ' + [TalosRun.Win]::DialogText; break
+   }
 }
 if ($verdict) { try { $p.Kill() } catch {}; $p.WaitForExit() }
+} finally {
+   if ($p -and -not $p.HasExited) { try { $p.Kill() } catch {}; $p.WaitForExit() }
+   if ($proxyPlaced) { Remove-Item -LiteralPath $proxyTarget -Force; "  proxy removed: $proxyTarget" }
+   foreach ($path in $saved.Keys) { [IO.File]::WriteAllBytes($path, $saved[$path]) }
+}
 foreach ($path in $saved.Keys) { [IO.File]::WriteAllBytes($path, $saved[$path]) }
 $text = $stdout.Result + "`n" + $stderr.Result
 [IO.File]::WriteAllText((Join-Path $out "$Tag.stdout.txt"), $text)
