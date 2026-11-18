@@ -382,7 +382,12 @@ int wmain(int argc, wchar_t **argv)
             "VK_KHR_shader_draw_parameters", "VK_KHR_shader_float_controls", "VK_KHR_shader_float16_int8",
             "VK_KHR_shader_subgroup_extended_types", "VK_KHR_spirv_1_4", "VK_KHR_storage_buffer_storage_class",
             "VK_KHR_swapchain", "VK_KHR_uniform_buffer_standard_layout", "VK_KHR_variable_pointers",
-            "VK_KHR_vulkan_memory_model"};
+            "VK_KHR_vulkan_memory_model",
+            /* Vulkan 1.3 */
+            "VK_EXT_inline_uniform_block", "VK_EXT_private_data", "VK_EXT_subgroup_size_control", "VK_EXT_texel_buffer_alignment",
+            "VK_KHR_zero_initialize_workgroup_memory", "VK_KHR_shader_integer_dot_product", "VK_EXT_pipeline_creation_cache_control",
+            "VK_EXT_pipeline_creation_feedback", "VK_EXT_shader_demote_to_helper_invocation", "VK_KHR_shader_terminate_invocation",
+            "VK_EXT_image_robustness", "VK_EXT_tooling_info", "VK_KHR_shader_non_semantic_info"};
          std::vector<VkExtensionProperties> extensions(extension_count);
          check(vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, extensions.data()), "Query device extensions");
          std::vector<std::string> names; for (const auto &extension : extensions) names.push_back(extension.extensionName);
@@ -391,7 +396,7 @@ int wmain(int argc, wchar_t **argv)
          require(names == wanted, "Device extensions differ from the verified list");
          report["deviceExtensions"] = names;
       }
-      require(VK_API_VERSION_MAJOR(properties.apiVersion) == 1 && VK_API_VERSION_MINOR(properties.apiVersion) == 2, "ICD must report Vulkan 1.2");
+      require(VK_API_VERSION_MAJOR(properties.apiVersion) == 1 && VK_API_VERSION_MINOR(properties.apiVersion) == 3, "ICD must report Vulkan 1.3");
       float priority = 1;
       VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}; qi.queueCount = 1; qi.pQueuePriorities = &priority;
       VkDeviceCreateInfo di{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO}; di.queueCreateInfoCount = 1; di.pQueueCreateInfos = &qi;

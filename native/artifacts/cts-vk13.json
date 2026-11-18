@@ -1,0 +1,142 @@
+﻿[
+    {
+        "group":  "api.info.vulkan1p3*",
+        "every":  1,
+        "counts":  {
+                       "Pass":  7
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "api.info.get_physical_device_properties2.*",
+        "every":  1,
+        "counts":  {
+                       "NotSupported":  1842,
+                       "Pass":  359
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "api.info.feature*",
+        "failed":  true
+    },
+    {
+        "group":  "api.object_management.private_data.*",
+        "every":  1,
+        "counts":  {
+                       "Pass":  40
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "api.tooling_info.*",
+        "every":  1,
+        "counts":  {
+                       "Pass":  2
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "subgroups.size_control.*",
+        "every":  1,
+        "counts":  {
+                       "NotSupported":  27,
+                       "Pass":  36
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "pipeline.monolithic.creation_cache_control.*",
+        "every":  1,
+        "counts":  {
+                       "NotSupported":  2,
+                       "Pass":  16
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "pipeline.monolithic.creation_feedback.*",
+        "every":  1,
+        "counts":  {
+                       "Pass":  13
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "glsl.demote.*",
+        "every":  1,
+        "counts":  {
+                       "Pass":  30
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "spirv_assembly.instruction.terminate_invocation.*",
+        "every":  1,
+        "counts":  {
+                       "Pass":  15
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "spirv_assembly.instruction.compute.*dot*",
+        "every":  3,
+        "counts":  {
+                       "NotSupported":  16,
+                       "Pass":  476
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "compute.pipeline.zero_initialize_workgroup_memory.*",
+        "every":  1,
+        "counts":  {
+                       "Pass":  646
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "robustness.image_robustness.*",
+        "every":  10,
+        "counts":  {
+                       "NotSupported":  594,
+                       "Pass":  198
+                   },
+        "notPassing":  [
+
+                       ]
+    },
+    {
+        "group":  "binding_model.*inline_uniform*",
+        "every":  2,
+        "counts":  {
+                       "NotSupported":  44,
+                       "Pass":  15
+                   },
+        "notPassing":  [
+
+                       ]
+    }
+]

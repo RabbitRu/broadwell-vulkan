@@ -33,7 +33,7 @@ Copy-Item -LiteralPath (Join-Path $taskRoot 'build\native\IrisIcdProbe.exe') -De
 Copy-Item -LiteralPath (Join-Path $taskRoot 'build\native\IrisGraphicsProbe.exe') -Destination $taskPackage
 Copy-Item -LiteralPath (Join-Path $taskRoot 'build\native\IrisDeviceLostProbe.exe') -Destination $taskPackage
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run-icd.ps1') -Destination (Join-Path $taskPackage 'Run-Icd.ps1')
-$taskManifest=[ordered]@{file_format_version='1.0.0'; ICD=[ordered]@{library_path='.\vulkan_hasvk_wddm.dll'; api_version='1.2.0'}}
+$taskManifest=[ordered]@{file_format_version='1.0.0'; ICD=[ordered]@{library_path='.\vulkan_hasvk_wddm.dll'; api_version='1.3.0'}}
 [IO.File]::WriteAllText((Join-Path $taskPackage 'intel_hasvk_wddm_icd.json'), ($taskManifest | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
 $taskMesaManifest=Get-Content -LiteralPath (Join-Path $taskSource 'build.json') -Raw | ConvertFrom-Json
 $taskPackageManifest=[ordered]@{builtUtc=[DateTime]::UtcNow.ToString('o'); scope='experimental hardware ICD; consult matching validation hashes for tested functionality'; graphicsModulesBuilt=$taskMesaManifest.graphicsModulesBuilt;

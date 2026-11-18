@@ -1,6 +1,6 @@
 # План реализации Vulkan для Iris 6100 (Broadwell) под Windows
 
-Состояние на 2026-11-17. Цель — ICD на основе Mesa HasVK поверх WDDM-драйвера
+Состояние на 2026-11-18. Цель — ICD на основе Mesa HasVK поверх WDDM-драйвера
 Intel `20.19.15.5171`, без Intel UMD и D3D12. Потолок для этой GPU — Vulkan 1.3:
 именно его объявляет upstream HasVK для Gen8 (Vulkan 1.4 HasVK не поддерживает).
 
@@ -11,15 +11,16 @@ Intel `20.19.15.5171`, без Intel UMD и D3D12. Потолок для этой
 **Приоритет:** сначала снимались риски — то, что может сделать проект
 невозможным или потребовать другой архитектуры. Этап 0 выполнен (вывод без
 копии — раздел 1.4, ограничения ядра — 1.5, закрытый интерфейс Intel — 1.6).
-Этап 1 (отправка команд и синхронизация) тоже выполнен (раздел 1.1–1.2);
-дальше — этапы 2–6.
+Этап 1 (отправка команд и синхронизация) и этап 2 (Vulkan 1.3) тоже
+выполнены (разделы 1.1–1.2); дальше — этапы 3–6.
 
 ## 1. Сделано
 
-Сейчас ICD объявляет **Vulkan 1.2** и 48 расширений устройства. Выборочный
-прогон CTS по 22 группам (~2660 тестов): 1447 Pass, 0 Fail, 0 Crash
-(`native/artifacts/cts-sample.json`; свежий итог выборки —
-`build/cts-sample.json`).
+Сейчас ICD объявляет **Vulkan 1.3** и 61 расширение устройства. Выборочный
+прогон CTS по 22 группам (~2660 тестов): 1454 Pass, 1 Fail — известное
+зависание `tess_factor_barrier_bug` (этап 4) и ResourceError следующего за ним
+теста, который отдельно проходит (`native/artifacts/cts-sample.json`; свежий
+итог выборки — `build/cts-sample.json`).
 
 ### 1.1 Транспорт WDDM
 - Устройство, контекст, paging queue, выделения, CPU/GPU-отображения,
@@ -67,7 +68,15 @@ Intel `20.19.15.5171`, без Intel UMD и D3D12. Потолок для этой
   дескрипторов, без sparse, без capture/replay адресов, YCbCr выключен,
   `conformanceVersion` = 0. Расширения включаются только по проверенному
   списку (`verified_device_extensions` в `anv_wddm_device.c`).
-- Все команды Vulkan 1.0, 1.1 и 1.2 разрешаются; манифест ICD объявляет 1.2.
+- **Vulkan 1.3**: `apiVersion`, `vkEnumerateInstanceVersion` и манифест ICD
+  объявляют 1.3; включены обязательные для 1.3 расширения (`inline_uniform_block`,
+  `private_data`, `subgroup_size_control`, `texel_buffer_alignment`,
+  `zero_initialize_workgroup_memory`, `shader_integer_dot_product`,
+  `pipeline_creation_cache_control`, `pipeline_creation_feedback`,
+  `shader_demote_to_helper_invocation`, `shader_terminate_invocation`,
+  `image_robustness`, `tooling_info`, `shader_non_semantic_info`).
+  `tools/run-cts-vk13.ps1`: проверки features и лимитов 1.3
+  (`api.info.vulkan1p3*`) и группы этих расширений — 1853 Pass, 0 Fail.
 - Командные буферы: цепочка BO без ограничения размера, secondary command
   buffers (копируются в primary).
 - Events: отдельный BO; `MI_SEMAPHORE_WAIT` в WDDM-контексте не работает,
@@ -173,16 +182,6 @@ WDDM-контексте (непривилегированный PPGTT-батч),
   (`HASVK_WDDM_PROFILE=1`), дамп регистров контекста (`HASVK_WDDM_DUMP_REGISTERS=1`).
 
 ## 2. Осталось
-
-### Этап 2. Vulkan 1.3
-1. Включить и проверить по CTS обязательные для 1.3 расширения:
-   `inline_uniform_block`, `private_data`, `subgroup_size_control`,
-   `texel_buffer_alignment`, `zero_initialize_workgroup_memory`,
-   `shader_integer_dot_product`, `pipeline_creation_cache_control`,
-   `pipeline_creation_feedback`, `shader_demote_to_helper_invocation`,
-   `shader_terminate_invocation`, `image_robustness`, `tooling_info`.
-2. Поднять `apiVersion` до 1.3, пройти проверки CTS обязательных features и
-   лимитов.
 
 ### Этап 3. Полнота относительно HasVK
 1. `vkCmdWaitEvents` внутри прохода рендеринга сейчас молча пропускается
