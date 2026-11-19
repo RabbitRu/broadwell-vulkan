@@ -68,9 +68,9 @@
     0
   ],
   "presentTiming": {
-    "fifoMsPerFrame": 16.686339999999998,
-    "immediateMsPerFrame": 0.6748,
-    "mailboxMsPerFrame": 0.6562516666666667,
+    "fifoMsPerFrame": 16.682003333333334,
+    "immediateMsPerFrame": 0.5740233333333333,
+    "mailboxMsPerFrame": 0.5731883333333333,
     "observable": true
   },
   "resize": {

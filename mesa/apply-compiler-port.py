@@ -134,7 +134,8 @@ edit('src/vulkan/wsi/wsi_common_win32.cpp', [
     # the fallback when the driver hook fails.
     ('   HWND wnd;\n   HDC chain_dc;\n',
      '   HWND wnd;\n   HDC chain_dc;\n   void *redirect_state;\n   uint64_t redirected_presents, gdi_presents;\n'
-     '   bool rgba_order;   /* R8G8B8A8 images: GDI needs R and B swapped */\n'),
+     '   bool rgba_order;   /* R8G8B8A8 images: GDI needs R and B swapped */\n'
+     '   uint32_t next_image;   /* round-robin acquire, see wsi_win32_find_idle_image */\n'),
     # VK_KHR_win32_surface: "minImageExtent, maxImageExtent, and currentExtent
     # must always equal the window size" (upstream advertises 1..16384, which
     # lets applications create swapchains the present then reports out of date).
@@ -265,6 +266,37 @@ wsi_win32_wait_composition(void)
 
 static bool
 wsi_win32_find_idle_image('''),
+    # Redirected images are idle again right after their present (the window
+    # copy is ordered on the queue), so taking the first idle image always
+    # returned image 0, and WSI's throttle (wait for the previous present of the
+    # same index) then allowed one frame of lead: any CPU hiccup left the GPU
+    # idle. Round-robin acquire lets the throttle wait for the present
+    # image_count frames back, as a flip-model swap chain queues frames.
+    ('''   for (uint32_t i = 0; i < chain->base.image_count; i++) {
+      if (chain->images[i].state == WSI_IMAGE_IDLE) {
+         *out_image_index = i;
+         chain->images[i].state = WSI_IMAGE_DRAWING;
+         return true;
+      }
+   }''', '''#ifdef HASVK_WDDM_GDI
+   for (uint32_t n = 0; n < chain->base.image_count; n++) {
+      const uint32_t i = (chain->next_image + n) % chain->base.image_count;
+      if (chain->images[i].state == WSI_IMAGE_IDLE) {
+         *out_image_index = i;
+         chain->images[i].state = WSI_IMAGE_DRAWING;
+         chain->next_image = (i + 1) % chain->base.image_count;
+         return true;
+      }
+   }
+#else
+   for (uint32_t i = 0; i < chain->base.image_count; i++) {
+      if (chain->images[i].state == WSI_IMAGE_IDLE) {
+         *out_image_index = i;
+         chain->images[i].state = WSI_IMAGE_DRAWING;
+         return true;
+      }
+   }
+#endif'''),
     ('''   char *ptr = (char *)image->base.cpu_map;
    char *dptr = (char *)image->sw.ppvBits;
 ''', '''#ifdef HASVK_WDDM_GDI

@@ -166,17 +166,18 @@
  
  #include <dcomp.h>
  
-@@ -109,6 +115,9 @@
+@@ -109,6 +115,10 @@
     VkExtent2D                 extent;
     HWND wnd;
     HDC chain_dc;
 +   void *redirect_state;
 +   uint64_t redirected_presents, gdi_presents;
 +   bool rgba_order;   /* R8G8B8A8 images: GDI needs R and B swapped */
++   uint32_t next_image;   /* round-robin acquire, see wsi_win32_find_idle_image */
     struct wsi_win32_image     images[0];
  };
  
-@@ -201,11 +210,16 @@
+@@ -201,11 +211,16 @@
        (uint32_t)win_rect.right - (uint32_t)win_rect.left,
        (uint32_t)win_rect.bottom - (uint32_t)win_rect.top
     };
@@ -193,7 +194,7 @@
  
     caps->surfaceCapabilities.supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
     caps->surfaceCapabilities.currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-@@ -318,6 +332,9 @@
+@@ -318,6 +333,9 @@
     { VK_FORMAT_B8G8R8A8_UNORM },
     { VK_FORMAT_R8G8B8A8_UNORM },
     { VK_FORMAT_B8G8R8A8_SRGB },
@@ -203,7 +204,7 @@
  };
  
  
-@@ -384,6 +401,10 @@
+@@ -384,6 +402,10 @@
  
  static const VkPresentModeKHR present_modes_gdi[] = {
     VK_PRESENT_MODE_FIFO_KHR,
@@ -214,7 +215,7 @@
  };
  static const VkPresentModeKHR present_modes_dxgi[] = {
     VK_PRESENT_MODE_IMMEDIATE_KHR,
-@@ -559,7 +580,8 @@
+@@ -559,7 +581,8 @@
     if (chain->dxgi)
        return VK_SUCCESS;
  
@@ -224,7 +225,7 @@
     image->sw.dc = CreateCompatibleDC(chain->chain_dc);
     HBITMAP bmp = NULL;
  
-@@ -607,10 +629,19 @@
+@@ -607,10 +630,19 @@
     struct wsi_win32_swapchain *chain =
        (struct wsi_win32_swapchain *) drv_chain;
  
@@ -245,11 +246,10 @@
  
     if (chain->surface->current_swapchain == chain)
        chain->surface->current_swapchain = NULL;
-@@ -671,6 +702,84 @@
- 
+@@ -672,10 +704,99 @@
     return VK_SUCCESS;
  }
-+
+ 
 +#ifdef HASVK_WDDM_GDI
 +/* The driver's window copy of image_index for this present, or VK_NULL_HANDLE
 + * (the frame then goes through GDI). */
@@ -327,10 +327,34 @@
 +   Sleep((DWORD)(wait * 1000 / frequency.QuadPart));
 +}
 +#endif
- 
++
  static bool
  wsi_win32_find_idle_image(struct wsi_win32_swapchain *chain,
-@@ -737,8 +846,13 @@
+                           uint32_t *out_image_index)
+ {
++#ifdef HASVK_WDDM_GDI
++   for (uint32_t n = 0; n < chain->base.image_count; n++) {
++      const uint32_t i = (chain->next_image + n) % chain->base.image_count;
++      if (chain->images[i].state == WSI_IMAGE_IDLE) {
++         *out_image_index = i;
++         chain->images[i].state = WSI_IMAGE_DRAWING;
++         chain->next_image = (i + 1) % chain->base.image_count;
++         return true;
++      }
++   }
++#else
+    for (uint32_t i = 0; i < chain->base.image_count; i++) {
+       if (chain->images[i].state == WSI_IMAGE_IDLE) {
+          *out_image_index = i;
+@@ -683,6 +804,7 @@
+          return true;
+       }
+    }
++#endif
+    return false;
+ }
+ 
+@@ -737,8 +859,13 @@
        return chain->status;
  
     /* acquire timeout has to be explicitly handled for sw wsi */
@@ -345,7 +369,7 @@
  
     if (wsi_win32_find_idle_image(chain, image_index))
        return VK_SUCCESS;
-@@ -820,10 +934,35 @@
+@@ -820,10 +947,35 @@
     if (chain->dxgi)
        return wsi_win32_queue_present_dxgi(chain, image, damage);
  
@@ -381,7 +405,7 @@
        memcpy(dptr, ptr, chain->extent.width * 4);
        dptr += image->sw.bmp_row_pitch;
        ptr += image->base.row_pitches[0];
-@@ -832,6 +971,13 @@
+@@ -832,6 +984,13 @@
        chain->status = VK_ERROR_MEMORY_MAP_FAILED;
  
     wsi_win32_set_image_idle(chain, image);
@@ -395,7 +419,7 @@
  
     return chain->status;
  }
-@@ -925,6 +1071,10 @@
+@@ -925,6 +1084,10 @@
  
     assert(create_info->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR);
  
@@ -406,7 +430,7 @@
     const unsigned num_images = create_info->minImageCount;
     struct wsi_win32_swapchain *chain;
     size_t size = sizeof(*chain) + num_images * sizeof(chain->images[0]);
-@@ -982,6 +1132,11 @@
+@@ -982,6 +1145,11 @@
     chain->base.queue_present = wsi_win32_queue_present;
     chain->base.present_mode = wsi_swapchain_get_present_mode(wsi_device, create_info);
     chain->extent = create_info->imageExtent;
@@ -418,7 +442,7 @@
  
     chain->wsi = wsi;
     chain->status = VK_SUCCESS;
-@@ -1091,7 +1246,7 @@
+@@ -1091,7 +1259,7 @@
     wsi->alloc = alloc;
     wsi->wsi = wsi_device;
  

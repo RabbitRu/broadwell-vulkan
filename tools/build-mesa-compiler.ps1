@@ -1,4 +1,7 @@
-param([switch]$ConfigureOnly, [switch]$Graphics = $true)
+# -Asserts: keep Mesa's assert() checks (NDEBUG off) for debugging; the default
+# build defines NDEBUG like Mesa release builds (asserts cost driver CPU time in
+# every vkCmd* call: Talos' render thread spends ~20 % in the driver).
+param([switch]$ConfigureOnly, [switch]$Graphics = $true, [switch]$Asserts)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'import-toolchain.ps1') -UseClang
 $taskDependencies=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'dependencies.json') -Raw | ConvertFrom-Json
@@ -16,7 +19,7 @@ $taskArgs = @('setup', $taskMesaBuild, $taskMesa, '-Dplatforms=windows', '-Dvulk
 if (Test-Path -LiteralPath (Join-Path $taskMesaBuild 'build.ninja')) { $taskArgs += '--reconfigure' }
 & $taskToolchain.python -m mesonbuild.mesonmain @taskArgs
 if ($LASTEXITCODE) { throw "Mesa compiler configuration failed; see $taskMesaBuild\meson-logs\meson-log.txt" }
-& $taskToolchain.python -m mesonbuild.mesonmain configure $taskMesaBuild "-Dhasvk-wddm-graphics=$($Graphics.IsPresent.ToString().ToLowerInvariant())"
+& $taskToolchain.python -m mesonbuild.mesonmain configure $taskMesaBuild "-Dhasvk-wddm-graphics=$($Graphics.IsPresent.ToString().ToLowerInvariant())" "-Db_ndebug=$(if ($Asserts) { 'false' } else { 'true' })"
 if ($LASTEXITCODE) { throw 'Mesa graphics option configuration failed' }
 if (-not $ConfigureOnly) {
     & $taskToolchain.python -m mesonbuild.mesonmain compile -C $taskMesaBuild -j 2 intel_compiler_elk intel_dev IrisElkCompile IrisImageProbe vulkan_runtime vulkan_lite_runtime vulkan_instance vulkan_util vulkan_wsi vulkan_hasvk_wddm
