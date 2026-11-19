@@ -1,30 +1,41 @@
-# Broadwell Vulkan: Iris 6100 HasVK/WDDM experiment
+# Broadwell Vulkan: HasVK/WDDM для Intel Iris 6100
 
-Экспериментальный порт для Windows x64, Intel Iris 6100 `8086:162b`,
-Intel `20.19.15.5171`, WDDM 2.0. Цель — аппаратный Vulkan ICD на основе
-Mesa HasVK и запуск стандартного `vkcube` с выводом через CPU/GDI.
+Экспериментальный Vulkan-драйвер (ICD) для Windows x64 на основе Mesa HasVK
+26.2.7. Он работает поверх штатного WDDM-драйвера ядра Intel
+`20.19.15.5171` на Intel Iris 6100 (`8086:162b`); Intel UMD и D3D12 в процесс
+не загружаются. Другие GPU и версии драйвера не поддерживаются: на них ICD не
+показывает ни одного устройства.
 
-**Через ICD проверены аппаратные Vulkan compute, RGBA8 storage images,
-треугольник, текстуры, sampler, динамические UBO и D16 depth. Через Win32
-WSI/GDI работает неизменённый `vkcube`: 10 минут с resize/minimize, выход 0.**
-Через системный Vulkan loader
-работают перечисление Iris, устройство/очередь, память, shader modules, pipelines,
-descriptor sets, запись `vkCmdDispatch`, barriers, fences и бинарные семафоры.
-Используются штатные SPIR-V → NIR → ELK, pipeline layout, push packing и эмиттер
-HasVK. Каждая отправка command buffer проверяет GPU-метку в конце команд,
-затем очередь подтверждает отдельный счётчик перед сигналом fence/semaphore.
-Этот ограниченный ICD ещё не соответствует полному Vulkan.
-Также работают собственный
-транспорт WDDM, компиляция SPIR-V → NIR → ELK → Gen8, состояния из GenXML Mesa,
-размещение изображений ISL и графические операции BLORP. Команды исполняет Iris
-6100 через штатный драйвер ядра; Intel UMD и D3D12 в тестовых процессах не загружаются.
+## Состояние
 
-Состояние последней попытки общего прогона:
-[native/artifacts/latest-attempt.json](native/artifacts/latest-attempt.json).
-Последний успешный общий прогон, число проверок и хеши подробных отчётов:
-[native/artifacts/progress.json](native/artifacts/progress.json).
-Исходный C#-прототип сохранён и проверяется отдельно.
-Состояние на момент паузы и порядок продолжения: [docs/checkpoint.md](docs/checkpoint.md).
+- Vulkan 1.3, 107 расширений устройства. Собственный транспорт WDDM, штатные
+  SPIR-V → NIR → ELK → Gen8, ISL, BLORP и runtime Mesa.
+- Вывод в окно без копии через CPU, режимы FIFO, MAILBOX, IMMEDIATE.
+- CTS 1.4.5.5 проверен выборками по группам; полный прогон не выполнялся,
+  драйвер не сертифицирован. Известные отказы —
+  [docs/cts-expected-failures.md](docs/cts-expected-failures.md).
+- Проверенные приложения: `vulkaninfo`, `vkcube`, `vkcubepp`, The Talos
+  Principle.
+- Текущая работа — производительность. Цель: Vulkan быстрее DX11 в The Talos
+  Principle. Сейчас 79–83 FPS против 83–91 у DX11 на драйвере Intel.
+
+![vkcube на Iris 6100 через HasVK/WDDM ICD](native/artifacts/vkcube-preview.png)
+
+## Документация
+
+- [docs/roadmap.md](docs/roadmap.md) — что сделано и что осталось.
+- [docs/optimizations-vs-dx11.md](docs/optimizations-vs-dx11.md) —
+  производительность: измерения, гипотезы для проверки, отклонённые опыты,
+  методика.
+- [docs/install.md](docs/install.md) — установка, кэш шейдеров, переменные
+  окружения, ограничения (эта инструкция входит в релизный пакет).
+- [docs/cts-expected-failures.md](docs/cts-expected-failures.md) — известные
+  отказы CTS.
+- [docs/intel-interface.md](docs/intel-interface.md) — закрытый интерфейс
+  Intel, от которого зависит порт, и порядок переноса на другую версию
+  драйвера.
+- [gpu-probe/README.md](gpu-probe/README.md) — исходный C#-прототип прямого
+  доступа к GPU.
 
 ## Сборка
 
@@ -52,174 +63,45 @@ MSVC 14.44.35207, SDK 10.0.26100.0 и хеши компиляторов/заго
 в `third_party`, сборки и подробные журналы — в `build`. Windows SDK и служебный
 установщик Visual Studio используют стандартные системные каталоги.
 
+Изменения Mesa воспроизводятся скриптом `mesa/apply-compiler-port.py` и
+сохраняются в `mesa/patches/compiler-port.patch`. ICD собирает
+`tools/build-icd.ps1`; готовый комплект (DLL и JSON-манифест) лежит в
+`build/icd`.
+
 ## Проверки
 
-- `test-native.ps1` проверяет устройство, контекст, paging queue, CPU/GPU mapping,
-  residency, отправку и ожидание, выделения 4–4096 КиБ, освобождение ресурсов,
-  отсутствие Intel UMD/D3D12 и ожидаемые отказы. Проверяются окно VA 4 ГиБ и
-  перенесённая раскладка HasVK: 16 отображений на границах пулов внутри
-  зарезервированного окна 16 ГиБ. Это адресное пространство, физическая память
-  создаётся только для нужных участков. Проверяются переходы между командными
-  BO и 32 последовательные отправки с пересозданием BO по одному адресу.
-- Контрольный compute пока использует сохранённые ISA и состояние из
-  `gpu-probe/artifacts/compute-bootstrap/compute-capture`. Вариант
-  `generated-compute` самостоятельно генерирует метаданные всех выделений.
-- `test-elk.ps1` собирает три шейдера записи константы через NIR → ELK → Gen8,
-  проверяет ISA валидатором Mesa и запускает её с новым состоянием GPU.
-- `test-spirv.ps1` выполняет 63 запуска SPIR-V: XOR, LCG и integer mix, до
-  16 381 элемента, группы 7/32/64 потока, неполные группы и защитные области.
-  Результаты сравниваются с независимыми вычислениями Python на случайных входах.
-- `test-images.ps1` проверяет девять вариантов ISL/BLORP: размеры 37×23, 129×67
-  и 257×131; BGRA8 linear/X/Y, выборку текстуры в линейное RGBA8, очистку D16 Y.
-  Текстурированный треугольник и дальний перекрывающий треугольник проверяют D16
-  depth test. Проверяются все пиксели и 20 КиБ защитной памяти на тест.
-  Растущие пулы кода/состояния сохраняют CPU-адреса; данные загружаются из CPU
-  shadow перед submit. Проверяются границы, пересечения и запрет раннего удаления.
-- `test-icd.ps1` использует системный `vulkan-1.dll`: три цикла создания/удаления
-  устройства, ожидание/сброс fences, wait-any/wait-all, повторное использование
-  бинарных семафоров и обе формы пустого `vkQueueSubmit`. GPU подтверждает каждую
-  отправку. Проверяются 72 выделения Vulkan-памяти: реальные BO WDDM, две привязки
-  буфера со смещением, полный и частичный mapping, данные и защитные области,
-  бюджет heap и возврат счётчиков выделений к исходному уровню.
-  Проверяются также штатные пулы general/dynamic/instruction/surface/binding
-  HasVK: по 2300 малых выделений и одному крупному, рост таблиц состояния,
-  сохранность старых CPU mapping, освобождение и разделение больших свободных
-  блоков. GPU читает 270 контрольных значений за три создания устройства.
-  Штатный код descriptor set и pipeline layout HasVK проходит 54 проверки
-  SSBO-массивов, динамического UBO, обновления/копирования, сброса и повторного
-  использования descriptor pool. Адреса сгенерированных ISL поверхностей Gen8
-  сравниваются с адресами связанных BO.
-  В Vulkan compute проверяются 342 случая на трёх созданных устройствах:
-  12 разных SPIR-V-модулей, компиляция и валидация ISA, сохранение/импорт pipeline
-  cache, XOR/LCG/integer mix, группы 1/7/32/64, неполные группы и до 16 381 элемента.
-  Каждый command buffer отправляется дважды без перезаписи. Все слова памяти
-  сравниваются с независимым CPU-результатом, включая защитные области и смещения
-  buffer binding/descriptor. При несовпадении сохраняются команды и readback.
-  Дополнительно проверяются 18 Vulkan storage-image случаев: RGBA8 linear и
-  Y-tiled, три размера до 257×131, два SPIR-V-шейдера записи/чтения, specialization
-  constants, переход UNDEFINED → GENERAL и барьер между записью и чтением.
-  Все пиксели сравниваются с CPU-ожиданием двумя способами: через GPU-копию в SSBO
-  и независимое чтение/распаковку исходной image memory CPU через ISL. Проверяются
-  защитные области обеих аллокаций. Сжатие и aux отключены.
-- Новые SPIR-V и графические тесты не используют захваченные ядра, состояния
-  или описатели выделений Intel. Ключ `-SkipBuild` запускает проверки на текущих
-  исполняемых файлах, хеши сборок включаются в отчёты.
-- `test-graphics.ps1` проверяет шесть случаев queries (см. ниже),
-  шесть Vulkan-треугольников и 12 вариантов с
-  текстурой, sampler, динамическим UBO и D16: размеры 64/128/256, linear/Y-tiled,
-  глубина включена и выключена. Все цветовые и depth-пиксели сравниваются с CPU;
-  образцы на диагональном ребре исключены из сравнения покрытия. Проверяются
-  защитные области render target, depth, texture и неизменность UBO.
-- Прежний C#-прототип в `gpu-probe` сохранён для сравнения и исследования
-  закрытого интерфейса Intel.
+Все проверки идут на настоящей GPU и не требуют участия пользователя.
 
-![Проверенный GPU readback текстурированного треугольника](native/artifacts/triangle-preview.png)
+- `tools/test-all.ps1` — общий прогон аппаратных проб с побайтной или
+  попиксельной сверкой результатов; ключ `-SkipBuild` запускает его на уже
+  собранных файлах.
+- Отдельные пробы: `test-native.ps1` (транспорт WDDM), `test-elk.ps1`,
+  `test-spirv.ps1`, `test-images.ps1`, `test-icd.ps1`, `test-graphics.ps1`,
+  `test-wsi.ps1` (вывод в окно), `test-oom.ps1`, `test-leaks.ps1`,
+  `test-device-lost.ps1`, `test-kernel-limits.ps1`,
+  `test-present-redirect.ps1`, `test-validation.ps1` (validation layers),
+  `test-stability.ps1`.
+- CTS: `build-cts.ps1`, `run-cts.ps1` и срезы по группам
+  (`run-cts-sample.ps1`, `run-cts-groups.ps1`, `run-cts-vk13.ps1`,
+  `run-cts-extensions.ps1`).
+- `run-talos.ps1` — встроенный бенчмарк The Talos Principle под Vulkan и DX11.
 
-## Ограничения и дальнейшая интеграция
+Что именно проверяет каждая проба и с каким результатом — в
+[docs/roadmap.md](docs/roadmap.md), раздел 1. Компактные отчёты прогонов —
+в `native/artifacts`.
 
-Профиль 1096-байтного описателя основан на сравнении метаданных установленного
-Intel UMD и предназначен только для этой пары GPU/драйвера. Это линейные выделения,
-которые GPU интерпретирует как изображения по состояниям ISL; произвольный GMM,
-импорт системных изображений, сжатие и вспомогательные поверхности не реализованы.
-Размер BO ограничен 128 МиБ, проверены размеры до 4 МиБ. Заголовок submit проверен
-для входного BO 8192 байт с переходами в большие командные BO.
+## Использование
 
-Патчи Mesa воспроизводятся через `mesa/apply-compiler-port.py` и сохраняются в
-`mesa/patches/compiler-port.patch`. Режим `hasvk-wddm-compiler-only` собирает
-библиотеки ELK/ISL/BLORP, Vulkan runtime, Win32 WSI, тесты и начальный ICD,
-исключая Linux DRM. Историческое имя опции сохранено. В инициализации Win32 WSI DXGI/DComp создаются только при наличии
-callback очереди D3D12: аппаратный драйвер с GDI-путём оставляет его пустым.
-Вывод через Vulkan swapchain проверен запуском `vkcube` (см. ниже). Статическая
-PCI-топология используется для этих тестов; реальные аппаратные маски WDDM
-ещё нужно подключить. Отдельный raw SPIR-V probe ограничен одним SSBO set 0/binding 0.
-В ICD уже используется полный frontend HasVK, но объявлены только 1D группы до
-64 invocations; shared memory и scratch отклоняются. Аппаратные проверки ICD
-пока покрывают один SSBO, обычные descriptor sets и прямой dispatch. Secondary
-command buffers пока не включены; indirect dispatch не проверен. Vulkan images
-ограничены RGBA8/BGRA8/D16, 2D, одним mip/layer/sample, без aux/compression.
-В графическом тесте проверены RGBA8 render target/texture и D16 depth;
-BGRA8 swapchain проверен только запуском `vkcube`.
-Командный BO ограничен 64 КиБ, barriers консервативно выполняют полный flush.
-Пулы состояния и записанные команды освобождаются после ожидания fence.
-Треугольник в raw image probe использует фиксированный путь обработки вершин BLORP;
-тест Vulkan ICD использует самостоятельно скомпилированные SPIR-V vertex/fragment shaders.
-
-CPU shadow предназначен только для читаемых GPU пулов. Тесты сериализуют CPU
-записи и submit; полноценная интеграция должна обеспечить корректную публикацию
-состояния при параллельной записи команд. Память приложения, queries и scratch
-должны использовать обычные BO.
-
-ICD использует реальные `anv_instance`, `anv_physical_device`, `anv_device`,
-`anv_bo`, `anv_device_memory` и `anv_buffer`, штатные аллокаторы пулов состояния,
-общую очередь и синхронизацию Mesa runtime. Для обычных BO выделяется GPU VA
-из клиентского диапазона перенесённой раскладки HasVK; BO пулов закрепляются
-по точным адресам соответствующих диапазонов. Таблицы CPU используют
-резервирование/commit через VirtualAlloc, карты отдельных BO сохраняются до
-удаления пула. В Windows-пути память явно публикуется перед submit и CPU-кэш
-инвалидируется после завершения GPU. Это консервативный путь; оптимизация
-диапазонов и политика кэширования закрытого Intel-профиля ещё требуют исследования.
-
-Во время общего прогона наблюдался единичный случай, когда compute оставил все
-257 элементов без изменений. Его входы и команды сохранены в `build/failures`.
-До изменения синхронизации кэша 40 повторов прошли, после изменения — 500 без
-повторных попыток при ошибке. Причина сбоя пока не доказана. Отчёт с хешами:
-[native/artifacts/compute-stress-validation.json](native/artifacts/compute-stress-validation.json).
-Дополнительный прогон:
+Для одного приложения, без установки:
 
 ```powershell
-.\.tools\python\python.exe .\tools\stress-compute.py .\build\spirv\lcg32-local32-count257 --iterations 500 --output .\build\compute-stress-new
+$env:VK_DRIVER_FILES = "<корень проекта>\build\icd\intel_hasvk_wddm_icd.json"
+& "<приложение>.exe"
 ```
 
-Для отдельной сборки и проверки ICD:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\test-icd.ps1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\test-graphics.ps1
-```
-Комплект находится в `build/icd`: DLL, JSON-манифест, `Run-Icd.ps1` и журналы.
-Launcher задаёт `VK_DRIVER_FILES` только дочернему процессу. Родительское окружение
-и системная регистрация Vulkan не меняются. Это тестовый комплект для клиента
-`IrisIcdProbe.exe`, запуск игр пока не поддерживается.
-
-Неизменённый `vkcube` Vulkan-Tools `v1.3.301` уже собирается скриптом
-`tools/build-vkcube.ps1`; архивы Vulkan-Tools, Vulkan-Headers и commit Volk
-закреплены SHA-256. Готовый EXE находится в `build/vkcube`.
-
-`tools/capture-vkcube.ps1` запускает его через локальный ICD без участия
-человека: снимает клиентскую область окна через `PrintWindow`, не активирует
-окно, а любой диалог vkcube считает ошибкой и завершает процесс. Прогон 600 с:
-92 изменения размера (500×500, 800×600, 1024×768, 640×640), 45 циклов
-minimize/restore, 137 непустых снимков, закрытие по `WM_CLOSE`, код выхода 0.
-Отчёт с хешами: [native/artifacts/vkcube-validation.json](native/artifacts/vkcube-validation.json).
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\capture-vkcube.ps1 -Frames 1000000 -ExerciseSeconds 600 -OutputDirectory .\build\vkcube-10min
-```
-
-![vkcube на Iris 6100 через HasVK/WDDM ICD](native/artifacts/vkcube-preview.png)
-
-Снимки проверяются только на непустоту (число различных цветов), попиксельного
-сравнения с эталоном нет. На снимках окна 1024×768 нижняя полоса белая — причина
-(обрезка захвата по экрану или размер swapchain) не установлена. Размеры меньше
-500×500 не проверялись. `test-all.ps1` vkcube не запускает, поэтому в
-`progress.json` флаги vkcube остаются `false`. Десятиминутный прогон выполнен
-на DLL до подключения queries; на текущей DLL vkcube проверен прогоном 60 с.
-
-Queries реализованы штатным `genX_query.c` HasVK (occlusion, pipeline statistics,
-timestamp; `occlusionQueryPrecise`, `pipelineStatisticsQuery`, 36 бит timestamp).
-Код performance-query расширений в этом файле отключён макросами: `intel_perf`
-для Windows не собирается, расширения не объявлены. `test-graphics.ps1`
-проверяет шесть случаев: число прошедших сэмплов равно числу закрашенных
-пикселей (один draw, пустой запрос, два draw), недоступный запрос даёт
-`VK_NOT_READY`, `vkCmdCopyQueryPoolResults` в 64/32 бита с availability и
-PARTIAL сверяется побайтно вместе с защитными областями, reset и повторное
-использование. Статистика одного треугольника: 3 вершины, 1 примитив, 3 запуска
-VS; число запусков FS проверяется только на правдоподобие. Разность timestamp
-сверяется с задержкой хоста 200 мс. Queries в secondary command buffers,
-`inheritedQueries` и compute-статистика не проверялись.
-
-Следующий этап — validation layers и CTS. Совместимость с играми не
-проверялась. Системная регистрация ICD не выполняется.
+Системная установка и удаление — `tools/install-icd.ps1`, инструкция в
+[docs/install.md](docs/install.md). Релизный пакет собирает
+`tools/make-release.ps1`.
 
 ## Состав репозитория
 
