@@ -153,6 +153,89 @@ static void pass_begin(VkCommandBuffer handle, const VkRenderPassBeginInfo *info
          meta.aux |= ((uint32_t)view->image->planes[0].aux_usage & 15) << (4 * i);
       }
    cmd->wddm->profile_slot = begin(cmd, &meta);
+   cmd->wddm->profile_framebuffer = (uint64_t)(uintptr_t)info->framebuffer;
+   cmd->wddm->profile_render_pass = (uint64_t)(uintptr_t)info->renderPass;
+   cmd->wddm->profile_width = info->renderArea.extent.width; cmd->wddm->profile_height = info->renderArea.extent.height;
+}
+/* HASVK_WDDM_DUMP_DIR, HASVK_WDDM_DUMP_AT (seconds after the first 1536x1536
+ * pass, default 20): the depth attachment of every 1536x1536 pass recorded in
+ * one frame is copied (after the pass: final layout -> TRANSFER_SRC, copy,
+ * back) into a host-visible buffer and written as raw rows about 2 s later
+ * (<dir>\vulkan-shadow-<n>.r16). The buffers are kept: the command buffer may
+ * be submitted again. */
+struct dump { void *map; uint64_t bytes; uint64_t recorded_ms; uint32_t width, height, index; bool written; };
+static struct dump dumps[8];
+static uint32_t dump_count;
+static uint64_t dump_first_ms, dump_frame = UINT64_MAX;
+static void dump_after_pass(struct anv_cmd_buffer *cmd)
+{
+   static const char *dir = (const char *)1;
+   if (dir == (const char *)1) dir = getenv("HASVK_WDDM_DUMP_DIR");
+   if (!dir || cmd->wddm->profile_width != 1536 || cmd->wddm->profile_height != 1536 || !cmd->wddm->profile_framebuffer) return;
+   const uint64_t now = os_time_get_nano() / 1000000;
+   mtx_lock(&g.mutex);
+   if (!dump_first_ms) dump_first_ms = now;
+   const char *at = getenv("HASVK_WDDM_DUMP_AT");
+   const uint64_t wait = (at ? strtoull(at, NULL, 10) : 20) * 1000;
+   if (dump_frame == UINT64_MAX && now - dump_first_ms >= wait) dump_frame = p_atomic_read(&g.frames);
+   const bool take = dump_frame == p_atomic_read(&g.frames) && dump_count < ARRAY_SIZE(dumps);
+   const uint32_t index = take ? dump_count++ : 0;
+   mtx_unlock(&g.mutex);
+   if (!take) return;
+   VK_FROM_HANDLE(vk_framebuffer, fb, (VkFramebuffer)(uintptr_t)cmd->wddm->profile_framebuffer);
+   VK_FROM_HANDLE(vk_render_pass, pass, (VkRenderPass)(uintptr_t)cmd->wddm->profile_render_pass);
+   if (!fb || !pass || (fb->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT)) return;
+   for (uint32_t i = 0; i < fb->attachment_count && i < pass->attachment_count; ++i) {
+      ANV_FROM_HANDLE(anv_image_view, view, fb->attachments[i]);
+      const struct anv_image *image = view->image;
+      if (!(image->vk.aspects & VK_IMAGE_ASPECT_DEPTH_BIT)) continue;
+      const VkDevice device = device_handle(cmd->device);
+      const uint32_t cpp = image->vk.format == VK_FORMAT_D16_UNORM ? 2 : 4;
+      const uint64_t bytes = (uint64_t)1536 * 1536 * cpp;
+      VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = bytes, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+      VkBuffer buffer; VkDeviceMemory memory; void *map;
+      if (g.orig.CreateBuffer(device, &bi, NULL, &buffer) != VK_SUCCESS) return;
+      VkMemoryRequirements req; g.orig.GetBufferMemoryRequirements(device, buffer, &req);
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size, .memoryTypeIndex = 0};
+      if (g.orig.AllocateMemory(device, &ai, NULL, &memory) != VK_SUCCESS || g.orig.BindBufferMemory(device, buffer, memory, 0) != VK_SUCCESS ||
+          g.orig.MapMemory(device, memory, 0, VK_WHOLE_SIZE, 0, &map) != VK_SUCCESS)
+         return;
+      const VkImageLayout final = pass->attachments[i].final_layout;
+      VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+         .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+         .oldLayout = final, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .image = anv_image_to_handle((struct anv_image *)image),
+         .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, view->vk.base_mip_level, 1, view->vk.base_array_layer, 1}};
+      const VkCommandBuffer handle = anv_cmd_buffer_to_handle(cmd);
+      g.orig.CmdPipelineBarrier(handle, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+      VkBufferImageCopy region = {.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, view->vk.base_mip_level, view->vk.base_array_layer, 1},
+                                  .imageExtent = {1536, 1536, 1}};
+      g.orig.CmdCopyImageToBuffer(handle, b.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
+      b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT; b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+      b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; b.newLayout = final;
+      g.orig.CmdPipelineBarrier(handle, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+      mtx_lock(&g.mutex);
+      dumps[index] = (struct dump){map, bytes, now, 1536, 1536, index, false};
+      mtx_unlock(&g.mutex);
+      fprintf(stderr, "HasVK/WDDM profile: shadow map %u recorded for dumping (format %d, final layout %d)\n", index, image->vk.format, final);
+      return;
+   }
+}
+static void write_dumps(void)
+{
+   const char *dir = getenv("HASVK_WDDM_DUMP_DIR");
+   if (!dir) return;
+   const uint64_t now = os_time_get_nano() / 1000000;
+   for (uint32_t i = 0; i < ARRAY_SIZE(dumps); ++i) {
+      struct dump *d = &dumps[i];
+      if (!d->map || d->written || now - d->recorded_ms < 2000) continue;
+      char path[1024]; snprintf(path, sizeof(path), "%s\\vulkan-shadow-%u.r16", dir, d->index);
+      FILE *out = fopen(path, "wb");
+      if (out) { fwrite(d->map, 1, d->bytes, out); fclose(out); }
+      fprintf(stderr, "HasVK/WDDM profile: shadow map %u written to %s\n", d->index, path);
+      d->written = true;
+   }
 }
 static void pass_end(VkCommandBuffer handle)
 {
@@ -160,6 +243,7 @@ static void pass_end(VkCommandBuffer handle)
    if (!cmd->wddm || !cmd->wddm->profile_slot) return;
    end(cmd, cmd->wddm->profile_slot);
    cmd->wddm->profile_slot = 0;
+   dump_after_pass(cmd);
 }
 static VKAPI_ATTR void VKAPI_CALL wrap_CmdBeginRenderPass(VkCommandBuffer c, const VkRenderPassBeginInfo *info, VkSubpassContents contents)
 {
@@ -384,6 +468,7 @@ anv_wddm_profile_report(struct anv_device *device)
 {
    if (!enabled() || !g.pool || g.device != device) return;
    if (mtx_trylock(&g.mutex) != thrd_success) return;
+   write_dumps();
    const VkDevice handle = device_handle(device);
    const uint64_t mask = device->physical->info.timestamp_frequency ? (1ull << 36) - 1 : ~0ull;
    for (uint32_t slot = 0; slot < PAIRS; ++slot) {

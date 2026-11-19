@@ -22,6 +22,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -52,7 +53,8 @@ static void logf_(const char *fmt, ...)
 struct segment { UINT query; UINT draws; char key[96]; };
 #define STATS 4096u   /* pipeline statistics queries, one per segment */
 struct frame { ID3D11Query *disjoint; UINT count; UINT end_query; BOOL open, overflow; struct segment seg[SEGMENTS]; };
-struct bucket { char key[96]; double ms; unsigned long long count, draws, stats_count; double ia_vertices, vs, c_prims, ps; };
+struct bucket { char key[96]; double ms, max_ms; unsigned long long count, draws, stats_count; double ia_vertices, vs, c_prims, ps, max_ps;
+                unsigned long long heavy;   /* segments with more than 100k PS invocations */ };
 static struct {
    ID3D11Device *device;
    ID3D11DeviceContext *context;
@@ -120,6 +122,9 @@ static void bucket_add(const char *key, double ms, UINT draws, const D3D11_QUERY
    while (i < p.bucket_count && strcmp(p.buckets[i].key, key)) ++i;
    if (i == p.bucket_count) { if (i == BUCKETS) return; ++p.bucket_count; memset(&p.buckets[i], 0, sizeof(p.buckets[i])); strcpy(p.buckets[i].key, key); }
    p.buckets[i].ms += ms; ++p.buckets[i].count; p.buckets[i].draws += draws;
+   if (ms > p.buckets[i].max_ms) p.buckets[i].max_ms = ms;
+   if (ps && (double)ps->PSInvocations > p.buckets[i].max_ps) p.buckets[i].max_ps = (double)ps->PSInvocations;
+   if (ps && ps->PSInvocations > 100000) ++p.buckets[i].heavy;
    if (ps) { ++p.buckets[i].stats_count; p.buckets[i].ia_vertices += (double)ps->IAVertices; p.buckets[i].vs += (double)ps->VSInvocations;
              p.buckets[i].c_prims += (double)ps->CPrimitives; p.buckets[i].ps += (double)ps->PSInvocations; }
 }
@@ -210,12 +215,64 @@ static void end_frame(void)
                p.buckets[i].ms / p.buckets[i].count, (double)p.buckets[i].draws / p.buckets[i].count, p.buckets[i].key);
       for (UINT i = 0; i < p.bucket_count && i < 8; ++i)
          if (p.buckets[i].stats_count)
+            logf_("    per segment: max %.2f ms, max %.0fk PS, %llu of %llu segments over 100k PS | %s\n", p.buckets[i].max_ms, p.buckets[i].max_ps / 1e3,
+                  p.buckets[i].heavy, p.buckets[i].stats_count, p.buckets[i].key),
             logf_("    per segment: %.0fk IA vertices, %.0fk VS, %.0fk clip out, %.0fk PS | %s\n", p.buckets[i].ia_vertices / 1e3 / p.buckets[i].stats_count,
                   p.buckets[i].vs / 1e3 / p.buckets[i].stats_count, p.buckets[i].c_prims / 1e3 / p.buckets[i].stats_count,
                   p.buckets[i].ps / 1e3 / p.buckets[i].stats_count, p.buckets[i].key);
       p.bucket_count = 0; p.window_frames = 0; p.dropped = 0; p.window_start = now;
    }
    LeaveCriticalSection(&lock);
+}
+
+/* ---- shadow map dump (D3D11_DUMP_DIR, D3D11_DUMP_AT seconds after the first
+ * shadow pass): every 1536x1536 depth buffer of one frame, when the game
+ * switches away from it, as raw 16-bit rows (<dir>\d3d11-shadow-<n>.r16). ---- */
+static ID3D11Resource *shadow_res;
+static DWORD shadow_first_ms;
+static UINT dump_frame = UINT_MAX, dump_count;
+static void dump_shadow(ID3D11DeviceContext *ctx)
+{
+   char dir[MAX_PATH], at[32];
+   if (!shadow_res || !GetEnvironmentVariableA("D3D11_DUMP_DIR", dir, sizeof(dir))) return;
+   const DWORD now = GetTickCount();
+   if (!shadow_first_ms) shadow_first_ms = now;
+   const DWORD wait = GetEnvironmentVariableA("D3D11_DUMP_AT", at, sizeof(at)) ? (DWORD)atoi(at) * 1000u : 20000u;
+   if (dump_frame == UINT_MAX && now - shadow_first_ms >= wait) dump_frame = p.frame;
+   if (p.frame != dump_frame || dump_count >= 8) return;
+   ID3D11Texture2D *src = NULL, *staging = NULL;
+   if (FAILED(ID3D11Resource_QueryInterface(shadow_res, &IID_ID3D11Texture2D, (void **)&src))) return;
+   D3D11_TEXTURE2D_DESC desc; ID3D11Texture2D_GetDesc(src, &desc);
+   desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ; desc.MiscFlags = 0;
+   if (SUCCEEDED(ID3D11Device_CreateTexture2D(p.device, &desc, NULL, &staging))) {
+      o_CopyResource(ctx, (ID3D11Resource *)staging, shadow_res);
+      D3D11_MAPPED_SUBRESOURCE map;
+      if (SUCCEEDED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)staging, 0, D3D11_MAP_READ, 0, &map))) {
+         char path[MAX_PATH + 32]; snprintf(path, sizeof(path), "%s\\d3d11-shadow-%u.r16", dir, dump_count);
+         FILE *out = fopen(path, "wb");
+         if (out) { for (UINT y = 0; y < desc.Height; ++y) fwrite((const char *)map.pData + (size_t)y * map.RowPitch, 2, desc.Width, out); fclose(out); }
+         ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)staging, 0);
+         logf_("D3D11 proxy: dumped shadow map %u (%ux%u format %d, frame %u, %.1f s after the first) to %s\n", dump_count, desc.Width, desc.Height,
+               (int)desc.Format, p.frame, (now - shadow_first_ms) / 1000.0, path);
+         ++dump_count;
+      }
+      ID3D11Texture2D_Release(staging);
+   }
+   ID3D11Texture2D_Release(src);
+}
+static void track_shadow(ID3D11DeviceContext *ctx, ID3D11DepthStencilView *dsv)
+{
+   dump_shadow(ctx);   /* the previous target is complete */
+   if (shadow_res) { ID3D11Resource_Release(shadow_res); shadow_res = NULL; }
+   if (!dsv) return;
+   ID3D11Resource *res = NULL; ID3D11Texture2D *tex = NULL;
+   ID3D11View_GetResource((ID3D11View *)dsv, &res);
+   if (res && SUCCEEDED(ID3D11Resource_QueryInterface(res, &IID_ID3D11Texture2D, (void **)&tex))) {
+      D3D11_TEXTURE2D_DESC desc; ID3D11Texture2D_GetDesc(tex, &desc);
+      if (desc.Width == 1536 && desc.Height == 1536) { shadow_res = res; res = NULL; }
+      ID3D11Texture2D_Release(tex);
+   }
+   if (res) ID3D11Resource_Release(res);
 }
 
 /* ---- hooks ---- */
@@ -241,13 +298,13 @@ static void STDMETHODCALLTYPE h_OMSetRenderTargets(ID3D11DeviceContext *c, UINT 
    InterlockedIncrement(c == p.context ? &n_omset_immediate : &n_omset_other);
    /* Segments start here, not at the first draw: the runtime rewrites the draw
     * slots of the vtable, so draws are not seen. */
-   if (p.ready && c == p.context) { target_key(n, r, d); p.remark = FALSE; mark(c, p.last_key); }
+   if (p.ready && c == p.context) { track_shadow(c, d); target_key(n, r, d); p.remark = FALSE; mark(c, p.last_key); }
    o_OMSetRenderTargets(c, n, r, d);
 }
 static void STDMETHODCALLTYPE h_OMSetRTUAV(ID3D11DeviceContext *c, UINT n, ID3D11RenderTargetView *const *r, ID3D11DepthStencilView *d,
                                            UINT s, UINT u, ID3D11UnorderedAccessView *const *v, const UINT *i)
 {
-   if (p.ready && c == p.context && n != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) { target_key(n, r, d); p.remark = FALSE; mark(c, p.last_key); }
+   if (p.ready && c == p.context && n != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) { track_shadow(c, d); target_key(n, r, d); p.remark = FALSE; mark(c, p.last_key); }
    o_OMSetRTUAV(c, n, r, d, s, u, v, i);
 }
 static void STDMETHODCALLTYPE h_Draw(ID3D11DeviceContext *c, UINT a, UINT b) { count_draw(c); o_Draw(c, a, b); }
