@@ -143,6 +143,7 @@ static void end(struct anv_cmd_buffer *cmd, uint32_t slot)
 static void pass_begin(VkCommandBuffer handle, const VkRenderPassBeginInfo *info)
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
+   anv_wddm_capture_pass_begin(cmd, info);
    if (!cmd->wddm || cmd->wddm->profile_slot) return;
    struct meta meta = {KIND_PASS, info->renderArea.extent.width, info->renderArea.extent.height, 0,
                        (uint64_t)(uintptr_t)info->renderPass, 0};
@@ -240,6 +241,7 @@ static void write_dumps(void)
 static void pass_end(VkCommandBuffer handle)
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
+   anv_wddm_capture_pass_end(cmd);
    if (!cmd->wddm || !cmd->wddm->profile_slot) return;
    end(cmd, cmd->wddm->profile_slot);
    cmd->wddm->profile_slot = 0;
@@ -355,6 +357,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL wrap_BeginCommandBuffer(VkCommandBuffer c,
 static VKAPI_ATTR void VKAPI_CALL wrap_CmdExecuteCommands(VkCommandBuffer c, uint32_t count, const VkCommandBuffer *secondaries)
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd, c);
+   anv_wddm_capture_execute(cmd, count);
    if (cmd->wddm && cmd->wddm->profile_slot)
       for (uint32_t i = 0; i < count; ++i) {
          ANV_FROM_HANDLE(anv_cmd_buffer, secondary, secondaries[i]);

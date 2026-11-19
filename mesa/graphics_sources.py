@@ -52,6 +52,48 @@ def fragment_dispatch(source):
     return source
 
 
+def hiz_clear_value(hardware, blorp):
+    """HiZ fast clears with the image's own clear value
+    (anv_image_hiz_clear_value in anv_private.h) instead of the fixed 1.0:
+    allowed for any image whose clear value matches, including Gfx8 images
+    sampled with HiZ (value 0.0, which is what the sampler returns for
+    fast-cleared blocks), and programmed the same way by 3DSTATE_CLEAR_PARAMS,
+    the HiZ clear and the resolve/ambiguate ops."""
+    old = '''   if (depth_clear_value != ANV_HZ_FC_VAL)
+      return false;
+
+   /* Only gfx9+ supports returning ANV_HZ_FC_VAL when sampling a fast-cleared
+    * portion of a HiZ buffer. Testing has revealed that Gfx8 only supports
+    * returning 0.0f. Gens prior to gfx8 do not support this feature at all.
+    */
+   if (GFX_VER == 8 && anv_can_sample_with_hiz(device->info, iview->image))
+      return false;
+'''
+    new = '''   /* Gfx8 samplers return 0.0 for fast-cleared HiZ blocks, so images sampled
+    * with HiZ fast-clear only to 0.0 (anv_image_hiz_clear_value). */
+   if (depth_clear_value != anv_image_hiz_clear_value(device->info, iview->image))
+      return false;
+'''
+    assert hardware.count(old) == 1
+    hardware = hardware.replace(old, new)
+    old = '         info.depth_clear_value = ANV_HZ_FC_VAL;\n'
+    assert hardware.count(old) == 1
+    hardware = hardware.replace(old, '         info.depth_clear_value = anv_image_hiz_clear_value(device->info, image);\n')
+    old = '''         blorp_surf->clear_color = (union isl_color_value) {
+            .f32 = { ANV_HZ_FC_VAL },
+         };'''
+    assert blorp.count(old) == 1
+    blorp = blorp.replace(old, '''         blorp_surf->clear_color = (union isl_color_value) {
+            .f32 = { anv_image_hiz_clear_value(device->info, image) },
+         };''')
+    old = '''                                 aspects & VK_IMAGE_ASPECT_DEPTH_BIT,
+                                 ANV_HZ_FC_VAL,'''
+    assert blorp.count(old) == 1
+    blorp = blorp.replace(old, '''                                 aspects & VK_IMAGE_ASPECT_DEPTH_BIT,
+                                 anv_image_hiz_clear_value(cmd_buffer->device->info, image),''')
+    return hardware, blorp
+
+
 def generate_graphics_sources(originals):
     def read(name):
         return (originals / ('src/intel/vulkan_hasvk/' + name)).read_text(encoding='utf-8')
@@ -148,6 +190,7 @@ anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct
     start = blorp.index('   switch (device->info->verx10) {')
     end = blorp.index('\n   }', start) + len('\n   }')
     blorp = blorp[:start] + '   device->blorp.exec = gfx8_blorp_exec;' + blorp[end:]
+    hardware, blorp = hiz_clear_value(hardware, blorp)
     # A failed shader upload (out of memory) marks the command buffer failed:
     # vkEndCommandBuffer then reports it instead of BLORP asserting.
     marker = '''                               NULL, 0, NULL, &bind_map);

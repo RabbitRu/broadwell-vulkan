@@ -161,6 +161,9 @@ void anv_wddm_capture_draw(struct anv_cmd_buffer *cmd, bool indexed, uint32_t co
                            int32_t vertex_offset, uint32_t first_instance);
 void anv_wddm_capture_end_command_buffer(struct anv_cmd_buffer *cmd);
 void anv_wddm_capture_poll(void);
+void anv_wddm_capture_pass_begin(struct anv_cmd_buffer *cmd, const VkRenderPassBeginInfo *info);
+void anv_wddm_capture_pass_end(struct anv_cmd_buffer *cmd);
+void anv_wddm_capture_execute(struct anv_cmd_buffer *cmd, uint32_t count);
 void anv_wddm_cmd_state_finish(struct anv_cmd_buffer *cmd);
 void anv_wddm_init_border_colors(struct anv_device *device);
 struct anv_address anv_wddm_event_address(struct anv_device *device, const struct anv_event *event);

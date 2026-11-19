@@ -452,6 +452,26 @@ void anv_wddm_profile_pipe_bits(uint32_t bits, const char *reason);
 #endif
 static inline void
 anv_add_pending_pipe_bits('''),
+    ('   return image->vk.samples == 1;\n}\n\nvoid\nanv_cmd_buffer_mark_image_written(',
+     '''   return image->vk.samples == 1;
+}
+
+/* Depth value of HiZ fast clears of an image (3DSTATE_CLEAR_PARAMS, HiZ clear
+ * and resolve ops). Upstream uses ANV_HZ_FC_VAL (1.0) and so cannot fast-clear
+ * Gfx8 images sampled with HiZ, because the Gfx8 sampler returns 0.0 for
+ * fast-cleared HiZ blocks. For those images 0.0 is therefore the one correct
+ * value: reverse-Z depth, cleared to 0.0 (shadow maps of The Talos Principle),
+ * gets fast clears instead of a full clear before every pass. The value is a
+ * fixed property of the image, so every command that programs it agrees. */
+static inline float
+anv_image_hiz_clear_value(const struct intel_device_info * const devinfo,
+                          const struct anv_image *image)
+{
+   return devinfo->ver == 8 && anv_can_sample_with_hiz(devinfo, image) ? 0.0f : ANV_HZ_FC_VAL;
+}
+
+void
+anv_cmd_buffer_mark_image_written('''),
 ])
 # Keep Mesa's lock-free state/block allocators and free lists. Only the Linux
 # mmap backing and GEM BO implementation are replaced on Windows.

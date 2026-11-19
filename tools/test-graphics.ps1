@@ -21,7 +21,21 @@ if (-not $taskReport.passed -or -not $taskReport.forbiddenModulesAbsent -or $tas
     @(@($taskReport.cases)+@($taskReport.texturedDepthCases) | Where-Object {-not $_.guardsIntact -or $_.comparedPixels -lt 4000}).Count) {
     throw 'Hardware Vulkan graphics verification failed'
 }
+# Depth sampled right after a LOAD_OP_CLEAR pass (shadow maps): HiZ fast
+# clears to 0.0 on Gfx8 images sampled with HiZ (anv_image_hiz_clear_value).
+$start = [Diagnostics.ProcessStartInfo]::new((Join-Path $taskPackage 'IrisDepthSampleProbe.exe'))
+$start.WorkingDirectory = $taskPackage; $start.UseShellExecute = $false
+$start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+$start.EnvironmentVariables['VK_DRIVER_FILES'] = Join-Path $taskPackage 'intel_hasvk_wddm_icd.json'
+$start.EnvironmentVariables['VK_LOADER_LAYERS_DISABLE'] = '*'
+$depthSample = [Diagnostics.Process]::Start($start)
+$depthSampleOut = $depthSample.StandardOutput.ReadToEndAsync(); $depthSampleErr = $depthSample.StandardError.ReadToEndAsync()
+if (-not $depthSample.WaitForExit(120000)) { try { $depthSample.Kill() } catch {}; throw 'Depth sample probe did not finish in 120 s (killed)' }
+[IO.File]::WriteAllText((Join-Path $taskPackage 'diagnostics\depth-sample.txt'), $depthSampleOut.Result + "`n--- stderr`n" + $depthSampleErr.Result, [Text.UTF8Encoding]::new($false))
+$depthSampleCases = @($depthSampleOut.Result -split "`n" | Where-Object { $_ -like 'PASS: D16*' }).Count
+if ($depthSample.ExitCode -ne 0 -or $depthSampleCases -ne 12) { throw "Depth sampling after clear failed ($depthSampleCases of 12 cases); see build\icd\diagnostics\depth-sample.txt" }
 $taskResult=[ordered]@{schema=1; testedUtc=[DateTime]::UtcNow.ToString('o'); hardware='8086:162b'; driverVersion='20.19.15.5171';
+    depthSampleAfterClearCases=$depthSampleCases;
     icdSha256=(Get-FileHash -LiteralPath (Join-Path $taskPackage 'vulkan_hasvk_wddm.dll') -Algorithm SHA256).Hash.ToLowerInvariant();
     clientSha256=(Get-FileHash -LiteralPath (Join-Path $taskPackage 'IrisGraphicsProbe.exe') -Algorithm SHA256).Hash.ToLowerInvariant();
     reportSha256=(Get-FileHash -LiteralPath $taskReportPath -Algorithm SHA256).Hash.ToLowerInvariant();
@@ -36,3 +50,4 @@ $taskResult=[ordered]@{schema=1; testedUtc=[DateTime]::UtcNow.ToString('o'); har
     intelUmdAndD3d12Absent=$true; completeVulkanImplementation=$false; hardwareVkcubeValidated=$false}
 $taskResult | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $taskRoot 'native\artifacts\graphics-validation.json') -Encoding UTF8
 Write-Output 'PASS: hardware Vulkan triangle, texture, dynamic UBO, sampler, D16 and queries with independent pixel/guard checks'
+Write-Output "PASS: D16 sampled after LOAD_OP_CLEAR passes, $depthSampleCases cases (clear 0/0.25/1, array layer, two frames)"
