@@ -4955,7 +4955,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_capture.c
-@@ -0,0 +1,522 @@
+@@ -0,0 +1,629 @@
 +/* HASVK_WDDM_CAPTURE_DIR + HASVK_WDDM_CAPTURE_VS_INST=<n>: capture one
 + * graphics pipeline whose vertex shader compiles to <n> ELK instructions,
 + * and the data of its first draw, so that the draw can be replayed alone
@@ -4972,6 +4972,7 @@
 +#include "vk_shader_module.h"
 +#include "vk_render_pass.h"
 +#include "vk_framebuffer.h"
++#include "vk_format.h"
 +#include "util/u_atomic.h"
 +#include "util/os_time.h"
 +#include <stdio.h>
@@ -5193,7 +5194,11 @@
 +                           struct anv_buffer *buffer, struct anv_address address, uint64_t offset, uint64_t size)
 +{
 +   if (size > (64u << 20)) size = 64u << 20;
-+   if (address.bo && address.bo->map) {
++   /* In pass mode buffers are always copied by the GPU when the command
++    * buffer executes: applications may fill mapped (ring) buffers after
++    * recording the draw that reads them, until the submit. */
++   const bool gpu_copy = c.pass_size && cmd == c.pass_cmd && buffer;
++   if (!gpu_copy && address.bo && address.bo->map) {
 +      write_file(name, (const char *)address.bo->map + address.offset, (size_t)size);
 +      fprintf(txt, "%s %s %llu\n", what, name, (unsigned long long)size);
 +   } else if (buffer && c.captured_bytes + size <= CAPTURE_BYTES_MAX) {
@@ -5211,9 +5216,107 @@
 +   }
 +}
 +
++/* Sampled images of the captured pass: every mip level and layer of the colour
++ * aspect, copied by the GPU at the end of the command buffer (layout as the
++ * descriptor states it, back afterwards), written as image<i>.bin with mip
++ * levels one after another, each tightly packed. */
++struct image_pending { const struct anv_cmd_buffer *cmd; const struct anv_image *image; VkImageLayout layout;
++                       VkBuffer dst; VkDeviceMemory memory; void *map; uint64_t size, recorded_ms; uint32_t id; bool recorded, written; };
++static struct image_pending *image_pendings;
++static uint32_t image_pending_count, image_pending_capacity;
++
++static uint64_t image_bytes(const struct anv_image *image)
++{
++   const VkFormat format = image->vk.format;
++   const uint32_t bw = vk_format_get_blockwidth(format), bh = vk_format_get_blockheight(format), bs = vk_format_get_blocksize(format);
++   uint64_t size = 0;
++   for (uint32_t l = 0; l < image->vk.mip_levels; ++l) {
++      const uint32_t w = u_minify(image->vk.extent.width, l), h = u_minify(image->vk.extent.height, l);
++      size += (uint64_t)DIV_ROUND_UP(w, bw) * DIV_ROUND_UP(h, bh) * bs * image->vk.array_layers * u_minify(image->vk.extent.depth, l);
++   }
++   return size;
++}
++
++/* Id of a captured image, queued on first use; -1 if it cannot be captured. */
++static int pass_image(const struct anv_cmd_buffer *cmd, const struct anv_image *image, VkImageLayout layout)
++{
++   for (uint32_t i = 0; i < image_pending_count; ++i)
++      if (image_pendings[i].image == image) return (int)image_pendings[i].id;
++   if (!(image->vk.aspects & VK_IMAGE_ASPECT_COLOR_BIT) || image->vk.samples != 1 || image->n_planes != 1)
++      return -1;
++   const uint64_t size = image_bytes(image);
++   if (!size || c.captured_bytes + size > CAPTURE_BYTES_MAX) return -1;
++   if (image_pending_count == image_pending_capacity) {
++      image_pending_capacity = image_pending_capacity ? image_pending_capacity * 2 : 64;
++      image_pendings = realloc(image_pendings, image_pending_capacity * sizeof(*image_pendings));
++   }
++   c.captured_bytes += size;
++   const uint32_t id = image_pending_count;
++   image_pendings[image_pending_count++] = (struct image_pending){.cmd = cmd, .image = image, .layout = layout, .size = size, .id = id};
++   fprintf(c.pass_txt, "image_data %u image%u.bin format %d extent %u %u %u mips %u layers %u type %d size %llu\n", id, id, image->vk.format,
++           image->vk.extent.width, image->vk.extent.height, image->vk.extent.depth, image->vk.mip_levels, image->vk.array_layers,
++           image->vk.image_type, (unsigned long long)size);
++   return (int)id;
++}
++
++static void record_image_copies(struct anv_cmd_buffer *cmd)
++{
++   const VkDevice device = anv_device_to_handle(cmd->device);
++   const struct vk_device_dispatch_table *d = &cmd->device->vk.dispatch_table;
++   const VkCommandBuffer handle = anv_cmd_buffer_to_handle(cmd);
++   for (uint32_t i = 0; i < image_pending_count; ++i) {
++      struct image_pending *p = &image_pendings[i];
++      if (p->cmd != cmd || p->recorded) continue;
++      const struct anv_image *image = p->image;
++      VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = p->size, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
++      if (d->CreateBuffer(device, &bi, NULL, &p->dst) != VK_SUCCESS) continue;
++      VkMemoryRequirements req; d->GetBufferMemoryRequirements(device, p->dst, &req);
++      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size, .memoryTypeIndex = 0};
++      if (d->AllocateMemory(device, &ai, NULL, &p->memory) != VK_SUCCESS || d->BindBufferMemory(device, p->dst, p->memory, 0) != VK_SUCCESS ||
++          d->MapMemory(device, p->memory, 0, VK_WHOLE_SIZE, 0, &p->map) != VK_SUCCESS)
++         continue;
++      const VkImage vk_image = anv_image_to_handle((struct anv_image *)image);
++      const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
++      VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
++         .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT, .oldLayout = p->layout, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
++         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = vk_image, .subresourceRange = range};
++      d->CmdPipelineBarrier(handle, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
++      VkBufferImageCopy regions[16]; uint32_t n = 0; uint64_t offset = 0;
++      const VkFormat format = image->vk.format;
++      const uint32_t bw = vk_format_get_blockwidth(format), bh = vk_format_get_blockheight(format), bs = vk_format_get_blocksize(format);
++      for (uint32_t l = 0; l < image->vk.mip_levels && n < ARRAY_SIZE(regions); ++l) {
++         const uint32_t w = u_minify(image->vk.extent.width, l), h = u_minify(image->vk.extent.height, l), dd = u_minify(image->vk.extent.depth, l);
++         regions[n++] = (VkBufferImageCopy){.bufferOffset = offset, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, image->vk.array_layers},
++                                            .imageExtent = {w, h, dd}};
++         offset += (uint64_t)DIV_ROUND_UP(w, bw) * DIV_ROUND_UP(h, bh) * bs * image->vk.array_layers * dd;
++      }
++      d->CmdCopyImageToBuffer(handle, vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, p->dst, n, regions);
++      b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT; b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
++      b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; b.newLayout = p->layout;
++      d->CmdPipelineBarrier(handle, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &b);
++      VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
++      d->CmdPipelineBarrier(handle, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
++      p->recorded = true; p->recorded_ms = os_time_get_nano() / 1000000;
++   }
++}
++
++static void write_images(void)
++{
++   const uint64_t now = os_time_get_nano() / 1000000;
++   for (uint32_t i = 0; i < image_pending_count; ++i) {
++      struct image_pending *p = &image_pendings[i];
++      if (!p->recorded || p->written || now - p->recorded_ms < 2000) continue;
++      char name[32]; snprintf(name, sizeof(name), "image%u.bin", p->id);
++      write_file(name, p->map, (size_t)p->size);
++      p->written = true;
++      fprintf(stderr, "HasVK/WDDM capture: %s written (%llu bytes)\n", name, (unsigned long long)p->size);
++   }
++}
++
 +void anv_wddm_capture_end_command_buffer(struct anv_cmd_buffer *cmd)
 +{
 +   if (!capture_enabled()) return;
++   record_image_copies(cmd);
 +   const VkDevice device = anv_device_to_handle(cmd->device);
 +   const struct vk_device_dispatch_table *d = &cmd->device->vk.dispatch_table;
 +   const VkCommandBuffer handle = anv_cmd_buffer_to_handle(cmd);
@@ -5249,6 +5352,7 @@
 +void anv_wddm_capture_poll(void)
 +{
 +   if (!capture_enabled()) return;
++   write_images();
 +   const uint64_t now = os_time_get_nano() / 1000000;
 +   for (uint32_t i = 0; i < pending_count; ++i) {
 +      struct pending *p = &pendings[i];
@@ -5343,9 +5447,12 @@
 +                             d->buffer_view ? (unsigned long long)d->buffer_view->range : 0ull);
 +               break;
 +            default:
-+               if (d->image_view)
-+                  n += snprintf(descs + n, sizeof(descs) - n, "image %u %u %u %d %d %d\n", s, b, e, d->type, d->image_view->vk.view_type,
-+                                d->image_view->vk.format);
++               if (d->image_view) {
++                  const int image_id = pass_image(cmd, d->image_view->image, d->layout);
++                  n += snprintf(descs + n, sizeof(descs) - n, "image %u %u %u %d %d %d %d %u %u %u %u\n", s, b, e, d->type,
++                                d->image_view->vk.view_type, d->image_view->vk.format, image_id, d->image_view->vk.base_mip_level,
++                                d->image_view->vk.level_count, d->image_view->vk.base_array_layer, d->image_view->vk.layer_count);
++               }
 +               else
 +                  n += snprintf(descs + n, sizeof(descs) - n, "null %u %u %u %d\n", s, b, e, d->type);
 +            }
