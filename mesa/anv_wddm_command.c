@@ -44,8 +44,11 @@ static VkResult command_extend(struct anv_batch *batch, void *data)
       s->chunks = chunks; s->chunk_capacity = capacity;
    }
    struct anv_bo *bo;
-   VkResult result = anv_device_alloc_bo(cmd->device, "command", command_bytes, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &bo);
-   if (result != VK_SUCCESS) return result;
+   if (s->spare_count) bo = s->spare[--s->spare_count];   /* from an earlier recording of this command buffer */
+   else {
+      VkResult result = anv_device_alloc_bo(cmd->device, "command", command_bytes, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &bo);
+      if (result != VK_SUCCESS) return result;
+   }
    s->chunks[s->chunk_count - 1].length = (uint32_t)((char *)batch->next - (char *)batch->start);
    /* chain_bytes past batch->end are reserved for this jump. */
    uint32_t *jump = batch->next;
@@ -71,7 +74,17 @@ static void command_resources_finish(struct anv_cmd_buffer *cmd)
    anv_state_stream_finish(&cmd->general_state_stream);
    anv_reloc_list_finish(&cmd->surface_relocs, &cmd->vk.pool->alloc);
    anv_reloc_list_finish(cmd->batch.relocs, &cmd->vk.pool->alloc);
-   for (uint32_t i = 1; i < cmd->wddm->chunk_count; ++i) anv_device_release_bo(cmd->device, cmd->wddm->chunks[i].bo);
+   /* Extra chunks are kept for the next recording (released in destroy_command). */
+   struct anv_wddm_cmd_state *s = cmd->wddm;
+   for (uint32_t i = 1; i < s->chunk_count; ++i) {
+      if (s->spare_count == s->spare_capacity) {
+         const uint32_t capacity = MAX2(8, s->spare_capacity * 2);
+         struct anv_bo **spare = vk_realloc(&cmd->vk.pool->alloc, s->spare, capacity * sizeof(*spare), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+         if (!spare) { anv_device_release_bo(cmd->device, s->chunks[i].bo); continue; }
+         s->spare = spare; s->spare_capacity = capacity;
+      }
+      s->spare[s->spare_count++] = s->chunks[i].bo;
+   }
    for (uint32_t i = 0; i < cmd->wddm->wait_count; ++i) vk_free(&cmd->vk.pool->alloc, cmd->wddm->waits[i].events);
    cmd->wddm->wait_count = 0;
    cmd->wddm->chunk_count = 1; cmd->wddm->chunks[0].length = 0;
@@ -142,6 +155,8 @@ static void destroy_command(struct vk_command_buffer *base)
 {
    struct anv_cmd_buffer *cmd = container_of(base, struct anv_cmd_buffer, vk);
    command_resources_finish(cmd); u_vector_finish(&cmd->bt_block_states);
+   for (uint32_t i = 0; i < cmd->wddm->spare_count; ++i) anv_device_release_bo(cmd->device, cmd->wddm->spare[i]);
+   vk_free(&base->pool->alloc, cmd->wddm->spare);
    anv_device_release_bo(cmd->device, cmd->wddm->bo);
    vk_free(&base->pool->alloc, cmd->wddm->chunks); vk_free(&base->pool->alloc, cmd->wddm->waits);
    vk_free(&base->pool->alloc, cmd->batch.relocs); vk_free(&base->pool->alloc, cmd->wddm);

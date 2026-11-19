@@ -107,6 +107,11 @@ struct anv_wddm_cmd_state {
    struct anv_bo *bo;
    struct anv_wddm_cmd_chunk *chunks;
    uint32_t chunk_count, chunk_capacity;
+   /* Chunks beyond the first, kept across resets for reuse (released at
+    * destroy): allocating a WDDM buffer and waiting for its residency on every
+    * re-recording cost the application's render thread ~6 % in Talos. */
+   struct anv_bo **spare;
+   uint32_t spare_count, spare_capacity;
    struct anv_wddm_wait *waits;
    uint32_t wait_count, wait_capacity;
    /* Last 16 bytes of a recorded primary: MI_BATCH_BUFFER_END, patched at
