@@ -3046,11 +3046,14 @@
     elk_fs_alloc_reg_sets(compiler);
 -   if (devinfo->ver < 8)
 -      elk_vec4_alloc_reg_set(compiler);
-+   /* Gen8 only: no vec4 register set (the vec4 backend is not built). */
- 
-    compiler->precise_trig = debug_get_bool_option("INTEL_PRECISE_TRIG", false);
- 
+-
+-   compiler->precise_trig = debug_get_bool_option("INTEL_PRECISE_TRIG", false);
+-
 -   compiler->has_negative_rhw_bug = devinfo->verx10 == 40;
++   /* Gen8 only: no vec4 register set (the vec4 backend is not built). */
++
++   compiler->precise_trig = debug_get_bool_option("INTEL_PRECISE_TRIG", true);
++
 +   compiler->has_negative_rhw_bug = false;
  
     /* There is no vec4 mode on Gfx10+, and we don't use it at all on Gfx8+. */

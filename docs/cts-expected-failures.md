@@ -19,8 +19,12 @@ CTS ещё не выполнялся.
 
 | Тест | Результат | Что известно |
 |---|---|---|
-| `dEQP-VK.glsl.builtin.precision.{sin,cos}.{mediump,highp}.scalar` (4 теста) | Fail | Причина не установлена. Проверить диапазон аргументов теста против допуска точности sin/cos на Gen8. |
-| `dEQP-VK.subgroups.clustered.compute.subgroupclusteredor_i64vec4_requiredsubgroupsize` | Fail | Причина не установлена: 64-битная кластерная операция при заданном размере подгруппы. |
+| `dEQP-VK.subgroups.clustered.compute.subgroupclustered{add,and,or,xor}_i64vec4_requiredsubgroupsize` (4 теста) | Fail | Отказ только при обязательном размере подгруппы 32 (остальные размеры 8–16 и типы i64/i64vec2/i64vec3 проходят). Шейдер SIMD32 собирается с 1131 сбросом и 2319 загрузками регистров (SIMD8 и SIMD16 — без сбросов): вероятна ошибка пути сбросов ELK или scratch-памяти при таком объёме. Не исправлено. |
+
+Исправлено 2026-11-20: `glsl.builtin.precision.{sin,cos}.*` (8 отказов) — математический блок
+Broadwell возвращает sin/cos чуть больше 1 по модулю (`sin(1.58)` = `0x1.0001a8p0`), CTS
+требует [−1, 1]. Включён обход компилятора `precise_trig` (умножение на 0,99997, как в brw
+для всех поколений до Gfx10, кроме KBL); `INTEL_PRECISE_TRIG=0` отключает.
 
 ## Законно неподдерживаемое (NotSupported)
 

@@ -1059,6 +1059,12 @@ edit('src/intel/compiler/elk/elk_ir_performance.cpp', vec4_blocks('src/intel/com
 edit('src/intel/compiler/elk/elk_compiler.c', [
     ('   if (devinfo->ver < 8)\n      elk_vec4_alloc_reg_set(compiler);\n',
      '   /* Gen8 only: no vec4 register set (the vec4 backend is not built). */\n'),
+    # Broadwell's math box returns sin/cos slightly outside [-1, 1] near
+    # +-1 (CTS glsl.builtin.precision.sin/cos: 0x1.0001a8p0 for sin(1.58));
+    # brw keeps the same workaround on for everything before Gfx10 except
+    # KBL. It costs one multiply per sin/cos. INTEL_PRECISE_TRIG=0 disables it.
+    ('   compiler->precise_trig = debug_get_bool_option("INTEL_PRECISE_TRIG", false);',
+     '   compiler->precise_trig = debug_get_bool_option("INTEL_PRECISE_TRIG", true);'),
 ])
 edit('src/intel/blorp/blorp_elk.c', [
     ('''   /* Gfx6+ doesn't need a strips and fans program */
