@@ -77,6 +77,77 @@ def overlap(intervals, starts, lo, hi):
     return total
 
 
+def present_calls(sub, serials, win, frames, cycles, tsc_hz, app_calls, app_starts, per_frame):
+    """The kernel call of a present submission is the only one that blocks:
+    how long, what it returns on, and what waits behind it meanwhile."""
+    pres = [s for s in win if sub[s]['present']]
+    if len(pres) < 8:
+        return
+    index = {s: i for i, s in enumerate(serials)}
+    dur = sorted(sub[s]['ke'] - sub[s]['kb'] for s in pres)
+    med = statistics.median(dur)
+    limit = max(2 * med, 1e6)
+    groups = {'short': [s for s in pres if sub[s]['ke'] - sub[s]['kb'] <= limit],
+              'long': [s for s in pres if sub[s]['ke'] - sub[s]['kb'] > limit]}
+    total = sum(dur)
+    pct = lambda v, q: sorted(v)[min(int(q * len(v)), len(v) - 1)] if v else float('nan')
+    print(f'\npresent kernel calls: mean {total / len(dur) / 1e6:.2f} ms, median {med / 1e6:.2f}, p75 {pct(dur, .75) / 1e6:.2f}, '
+          f'p90 {pct(dur, .9) / 1e6:.2f}, max {dur[-1] / 1e6:.1f}; {per_frame(total):.2f} ms/frame')
+    if not groups['long']:
+        print(f'  none over {limit / 1e6:.1f} ms')
+        return
+    long_time = sum(sub[s]['ke'] - sub[s]['kb'] for s in groups['long'])
+    print(f'  long (over {limit / 1e6:.1f} ms): {len(groups["long"])} of {len(pres)} ({len(groups["long"]) / len(pres) * 100:.0f} %), '
+          f'mean {long_time / len(groups["long"]) / 1e6:.2f} ms, {long_time / total * 100:.0f} % of the time in present calls')
+
+    submits = [(s, e) for s, e, k in app_calls if k == 1]
+    submit_ends = sorted(e for s, e in submits)
+    for name in ('short', 'long'):
+        group = groups[name]
+        if not group:
+            continue
+        unfinished_begin, unfinished_end, own_start, offsets, deltas = [], [], [], collections.Counter(), []
+        held, held_calls, idle_after, frame_ms, frame_cpu, frame_query = [], 0, [], [], [], []
+        for s in group:
+            v, i = sub[s], index[s]
+            earlier = [sub[j] for j in serials[max(0, i - 48):i]]
+            unfinished_begin.append(sum(1 for e in earlier if e['ge_cpu'] > v['kb']))
+            unfinished_end.append(sum(1 for e in earlier if e['ge_cpu'] > v['ke']))
+            own_start.append(v['gs_cpu'] - v['ke'])
+            # Which completion the return coincides with (completion thread's wake: same clock).
+            near = min(serials[max(0, i - 12):i + 3], key=lambda j: abs(sub[j]['done'] - v['ke']))
+            offsets[index[near] - i] += 1
+            deltas.append(abs(sub[near]['done'] - v['ke']))
+            # Application submissions accepted while the queue thread sat in this call.
+            a, b = bisect.bisect_right(submit_ends, v['kb']), bisect.bisect_right(submit_ends, v['ke'])
+            held_calls += b - a
+            held.append(sum(v['ke'] - e for e in submit_ends[a:b]))
+            if i + 1 < len(serials):
+                idle_after.append(max(0.0, sub[serials[i + 1]]['gs_cpu'] - v['ge_cpu']))
+            # The application frame that runs during the call.
+            f = bisect.bisect_right(frames, v['kb']) - 1
+            if 0 <= f < len(frames) - 1:
+                fa, fb = frames[f], frames[f + 1]
+                frame_ms.append((fb - fa) / 1e6)
+                if fa in cycles and fb in cycles:
+                    frame_cpu.append((cycles[fb] - cycles[fa]) / tsc_hz * 1e3)
+                frame_query.append(overlap(app_calls, app_starts, fa, fb)[6] / 1e6)
+        m = statistics.median
+        print(f'  {name} calls ({len(group)}):')
+        print(f'    earlier submissions unfinished on the GPU: {m(unfinished_begin):.0f} (median) when the call began, '
+              f'{m(unfinished_end):.0f} when it returned; the present itself starts on the GPU {m(own_start) / 1e3:+.0f} us from the return')
+        print(f'    return is {m(deltas) / 1e3:.0f} us (median) from the completion of submission present' +
+              ', '.join(f'{k:+d}: {c}' for k, c in sorted(offsets.items(), key=lambda kc: -kc[1])[:4]))
+        print(f'    vkQueueSubmit accepted during the call: {held_calls / len(group):.2f} per call, held {per_frame(sum(held)):.2f} ms/frame '
+              f'(median {m(held) / 1e6:.2f} ms per call)')
+        if idle_after:
+            print(f'    GPU idle after the present\'s copy: median {m(idle_after) / 1e3:.0f} us, {per_frame(sum(idle_after)):.2f} ms/frame')
+        if frame_ms and frame_cpu:
+            print(f'    application frame during the call: {statistics.mean(frame_ms):.2f} ms (median {m(frame_ms):.2f}), '
+                  f'CPU {statistics.mean(frame_cpu):.2f} ms, off CPU {statistics.mean(frame_ms) - statistics.mean(frame_cpu):.2f} ms, '
+                  f'in vkGetQueryPoolResults {statistics.mean(frame_query):.2f} ms')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('csv')
@@ -286,6 +357,8 @@ def main():
         print(f'  awake -> syncs signalled: median {statistics.median(sig) / 1e3:.0f} us, p90 {sorted(sig)[int(0.9 * len(sig))] / 1e3:.0f} us')
     print(f'  submissions in flight at each present: ' +
           ', '.join(f'{k}: {v}' for k, v in sorted(collections.Counter(ahead).items())))
+
+    present_calls(sub, serials, win, frames, dict(frame_cycles), tsc_hz, app_calls, app_starts, per_frame)
 
     # Slow frames: present to present over twice the median. Per frame: the
     # application thread's CPU time (thread cycles at each present), the rest
