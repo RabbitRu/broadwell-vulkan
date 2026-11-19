@@ -444,6 +444,52 @@ int main(int argc, char **argv)
    double best = 1e9; uint64_t stats[4] = {};
    std::map<int, double> best_by_pipeline; std::map<int, int> draws_by_pipeline;
    for (Draw *dr : order) ++draws_by_pipeline[dr->pipeline];
+   /* CPU time of recording the draws (bind, push, dynamic state, draw calls;
+    * everything the application side does per draw is prepared outside). */
+   std::vector<std::vector<uint8_t>> pushes;
+   for (Draw *dr : order) { pushes.push_back(dr->push); pushes.back().resize(128); }
+   const bool scissor_1x1 = getenv("REPLAY_SCISSOR_1X1") != nullptr, repeat_first = getenv("REPLAY_REPEAT_FIRST") != nullptr;
+   std::vector<double> record_us;
+   LARGE_INTEGER qpf; QueryPerformanceFrequency(&qpf);
+   /* REPLAY_RECORD_ONLY=<n>: record the pass n times without submitting
+    * (driver CPU cost alone, e.g. for a sampling profiler), then exit. */
+   if (const char *record_only = getenv("REPLAY_RECORD_ONLY")) {
+      const int n = atoi(record_only);
+      for (int rep = 0; rep < n; ++rep) {
+         CHECK(vkResetCommandBuffer(cmd, 0)); CHECK(vkBeginCommandBuffer(cmd, &begin));
+         VkClearValue clear{}; clear.depthStencil.depth = clear_depth;
+         VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; rbi.renderPass = pass; rbi.framebuffer = framebuffer;
+         rbi.renderArea = {{0, 0}, {width, height}}; rbi.clearValueCount = 1; rbi.pClearValues = &clear;
+         vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+         int bound = -1;
+         LARGE_INTEGER r0, r1; QueryPerformanceCounter(&r0);
+         for (size_t i = 0; i < order.size(); ++i) {
+            Draw *dr = order[i]; Pipeline &p = pipelines[dr->pipeline];
+            if (bound != dr->pipeline) { vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipeline); bound = dr->pipeline; }
+            if (!dr->sets.empty())
+               vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.layout, 0, (uint32_t)dr->sets.size(), dr->sets.data(),
+                                       (uint32_t)dr->dynamic_offsets.size(), dr->dynamic_offsets.data());
+            vkCmdPushConstants(cmd, p.layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, 128, pushes[i].data());
+            if (p.has(VK_DYNAMIC_STATE_VIEWPORT)) vkCmdSetViewport(cmd, 0, 1, &dr->viewport);
+            if (p.has(VK_DYNAMIC_STATE_SCISSOR)) vkCmdSetScissor(cmd, 0, 1, &dr->scissor);
+            if (p.has(VK_DYNAMIC_STATE_DEPTH_BIAS)) vkCmdSetDepthBias(cmd, dr->bias_const, dr->bias_clamp, dr->bias_slope);
+            for (auto &vb : dr->vbs) { VkBuffer b = get_buffer(vb.second.first); VkDeviceSize off = vb.second.second; vkCmdBindVertexBuffers(cmd, vb.first, 1, &b, &off); }
+            if (dr->indexed && dr->ib >= 0)
+               vkCmdBindIndexBuffer(cmd, get_buffer(dr->ib), dr->ib_offset, dr->ib_type == 2 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
+            if (dr->indexed) vkCmdDrawIndexed(cmd, dr->count, dr->instances, dr->first, dr->vertex_offset, dr->first_instance);
+            else vkCmdDraw(cmd, dr->count, dr->instances, dr->first, dr->first_instance);
+         }
+         QueryPerformanceCounter(&r1);
+         record_us.push_back((r1.QuadPart - r0.QuadPart) * 1e6 / double(qpf.QuadPart));
+         vkCmdEndRenderPass(cmd);
+         CHECK(vkEndCommandBuffer(cmd));
+      }
+      std::sort(record_us.begin(), record_us.end());
+      const double median = record_us[record_us.size() / 2];
+      printf("recording only (CPU): %.1f us best, %.1f us median of %zu, %.0f ns per draw (median)\n", record_us.front(), median,
+             record_us.size(), order.empty() ? 0.0 : median * 1e3 / order.size());
+      return 0;
+   }
    for (int rep = -5; rep < passes; ++rep) {
       CHECK(vkResetCommandBuffer(cmd, 0)); CHECK(vkBeginCommandBuffer(cmd, &begin));
       vkCmdResetQueryPool(cmd, qp, 0, query_count); vkCmdResetQueryPool(cmd, sp, 0, 1); vkCmdResetQueryPool(cmd, op, 0, (uint32_t)order.size() + 1);
@@ -454,21 +500,21 @@ int main(int argc, char **argv)
       vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
       vkCmdBeginQuery(cmd, sp, 0, 0);
       int bound = -1;
+      LARGE_INTEGER r0, r1; QueryPerformanceCounter(&r0);
       for (size_t i = 0; i < order.size(); ++i) {
          Draw *dr = order[i]; Pipeline &p = pipelines[dr->pipeline];
          if (bound != dr->pipeline) { vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipeline); bound = dr->pipeline; }
          if (!dr->sets.empty())
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.layout, 0, (uint32_t)dr->sets.size(), dr->sets.data(),
                                     (uint32_t)dr->dynamic_offsets.size(), dr->dynamic_offsets.data());
-         std::vector<uint8_t> push = dr->push; push.resize(128);
-         vkCmdPushConstants(cmd, p.layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, 128, push.data());
+         vkCmdPushConstants(cmd, p.layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, 128, pushes[i].data());
          if (p.has(VK_DYNAMIC_STATE_VIEWPORT)) vkCmdSetViewport(cmd, 0, 1, &dr->viewport);
-         if (p.has(VK_DYNAMIC_STATE_SCISSOR)) { VkRect2D sc = dr->scissor; if (getenv("REPLAY_SCISSOR_1X1")) sc.extent = {1, 1}; vkCmdSetScissor(cmd, 0, 1, &sc); }
+         if (p.has(VK_DYNAMIC_STATE_SCISSOR)) { VkRect2D sc = dr->scissor; if (scissor_1x1) sc.extent = {1, 1}; vkCmdSetScissor(cmd, 0, 1, &sc); }
          if (p.has(VK_DYNAMIC_STATE_DEPTH_BIAS)) vkCmdSetDepthBias(cmd, dr->bias_const, dr->bias_clamp, dr->bias_slope);
          for (auto &vb : dr->vbs) { VkBuffer b = get_buffer(vb.second.first); VkDeviceSize off = vb.second.second; vkCmdBindVertexBuffers(cmd, vb.first, 1, &b, &off); }
          if (dr->indexed && dr->ib >= 0)
             vkCmdBindIndexBuffer(cmd, get_buffer(dr->ib), dr->ib_offset, dr->ib_type == 2 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
-         if (i == 0 && getenv("REPLAY_REPEAT_FIRST")) {
+         if (i == 0 && repeat_first) {
             if (dr->indexed) vkCmdDrawIndexed(cmd, dr->count, dr->instances, dr->first, dr->vertex_offset, dr->first_instance);
             else vkCmdDraw(cmd, dr->count, dr->instances, dr->first, dr->first_instance);
          }
@@ -477,6 +523,8 @@ int main(int argc, char **argv)
          else vkCmdDraw(cmd, dr->count, dr->instances, dr->first, dr->first_instance);
          if (per_draw) { vkCmdEndQuery(cmd, op, (uint32_t)i); vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp, 3 + 2 * (uint32_t)i); }
       }
+      QueryPerformanceCounter(&r1);
+      if (rep >= 0) record_us.push_back((r1.QuadPart - r0.QuadPart) * 1e6 / double(qpf.QuadPart));
       vkCmdEndQuery(cmd, sp, 0);
       vkCmdEndRenderPass(cmd);
       vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp, 1);
@@ -498,6 +546,12 @@ int main(int argc, char **argv)
    printf("pass: %.3f ms (best of %d), %zu draws, %zu pipelines%s; %llu IA vertices, %llu VS, %llu clip out, %llu FS\n", best, passes, order.size(),
           used.size(), no_fs ? ", no FS" : "", (unsigned long long)stats[0], (unsigned long long)stats[1], (unsigned long long)stats[2],
           (unsigned long long)stats[3]);
+   if (!record_us.empty()) {
+      std::sort(record_us.begin(), record_us.end());
+      const double median = record_us[record_us.size() / 2];
+      printf("recording (CPU): %.1f us best, %.1f us median of %zu, %.0f ns per draw (median)\n", record_us.front(), median,
+             record_us.size(), order.empty() ? 0.0 : median * 1e3 / order.size());
+   }
    if (per_draw) {
       std::vector<std::pair<double, int>> list;
       for (auto &kv : best_by_pipeline) list.push_back({kv.second, kv.first});

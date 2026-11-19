@@ -707,7 +707,59 @@
  
      struct anv_physical_device *                physical;
      const struct intel_device_info *            info;
-@@ -1371,14 +1385,8 @@
+@@ -1116,7 +1130,12 @@
+          const struct anv_bo *bo,
+          isl_surf_usage_flags_t usage)
+ {
++#ifdef _WIN32
++   (void)usage;
++   return bo && bo->is_external ? device->isl_dev.mocs.external : device->isl_dev.mocs.internal;
++#else
+    return isl_mocs(&device->isl_dev, usage, bo && bo->is_external);
++#endif
+ }
+ 
+ void anv_device_init_blorp(struct anv_device *device);
+@@ -1324,7 +1343,21 @@
+    VkResult                                     status;
+ };
+ 
++#ifdef _WIN32
++void *anv_batch_emit_dwords_extend(struct anv_batch *batch, int num_dwords);
++static inline void *
++anv_batch_emit_dwords(struct anv_batch *batch, int num_dwords)
++{
++   if (likely(num_dwords >= 0 && (char *)batch->next + num_dwords * 4 <= (char *)batch->end)) {
++      void *p = batch->next;
++      batch->next = (char *)p + num_dwords * 4;
++      return p;
++   }
++   return anv_batch_emit_dwords_extend(batch, num_dwords);
++}
++#else
+ void *anv_batch_emit_dwords(struct anv_batch *batch, int num_dwords);
++#endif
+ void anv_batch_emit_batch(struct anv_batch *batch, struct anv_batch *other);
+ struct anv_address anv_batch_address(struct anv_batch *batch, void *batch_location);
+ 
+@@ -1357,6 +1390,16 @@
+                      void *location, struct anv_bo *bo, uint32_t delta)
+ {
+    uint64_t address_u64 = 0;
++#ifdef _WIN32
++   /* Every BO has its final GPU address (anv_wddm_batch.c): a relocation only
++    * marks the BO in the batch's dependency bitset. */
++   struct anv_reloc_list *list = batch->relocs;
++   if (likely(bo && bo->gem_handle && bo->gem_handle < list->dep_words * BITSET_WORDBITS &&
++              !bo->is_wrapper && anv_bo_is_pinned(bo))) {
++      BITSET_SET(list->deps, bo->gem_handle);
++      return intel_canonical_address(bo->offset + delta);
++   }
++#endif
+    VkResult result = anv_reloc_list_add(batch->relocs, batch->alloc,
+                                         location - batch->start, bo, delta,
+                                         &address_u64);
+@@ -1371,14 +1414,8 @@
  static inline void
  write_reloc(const struct anv_device *device, void *p, uint64_t v, bool flush)
  {
@@ -724,7 +776,7 @@
  
  #ifdef SUPPORT_INTEL_INTEGRATED_GPUS
     if (flush && device->physical->memory.need_flush)
-@@ -1483,6 +1491,9 @@
+@@ -1483,6 +1520,9 @@
  
  struct anv_device_memory {
     struct vk_object_base                        base;
@@ -734,7 +786,7 @@
  
     struct list_head                             link;
  
-@@ -2503,6 +2514,9 @@
+@@ -2503,6 +2543,9 @@
  
  struct anv_cmd_buffer {
     struct vk_command_buffer                     vk;
@@ -744,7 +796,7 @@
  
     struct anv_device *                          device;
     struct anv_queue_family *                    queue_family;
-@@ -2927,7 +2941,11 @@
+@@ -2927,7 +2970,11 @@
  }
  
  struct anv_format_plane {
@@ -756,7 +808,7 @@
     struct isl_swizzle swizzle;
  
     /* Whether this plane contains chroma channels */
-@@ -3213,8 +3231,12 @@
+@@ -3213,8 +3260,12 @@
  static inline bool
  anv_image_is_externally_shared(const struct anv_image *image)
  {
@@ -769,7 +821,7 @@
  }
  
  static inline bool
-@@ -3317,7 +3339,7 @@
+@@ -3317,7 +3368,7 @@
     struct anv_address addr =
        anv_image_get_clear_color_addr(device, image, aspect);
  
@@ -778,7 +830,7 @@
        device->isl_dev.ss.clear_color_state_size :
        device->isl_dev.ss.clear_value_size;
     return anv_address_add(addr, clear_color_state_size);
-@@ -3347,10 +3369,34 @@
+@@ -3347,10 +3398,34 @@
      * far. Sampling fast-cleared blocks on BDW must also be handled with care
      * (see depth_stencil_attachment_compute_aux_usage() for more info).
      */
@@ -814,7 +866,7 @@
  }
  
  void
-@@ -3635,12 +3681,19 @@
+@@ -3635,12 +3710,19 @@
  void
  anv_dump_pipe_bits(enum anv_pipe_bits bits);
  
@@ -834,7 +886,7 @@
     if (INTEL_DEBUG(DEBUG_PIPE_CONTROL) && bits)
     {
        fputs("pc: add ", stderr);
-@@ -3762,6 +3815,10 @@
+@@ -3762,6 +3844,10 @@
                                 VkPerformanceConfigurationINTEL,
                                 VK_OBJECT_TYPE_PERFORMANCE_CONFIGURATION_INTEL)
  
@@ -845,7 +897,7 @@
  #define anv_genX(devinfo, thing) ({             \
     __typeof(&gfx7_##thing) genX_thing;          \
     switch ((devinfo)->verx10) {                 \
-@@ -3779,6 +3836,7 @@
+@@ -3779,6 +3865,7 @@
     }                                            \
     genX_thing;                                  \
  })
@@ -12198,7 +12250,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_batch.c
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,68 @@
 +/* Pinned-VA batch bookkeeping for the Windows transport. No Linux relocations
 + * or ioctl submission: every BO already has its final WDDM GPU address. */
 +#include "anv_wddm.h"
@@ -12234,7 +12286,9 @@
 +   if (result == VK_SUCCESS && address) *address = intel_canonical_address(bo->offset + delta);
 +   return result;
 +}
-+void *anv_batch_emit_dwords(struct anv_batch *batch, int count)
++/* Slow path of the inline anv_batch_emit_dwords (anv_private.h): errors and
++ * batch growth. */
++void *anv_batch_emit_dwords_extend(struct anv_batch *batch, int count)
 +{
 +   if (count < 0) { anv_batch_set_error(batch, VK_ERROR_OUT_OF_HOST_MEMORY); return NULL; }
 +   if ((char *)batch->next + count * 4 > (char *)batch->end) {
@@ -22976,7 +23030,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_gen8.c
-@@ -0,0 +1,5611 @@
+@@ -0,0 +1,5621 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -26118,7 +26172,8 @@
 +                                pipeline->active_stages;
 +   if (!cmd_buffer->state.gfx.dirty && !descriptors_dirty &&
 +       !vk_dynamic_graphics_state_any_dirty(dyn) &&
-+       !cmd_buffer->state.push_constants_dirty)
++       !(cmd_buffer->state.push_constants_dirty &
++         (pipeline->active_stages | ~VK_SHADER_STAGE_ALL_GRAPHICS)))
 +      return;
 +
 +   if ((cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_XFB_ENABLE) ||
@@ -26161,13 +26216,16 @@
 +      }
 +   }
 +
++   bool push_alloc_changed = false;
 +   if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_PIPELINE) {
 +      anv_batch_emit_batch(&cmd_buffer->batch, &pipeline->base.batch);
 +
 +      /* If the pipeline changed, we may need to re-allocate push constant
 +       * space in the URB.
 +       */
++      const VkShaderStageFlags push_stages = cmd_buffer->state.gfx.push_constant_stages;
 +      cmd_buffer_alloc_push_constants(cmd_buffer);
++      push_alloc_changed = cmd_buffer->state.gfx.push_constant_stages != push_stages;
 +   }
 +
 +
@@ -26192,11 +26250,17 @@
 +      cmd_buffer->state.descriptors_dirty &= ~dirty;
 +   }
 +
-+   if (dirty || cmd_buffer->state.push_constants_dirty) {
++   /* Disabled stages wait with their push constants until a pipeline that has
++    * them is bound, except right after 3DSTATE_PUSH_CONSTANT_ALLOC_*, which
++    * requires 3DSTATE_CONSTANT_* for every stage (BDW PRM).
++    */
++   const VkShaderStageFlags push_dirty = cmd_buffer->state.push_constants_dirty &
++      (push_alloc_changed ? VK_SHADER_STAGE_ALL_GRAPHICS : pipeline->active_stages);
++   if (dirty || push_dirty) {
 +      /* Because we're pushing UBOs, we have to push whenever either
 +       * descriptors or push constants is dirty.
 +       */
-+      dirty |= cmd_buffer->state.push_constants_dirty;
++      dirty |= push_dirty;
 +      cmd_buffer_flush_push_constants(cmd_buffer,
 +                                      dirty & VK_SHADER_STAGE_ALL_GRAPHICS);
 +   }

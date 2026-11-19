@@ -1,4 +1,4 @@
-filled: 85 allocations, 511.9 MiB of a 512.0 MiB heap in 78 ms
+filled: 85 allocations, 511.9 MiB of a 512.0 MiB heap in 94 ms
 pre-recorded submission with a full heap: correct
 recording 20000 commands with a full heap: vkEndCommandBuffer = 0
 20000-command buffer with a full heap: correct

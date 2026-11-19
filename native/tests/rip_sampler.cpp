@@ -145,6 +145,36 @@ int main(int argc, char **argv)
          std::sort(w.begin(), w.end(), [](auto &a, auto &b) { return a.second > b.second; });
          printf("   -- call chains in the module (innermost first):\n");
          for (size_t i = 0; i < w.size() && i < 16; ++i) printf("      %5.1f%% %s\n", 100.0 * w[i].second / std::max<uint64_t>(row.t->samples, 1), w[i].first.c_str());
+         /* RIP_LINES=<n>: the n hottest source lines of the module (PDB line
+          * info; inlined code is attributed to the line it came from). */
+         if (const char *lines_env = getenv("RIP_LINES")) {
+            std::map<std::string, uint64_t> by_line;
+            for (auto &[ip, n] : row.t->ips) {
+               if (ip < module_base || ip >= module_end) continue;
+               IMAGEHLP_LINE64 line{}; line.SizeOfStruct = sizeof(line); DWORD d = 0;
+               std::string key = name_of(ip);
+               /* Innermost inlined frame first: otherwise inlined code is
+                * attributed to the line of the call it was inlined into. */
+               DWORD inline_context = 0, frame_index = 0; bool found = false;
+               if (SymAddrIncludeInlineTrace(process, ip) &&
+                   SymQueryInlineTrace(process, ip, 0, ip, ip, &inline_context, &frame_index)) {
+                  found = SymGetLineFromInlineContext(process, ip, inline_context, 0, &d, &line);
+                  char buffer[sizeof(SYMBOL_INFO) + 256] = {}; auto *sym = reinterpret_cast<SYMBOL_INFO *>(buffer);
+                  sym->SizeOfStruct = sizeof(SYMBOL_INFO); sym->MaxNameLen = 255; DWORD64 d64 = 0;
+                  if (found && SymFromInlineContext(process, ip, inline_context, &d64, sym)) key = sym->Name;
+               }
+               if (found || SymGetLineFromAddr64(process, ip, &d, &line)) {
+                  const char *file = strrchr(line.FileName, '\\'); file = file ? file + 1 : line.FileName;
+                  key = std::string(file) + ":" + std::to_string(line.LineNumber) + " (" + key + ")";
+               }
+               by_line[key] += n;
+            }
+            std::vector<std::pair<std::string, uint64_t>> l(by_line.begin(), by_line.end());
+            std::sort(l.begin(), l.end(), [](auto &a, auto &b) { return a.second > b.second; });
+            printf("   -- hottest source lines in the module:\n");
+            for (size_t i = 0; i < l.size() && i < (size_t)atoi(lines_env); ++i)
+               printf("      %5.1f%% %s\n", 100.0 * l[i].second / std::max<uint64_t>(row.t->samples, 1), l[i].first.c_str());
+         }
       }
    }
    return 0;

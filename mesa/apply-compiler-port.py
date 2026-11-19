@@ -627,6 +627,51 @@ anv_cmd_buffer_mark_image_written('''),
 ''', '''   UNUSED unsigned reloc_size = sizeof(uint64_t);
    *(uint64_t *)p = intel_canonical_address(v);   /* Gen8 only */
 '''),
+    # Command recording CPU (native/tests/replay_pass_probe.cpp,
+    # REPLAY_RECORD_ONLY): every packet reserves batch space and every address
+    # in a packet records its BO, each through an out-of-line call. The common
+    # case is inline; growing the batch, growing the dependency bitset and
+    # errors stay in anv_wddm_batch.c.
+    ('void *anv_batch_emit_dwords(struct anv_batch *batch, int num_dwords);\n', '''#ifdef _WIN32
+void *anv_batch_emit_dwords_extend(struct anv_batch *batch, int num_dwords);
+static inline void *
+anv_batch_emit_dwords(struct anv_batch *batch, int num_dwords)
+{
+   if (likely(num_dwords >= 0 && (char *)batch->next + num_dwords * 4 <= (char *)batch->end)) {
+      void *p = batch->next;
+      batch->next = (char *)p + num_dwords * 4;
+      return p;
+   }
+   return anv_batch_emit_dwords_extend(batch, num_dwords);
+}
+#else
+void *anv_batch_emit_dwords(struct anv_batch *batch, int num_dwords);
+#endif
+'''),
+    ('''   uint64_t address_u64 = 0;
+   VkResult result = anv_reloc_list_add(batch->relocs, batch->alloc,''', '''   uint64_t address_u64 = 0;
+#ifdef _WIN32
+   /* Every BO has its final GPU address (anv_wddm_batch.c): a relocation only
+    * marks the BO in the batch's dependency bitset. */
+   struct anv_reloc_list *list = batch->relocs;
+   if (likely(bo && bo->gem_handle && bo->gem_handle < list->dep_words * BITSET_WORDBITS &&
+              !bo->is_wrapper && anv_bo_is_pinned(bo))) {
+      BITSET_SET(list->deps, bo->gem_handle);
+      return intel_canonical_address(bo->offset + delta);
+   }
+#endif
+   VkResult result = anv_reloc_list_add(batch->relocs, batch->alloc,'''),
+    # isl_mocs() is out of line and checks Gfx12/MTL cases at run time; on Gen8,
+    # without blitter or protected usages (hasvk has neither), it returns the
+    # external or the internal MOCS.
+    ('''   return isl_mocs(&device->isl_dev, usage, bo && bo->is_external);
+}''', '''#ifdef _WIN32
+   (void)usage;
+   return bo && bo->is_external ? device->isl_dev.mocs.external : device->isl_dev.mocs.internal;
+#else
+   return isl_mocs(&device->isl_dev, usage, bo && bo->is_external);
+#endif
+}'''),
 ])
 # Keep Mesa's lock-free state/block allocators and free lists. Only the Linux
 # mmap backing and GEM BO implementation are replaced on Windows.

@@ -167,6 +167,79 @@ def hiz_clear_value(hardware, blorp):
     return hardware, blorp
 
 
+def push_constants_active_stages(hardware):
+    """Push constants (3DSTATE_CONSTANT_*) and binding table/sampler pointers
+    only for the stages the bound pipeline has.
+
+    Upstream flushes every dirty graphics stage, and a pipeline change or a
+    vkCmdPushConstants with VK_SHADER_STAGE_ALL_GRAPHICS dirties all five: a
+    VS+FS pipeline then gets three empty 3DSTATE_CONSTANT_* and pointer packets
+    per draw for stages that are disabled. Inactive stages keep their dirty
+    bits and are flushed when a pipeline that has them is bound (so a later
+    pipeline with the same push layout cannot see stale constants). The one
+    exception is a re-programmed push constant allocation: the BDW PRM requires
+    3DSTATE_CONSTANT_* for every stage after 3DSTATE_PUSH_CONSTANT_ALLOC_*, so
+    that flush still covers all of them."""
+    old = '''       !vk_dynamic_graphics_state_any_dirty(dyn) &&
+       !cmd_buffer->state.push_constants_dirty)
+      return;
+'''
+    assert hardware.count(old) == 1
+    hardware = hardware.replace(old, '''       !vk_dynamic_graphics_state_any_dirty(dyn) &&
+       !(cmd_buffer->state.push_constants_dirty &
+         (pipeline->active_stages | ~VK_SHADER_STAGE_ALL_GRAPHICS)))
+      return;
+''')
+    old = '''   if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_PIPELINE) {
+      anv_batch_emit_batch(&cmd_buffer->batch, &pipeline->base.batch);
+
+      /* If the pipeline changed, we may need to re-allocate push constant
+       * space in the URB.
+       */
+      cmd_buffer_alloc_push_constants(cmd_buffer);
+   }
+'''
+    assert hardware.count(old) == 1
+    hardware = hardware.replace(old, '''   bool push_alloc_changed = false;
+   if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_PIPELINE) {
+      anv_batch_emit_batch(&cmd_buffer->batch, &pipeline->base.batch);
+
+      /* If the pipeline changed, we may need to re-allocate push constant
+       * space in the URB.
+       */
+      const VkShaderStageFlags push_stages = cmd_buffer->state.gfx.push_constant_stages;
+      cmd_buffer_alloc_push_constants(cmd_buffer);
+      push_alloc_changed = cmd_buffer->state.gfx.push_constant_stages != push_stages;
+   }
+''')
+    old = '''   if (dirty || cmd_buffer->state.push_constants_dirty) {
+      /* Because we're pushing UBOs, we have to push whenever either
+       * descriptors or push constants is dirty.
+       */
+      dirty |= cmd_buffer->state.push_constants_dirty;
+      cmd_buffer_flush_push_constants(cmd_buffer,
+                                      dirty & VK_SHADER_STAGE_ALL_GRAPHICS);
+   }
+'''
+    assert hardware.count(old) == 1
+    hardware = hardware.replace(old, '''   /* Disabled stages wait with their push constants until a pipeline that has
+    * them is bound, except right after 3DSTATE_PUSH_CONSTANT_ALLOC_*, which
+    * requires 3DSTATE_CONSTANT_* for every stage (BDW PRM).
+    */
+   const VkShaderStageFlags push_dirty = cmd_buffer->state.push_constants_dirty &
+      (push_alloc_changed ? VK_SHADER_STAGE_ALL_GRAPHICS : pipeline->active_stages);
+   if (dirty || push_dirty) {
+      /* Because we're pushing UBOs, we have to push whenever either
+       * descriptors or push constants is dirty.
+       */
+      dirty |= push_dirty;
+      cmd_buffer_flush_push_constants(cmd_buffer,
+                                      dirty & VK_SHADER_STAGE_ALL_GRAPHICS);
+   }
+''')
+    return hardware
+
+
 def generate_graphics_sources(originals):
     def read(name):
         return (originals / ('src/intel/vulkan_hasvk/' + name)).read_text(encoding='utf-8')
@@ -264,6 +337,7 @@ anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct
     end = blorp.index('\n   }', start) + len('\n   }')
     blorp = blorp[:start] + '   device->blorp.exec = gfx8_blorp_exec;' + blorp[end:]
     hardware, blorp = hiz_clear_value(hardware, blorp)
+    hardware = push_constants_active_stages(hardware)
     # A failed shader upload (out of memory) marks the command buffer failed:
     # vkEndCommandBuffer then reports it instead of BLORP asserting.
     marker = '''                               NULL, 0, NULL, &bind_map);

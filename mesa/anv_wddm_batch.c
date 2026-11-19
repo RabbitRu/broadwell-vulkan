@@ -33,7 +33,9 @@ VkResult anv_reloc_list_add(struct anv_reloc_list *list, const VkAllocationCallb
    if (result == VK_SUCCESS && address) *address = intel_canonical_address(bo->offset + delta);
    return result;
 }
-void *anv_batch_emit_dwords(struct anv_batch *batch, int count)
+/* Slow path of the inline anv_batch_emit_dwords (anv_private.h): errors and
+ * batch growth. */
+void *anv_batch_emit_dwords_extend(struct anv_batch *batch, int count)
 {
    if (count < 0) { anv_batch_set_error(batch, VK_ERROR_OUT_OF_HOST_MEMORY); return NULL; }
    if ((char *)batch->next + count * 4 > (char *)batch->end) {
