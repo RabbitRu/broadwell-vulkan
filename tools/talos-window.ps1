@@ -57,12 +57,17 @@ if ($Mode -eq 'rip') {
 function Snapshot {
    $threads = @{}
    foreach ($thread in (Get-Process -Id $game.Id).Threads) { $threads[$thread.Id] = [TalosWindow.Native]::Cycles([uint32]$thread.Id) }
-   @{ when = [Diagnostics.Stopwatch]::GetTimestamp(); threads = $threads }
+   # Other processes: CPU by process times (timer ticks: fine for seconds of CPU).
+   $processes = @{}
+   foreach ($p in Get-Process) { try { $processes["$($p.ProcessName) $($p.Id)"] = $p.TotalProcessorTime.TotalSeconds } catch {} }
+   @{ when = [Diagnostics.Stopwatch]::GetTimestamp(); threads = $threads; processes = $processes }
 }
 $dwm = Get-Process dwm -ErrorAction SilentlyContinue | Select-Object -First 1
 $paths = @('\Processor Information(_Total)\Actual Frequency', '\Processor Information(_Total)\% Processor Performance',
            '\Processor Information(_Total)\% Performance Limit', '\Processor Information(_Total)\Performance Limit Flags',
-           '\Processor Information(_Total)\% Processor Time', '\GPU Engine(*engtype_3D)\Utilization Percentage', '\Process(dwm)\% Processor Time')
+           '\Processor Information(_Total)\% Processor Time', '\Processor Information(_Total)\% Privileged Time',
+           '\Processor Information(_Total)\% DPC Time', '\Processor Information(_Total)\% Interrupt Time',
+           '\GPU Engine(*engtype_3D)\Utilization Percentage', '\Process(dwm)\% Processor Time')
 $a = Snapshot
 $samples = @(Get-Counter -Counter $paths -SampleInterval 1 -MaxSamples $Seconds -ErrorAction SilentlyContinue)
 $b = Snapshot
@@ -92,4 +97,12 @@ if ($n) {
 $rows = foreach ($id in $b.threads.Keys) { if ($a.threads.ContainsKey($id)) { [pscustomobject]@{ Thread = $id; Pct = ($b.threads[$id] - $a.threads[$id]) / $tsc / $wall * 100 } } }
 $lines += "threads of Talos.exe, % of one logical CPU (QueryThreadCycleTime): all $([math]::Round(($rows | Measure-Object Pct -Sum).Sum, 1)) %"
 $lines += $rows | Sort-Object Pct -Descending | Select-Object -First 10 | ForEach-Object { "  thread $($_.Thread): $([math]::Round($_.Pct, 1)) %" }
+$others = foreach ($key in $b.processes.Keys) {
+   if ($a.processes.ContainsKey($key) -and $key -ne "Talos $($game.Id)") {
+      [pscustomobject]@{ Process = $key; Pct = ($b.processes[$key] - $a.processes[$key]) / $wall * 100 }
+   }
+}
+$lines += "other processes, % of one logical CPU (process times): all $([math]::Round(($others | Measure-Object Pct -Sum).Sum, 1)) %"
+$lines += $others | Sort-Object Pct -Descending | Select-Object -First 8 | Where-Object { $_.Pct -ge 0.5 } |
+   ForEach-Object { "  $($_.Process): $([math]::Round($_.Pct, 1)) %" }
 $lines | Set-Content -LiteralPath $Out -Encoding utf8
