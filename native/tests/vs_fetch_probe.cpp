@@ -49,6 +49,10 @@ int main(int argc, char **argv)
    VkDeviceMemory mem; CHECK(vkAllocateMemory(d, &ai, nullptr, &mem)); CHECK(vkBindBufferMemory(d, buffer, mem, 0));
    float *texels; CHECK(vkMapMemory(d, mem, 0, VK_WHOLE_SIZE, 0, (void **)&texels));
    for (int i = 0; i < 4096 * 4; ++i) texels[i] = (float)(i % 97) * 0.01f;
+   VkBufferCreateInfo ubi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; ubi.size = 192 * 16; ubi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+   VkBuffer ubo; CHECK(vkCreateBuffer(d, &ubi, nullptr, &ubo));
+   ai.allocationSize = ubi.size; VkDeviceMemory umem; CHECK(vkAllocateMemory(d, &ai, nullptr, &umem)); CHECK(vkBindBufferMemory(d, ubo, umem, 0));
+   float *u; CHECK(vkMapMemory(d, umem, 0, VK_WHOLE_SIZE, 0, (void **)&u)); for (int i = 0; i < 192 * 4; ++i) u[i] = (float)(i % 89) * 0.01f;
    VkBufferViewCreateInfo bvi{VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO}; bvi.buffer = buffer; bvi.format = VK_FORMAT_R32G32B32A32_SFLOAT; bvi.range = VK_WHOLE_SIZE;
    VkBufferView view; CHECK(vkCreateBufferView(d, &bvi, nullptr, &view));
    VkAttachmentDescription att{0, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -59,8 +63,9 @@ int main(int argc, char **argv)
    VkRenderPass pass; CHECK(vkCreateRenderPass(d, &rpi, nullptr, &pass));
    VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO}; fbi.renderPass = pass; fbi.width = fbi.height = 64; fbi.layers = 1;
    VkFramebuffer framebuffer; CHECK(vkCreateFramebuffer(d, &fbi, nullptr, &framebuffer));
-   VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
-   VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; li.bindingCount = 1; li.pBindings = &binding;
+   VkDescriptorSetLayoutBinding bindings[2] = {{0, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+                                               {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr}};
+   VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; li.bindingCount = 2; li.pBindings = bindings;
    VkDescriptorSetLayout sl; CHECK(vkCreateDescriptorSetLayout(d, &li, nullptr, &sl));
    VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT, 0, 8};
    VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO}; pli.setLayoutCount = 1; pli.pSetLayouts = &sl;
@@ -81,14 +86,18 @@ int main(int argc, char **argv)
    gpi.pVertexInputState = &vin; gpi.pInputAssemblyState = &ia; gpi.pViewportState = &vp; gpi.pRasterizationState = &rs;
    gpi.pMultisampleState = &ms; gpi.pColorBlendState = &cb; gpi.layout = layout; gpi.renderPass = pass;
    VkPipeline pipeline; CHECK(vkCreateGraphicsPipelines(d, VK_NULL_HANDLE, 1, &gpi, nullptr, &pipeline));
-   VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1};
-   VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; dpi.maxSets = 1; dpi.poolSizeCount = 1; dpi.pPoolSizes = &ps;
+   VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
+   VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; dpi.maxSets = 1; dpi.poolSizeCount = 2; dpi.pPoolSizes = ps;
    VkDescriptorPool dp; CHECK(vkCreateDescriptorPool(d, &dpi, nullptr, &dp));
    VkDescriptorSetAllocateInfo dai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO}; dai.descriptorPool = dp; dai.descriptorSetCount = 1; dai.pSetLayouts = &sl;
    VkDescriptorSet set; CHECK(vkAllocateDescriptorSets(d, &dai, &set));
    VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; w.dstSet = set; w.descriptorCount = 1;
    w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER; w.pTexelBufferView = &view;
-   vkUpdateDescriptorSets(d, 1, &w, 0, nullptr);
+   VkDescriptorBufferInfo ubo_info{ubo, 0, VK_WHOLE_SIZE};
+   VkWriteDescriptorSet w2{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; w2.dstSet = set; w2.dstBinding = 1; w2.descriptorCount = 1;
+   w2.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w2.pBufferInfo = &ubo_info;
+   VkWriteDescriptorSet writes[2] = {w, w2};
+   vkUpdateDescriptorSets(d, 2, writes, 0, nullptr);
    VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; pi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
    VkCommandPool pool; CHECK(vkCreateCommandPool(d, &pi, nullptr, &pool));
    VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; ca.commandPool = pool; ca.commandBufferCount = 1;
@@ -118,7 +127,7 @@ int main(int argc, char **argv)
       const double ms = (ts[1] - ts[0]) * props.limits.timestampPeriod / 1e6;
       if (ms < best) best = ms;
    }
-   printf("vulkan %s x%d: best %.3f ms for %u draws, %u vertices -> %.1f Mvertices/s, %.2f us per draw\n", mode ? "ALU" : "texelFetch", count, best,
+   printf("vulkan %s x%d: best %.3f ms for %u draws, %u vertices -> %.1f Mvertices/s, %.2f us per draw\n", mode == 0 ? "texelFetch varying" : mode == 1 ? "ALU" : mode == 2 ? "texelFetch uniform" : "UBO uniform", count, best,
           draws, vertices, vertices / (best / 1000) / 1e6, best * 1000 / draws);
    return 0;
 }

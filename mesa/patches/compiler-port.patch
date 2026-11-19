@@ -628,7 +628,24 @@
  }
  
  static inline bool
-@@ -3635,12 +3663,19 @@
+@@ -3349,6 +3377,16 @@
+     */
+    if (devinfo->ver != 8 && !devinfo->has_sample_with_hiz)
+       return false;
++#ifdef _WIN32
++   /* HASVK_WDDM_NO_HIZ_SAMPLING=1: depth is resolved before sampling instead
++    * of sampled with HiZ, which allows HiZ fast clears on Gen8
++    * (anv_can_hiz_clear_ds_view). Faster when alpha-tested geometry is drawn
++    * first after a clear (docs/optimizations-vs-dx11.md, 2.10); costs a
++    * resolve per sampled depth pass, so it is not the default. */
++   static int no_hiz_sampling = -1;
++   if (no_hiz_sampling < 0) no_hiz_sampling = getenv("HASVK_WDDM_NO_HIZ_SAMPLING") != NULL;
++   if (no_hiz_sampling) return false;
++#endif
+ 
+    return image->vk.samples == 1;
+ }
+@@ -3635,12 +3673,19 @@
  void
  anv_dump_pipe_bits(enum anv_pipe_bits bits);
  
@@ -648,7 +665,7 @@
     if (INTEL_DEBUG(DEBUG_PIPE_CONTROL) && bits)
     {
        fputs("pc: add ", stderr);
-@@ -3762,6 +3797,10 @@
+@@ -3762,6 +3807,10 @@
                                 VkPerformanceConfigurationINTEL,
                                 VK_OBJECT_TYPE_PERFORMANCE_CONFIGURATION_INTEL)
  
@@ -659,7 +676,7 @@
  #define anv_genX(devinfo, thing) ({             \
     __typeof(&gfx7_##thing) genX_thing;          \
     switch ((devinfo)->verx10) {                 \
-@@ -3779,6 +3818,7 @@
+@@ -3779,6 +3828,7 @@
     }                                            \
     genX_thing;                                  \
  })

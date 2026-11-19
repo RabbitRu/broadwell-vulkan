@@ -436,6 +436,16 @@ edit('src/intel/vulkan_hasvk/anv_private.h', [
    if (anv_wddm_profile_pipe_bits_enabled && bits) anv_wddm_profile_pipe_bits(bits, reason);
 #endif
    if (INTEL_DEBUG(DEBUG_PIPE_CONTROL) && bits)'''),
+    ('   if (devinfo->ver != 8 && !devinfo->has_sample_with_hiz)\n      return false;\n',
+     '   if (devinfo->ver != 8 && !devinfo->has_sample_with_hiz)\n      return false;\n'
+     '#ifdef _WIN32\n   /* HASVK_WDDM_NO_HIZ_SAMPLING=1: depth is resolved before sampling instead\n'
+     '    * of sampled with HiZ, which allows HiZ fast clears on Gen8\n'
+     '    * (anv_can_hiz_clear_ds_view). Faster when alpha-tested geometry is drawn\n'
+     '    * first after a clear (docs/optimizations-vs-dx11.md, 2.10); costs a\n'
+     '    * resolve per sampled depth pass, so it is not the default. */\n'
+     '   static int no_hiz_sampling = -1;\n'
+     '   if (no_hiz_sampling < 0) no_hiz_sampling = getenv("HASVK_WDDM_NO_HIZ_SAMPLING") != NULL;\n'
+     '   if (no_hiz_sampling) return false;\n#endif\n'),
     ('static inline void\nanv_add_pending_pipe_bits(', '''#ifdef _WIN32
 extern bool anv_wddm_profile_pipe_bits_enabled;
 void anv_wddm_profile_pipe_bits(uint32_t bits, const char *reason);
