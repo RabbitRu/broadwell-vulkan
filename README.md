@@ -17,7 +17,11 @@
 - Проверенные приложения: `vulkaninfo`, `vkcube`, `vkcubepp`, The Talos
   Principle.
 - Текущая работа — производительность. Цель: Vulkan быстрее DX11 в The Talos
-  Principle. Сейчас 79–83 FPS против 83–91 у DX11 на драйвере Intel.
+  Principle. Сейчас 70–83 FPS (чаще 75–79) против 79–87 у DX11 на драйвере
+  Intel в тех же сериях прогонов (в начале работы — 27,8 FPS). На одинаковой
+  работе драйвер вровень с драйвером Intel; остаток разрыва задаёт путь Vulkan
+  самой игры (тени заново каждый кадр забирают общий бюджет питания CPU и GPU) —
+  разбор в [docs/optimizations-vs-dx11.md](docs/optimizations-vs-dx11.md).
 
 ![vkcube на Iris 6100 через HasVK/WDDM ICD](native/artifacts/vkcube-preview.png)
 
@@ -25,8 +29,8 @@
 
 - [docs/roadmap.md](docs/roadmap.md) — что сделано и что осталось.
 - [docs/optimizations-vs-dx11.md](docs/optimizations-vs-dx11.md) —
-  производительность: измерения, гипотезы для проверки, отклонённые опыты,
-  методика.
+  производительность: итог, измерения, что изменено, статус гипотез,
+  отклонённые опыты, команды для повторения каждого замера, методика.
 - [docs/install.md](docs/install.md) — установка, кэш шейдеров, переменные
   окружения, ограничения (эта инструкция входит в релизный пакет).
 - [docs/cts-expected-failures.md](docs/cts-expected-failures.md) — известные
@@ -84,7 +88,12 @@ MSVC 14.44.35207, SDK 10.0.26100.0 и хеши компиляторов/заго
 - CTS: `build-cts.ps1`, `run-cts.ps1` и срезы по группам
   (`run-cts-sample.ps1`, `run-cts-groups.ps1`, `run-cts-vk13.ps1`,
   `run-cts-extensions.ps1`).
-- `run-talos.ps1` — встроенный бенчмарк The Talos Principle под Vulkan и DX11.
+- `run-talos.ps1` — встроенный бенчмарк The Talos Principle под Vulkan и DX11
+  (`-Sample` — потоки, частота CPU и загрузка GPU в окне замера;
+  `-RipModule` — сэмплы стеков; `-D3D11Proxy` — разбивка кадра DX11).
+- Диагностика производительности: `build-probes.ps1` (пробы, `rip_sampler`,
+  прокси `d3d11.dll`), журнал кадра `HASVK_WDDM_TIMELINE` с разбором
+  `timeline-report.py`, таблицы кадров игры — `bench-frames.py`.
 
 Что именно проверяет каждая проба и с каким результатом — в
 [docs/roadmap.md](docs/roadmap.md), раздел 1. Компактные отчёты прогонов —

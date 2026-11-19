@@ -83,6 +83,8 @@ def main():
     ap.add_argument('--talos-log')
     ap.add_argument('--from', dest='t0', type=float)
     ap.add_argument('--to', dest='t1', type=float)
+    ap.add_argument('--slow-detail', action='store_true',
+                    help='for every slow frame, everything over 1 ms on any thread (calls, kernel submissions, semaphore waits)')
     args = ap.parse_args()
     ev = load(args.csv)
     ev.sort(key=lambda e: e[0])
@@ -313,6 +315,27 @@ def main():
         print(f'  over the median frame ({median:.1f} ms, app CPU {median_cpu:.1f} ms): {sum_extra / len(slow):.1f} ms per slow frame, '
               f'of it {sum_cpu_extra / len(slow):.1f} ms more application CPU; time in calls per slow frame: ' +
               ', '.join(f'{k} {v / len(slow):.2f} ms' for k, v in call_kinds.most_common(5)))
+
+    if args.slow_detail and slow:
+        # All threads: Vulkan calls (by thread), kernel submissions, CPU semaphore waits.
+        everything, open_calls = [], {}
+        for ns, t, th, a, b in ev:
+            if t == CALL_BEGIN:
+                open_calls.setdefault((th, a), []).append(ns)
+            elif t == CALL_END and open_calls.get((th, a)):
+                who = 'application thread' if th == app else f'thread {th}'
+                everything.append((open_calls[(th, a)].pop(), ns, f'{who}: {CALLS.get(a, a)}'))
+        for s in serials:
+            v = sub[s]
+            everything.append((v['kb'], v['ke'], f'queue thread: kernel submission {s}{" (present)" if v["present"] else ""}'))
+        everything += [(s, e, 'queue thread: CPU semaphore wait') for s, e, _ in sem_waits]
+        everything.sort()
+        print('\nslow frames in detail (everything over 1 ms, ms from the frame start):')
+        for a, b in slow:
+            print(f'  frame at {(a - first_ns) / 1e9:.3f} s, {(b - a) / 1e6:.1f} ms')
+            for s, e, what in everything:
+                if e > a - 5e6 and s < b and e - s > 1e6:
+                    print(f'     {(s - a) / 1e6:+7.1f} .. {(e - a) / 1e6:+7.1f} ({(e - s) / 1e6:5.1f}) {what}')
 
 
 if __name__ == '__main__':

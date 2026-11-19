@@ -22,6 +22,14 @@ shows a modal crash dialog), shows any other modal dialog, or exceeds
   -NoRetry           the game's test bot sometimes ends the level ~2 s after
                      the start ("end of game"); such a run is repeated once
                      unless -NoRetry is given.
+  -Sample            measures inside the benchmark window (tools\talos-window.ps1):
+                     per-thread CPU (exact thread cycles), CPU frequency and
+                     performance limit, GPU 3D load of the game and dwm;
+                     report in build\talos\<Tag>.sample.txt
+  -RipModule dll     instead, samples stacks with build\probes\rip_sampler.exe
+                     for 24 s with that module on the stack (vulkan_hasvk_wddm.dll,
+                     igd10iumd64.dll for Intel's DX11 driver); report in
+                     build\talos\<Tag>.rip.txt. Build it with tools\build-probes.ps1.
 #>
 param(
    [ValidateSet('Vulkan', 'Direct3D11')][string]$Api = 'Vulkan',
@@ -32,7 +40,9 @@ param(
    [int]$TimeoutSeconds = 300,
    [string]$D3D11Proxy = '',
    [string]$Game = 'C:\Program Files (x86)\Steam\steamapps\common\The Talos Principle',
-   [switch]$NoRetry
+   [switch]$NoRetry,
+   [switch]$Sample,
+   [string]$RipModule = ''
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -110,8 +120,21 @@ if ($D3D11Proxy) {
    if (Test-Path $proxyLog) { Remove-Item $proxyLog -Force }
    $start.EnvironmentVariables['D3D11_PROFILE_LOG'] = $proxyLog
 }
+# Measurement inside the benchmark window, in a process of its own (counters
+# are not available to PowerShell background jobs); it waits for this run's game.
+$sampler = $null; $sampleOut = $null
+if ($Sample -or $RipModule) {
+   $mode = if ($RipModule) { 'rip' } else { 'counters' }
+   $sampleOut = Join-Path $out ("$Tag." + $(if ($RipModule) { 'rip' } else { 'sample' }) + '.txt')
+   if (Test-Path -LiteralPath $sampleOut) { Remove-Item -LiteralPath $sampleOut -Force }
+   $samplerArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$(Join-Path $PSScriptRoot 'talos-window.ps1')`"",
+                    '-Out', "`"$sampleOut`"", '-Mode', $mode, '-NotBefore', (Get-Date).ToFileTimeUtc())
+   if ($RipModule) { $samplerArgs += @('-Module', $RipModule, '-Symbols', "`"$(Join-Path $root 'build\icd')`"") }
+   $sampler = Start-Process powershell.exe -ArgumentList $samplerArgs -WindowStyle Hidden -PassThru -RedirectStandardError "$sampleOut.err"
+}
 try {
-if ($D3D11Proxy) { Copy-Item -LiteralPath $D3D11Proxy -Destination $proxyTarget; $proxyPlaced = $true }$watch = [Diagnostics.Stopwatch]::StartNew()
+if ($D3D11Proxy) { Copy-Item -LiteralPath $D3D11Proxy -Destination $proxyTarget; $proxyPlaced = $true }
+$watch = [Diagnostics.Stopwatch]::StartNew()
 $p = [Diagnostics.Process]::Start($start)
 $stdout = $p.StandardOutput.ReadToEndAsync()
 $stderr = $p.StandardError.ReadToEndAsync()
@@ -148,6 +171,7 @@ $duration = Get-Content $log -ErrorAction SilentlyContinue | Select-String 'Dura
 if (-not $verdict -and $duration -and [double]::Parse($duration.Matches[0].Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) -lt 20) {
    $verdict = "benchmark ended early ($($duration.Matches[0].Groups[1].Value) s, bot reached the level end)"
    if (-not $NoRetry) {
+      if ($sampler -and -not $sampler.HasExited) { try { $sampler.Kill() } catch {} }   # the rerun starts its own
       "$Api [$Tag]: $verdict; running again"
       $again = @{} + $PSBoundParameters; $again['NoRetry'] = $true
       & $PSCommandPath @again
@@ -159,4 +183,11 @@ if ($verdict -like 'crashed*' -or $verdict -eq 'modal dialog') {
    Get-Content $log | Select-String 'RIP:|Crashed!|ERR:' | Select-Object -First 5 | ForEach-Object { '  ' + $_.Line.Trim() }
 }
 $fps | Select-Object -Last 2 | ForEach-Object { "  $_" }
+if ($sampler) {
+   if (-not $sampler.WaitForExit(60000)) { try { $sampler.Kill() } catch {} }
+   if (Test-Path -LiteralPath $sampleOut) {
+      "  measurement: $sampleOut"
+      if ($Sample -and -not $RipModule) { Get-Content -LiteralPath $sampleOut | ForEach-Object { "    $_" } }
+   } else { "  measurement: no report" }
+}
 if ($verdict -or $fps.Count -eq 0) { exit 1 }
