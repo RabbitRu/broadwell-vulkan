@@ -930,7 +930,7 @@ static void state_finish(struct anv_wddm_device_state *w)
    }
    if (w->reservation) hasvk_wddm_release(w->transport, w->reservation);
    if (w->transport && hasvk_wddm_device_destroy(w->transport)) fprintf(stderr, "HasVK/WDDM cleanup: %s\n", hasvk_wddm_error());
-   u_cnd_monotonic_destroy(&w->condition); mtx_destroy(&w->submit_mutex); mtx_destroy(&w->mutex);
+   u_cnd_monotonic_destroy(&w->condition); mtx_destroy(&w->submit_mutex); mtx_destroy(&w->mutex); mtx_destroy(&w->alloc_mutex);
    free(w->bo_ids); free(w);
 }
 VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle, const VkDeviceCreateInfo *info,
@@ -966,6 +966,7 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle
    if (mtx_init(&w->mutex, mtx_plain) != thrd_success) { free(w); device->wddm = NULL; result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
    if (mtx_init(&w->submit_mutex, mtx_plain) != thrd_success) { mtx_destroy(&w->mutex); free(w); device->wddm = NULL; result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
    if (u_cnd_monotonic_init(&w->condition) != thrd_success) { mtx_destroy(&w->submit_mutex); mtx_destroy(&w->mutex); free(w); device->wddm = NULL; result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
+   if (mtx_init(&w->alloc_mutex, mtx_plain) != thrd_success) { u_cnd_monotonic_destroy(&w->condition); mtx_destroy(&w->submit_mutex); mtx_destroy(&w->mutex); free(w); device->wddm = NULL; result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_base; }
    if (hasvk_wddm_device_create(&w->transport) || hasvk_wddm_reserve(w->transport, 16ull << 30, 0, &w->reservation)) {
       result = VK_ERROR_INITIALIZATION_FAILED; goto fail_state;
    }
@@ -1166,7 +1167,7 @@ PUBLIC int hasvk_wddm_icd_query_memory(VkDevice handle, uint64_t *bytes, uint32_
    ANV_FROM_HANDLE(anv_device, device, handle);
    if (!device || !bytes || !count) return -1;
    struct anv_wddm_device_state *w = device->wddm;
-   mtx_lock(&w->mutex); *bytes = w->allocated_bytes; *count = w->allocation_count; mtx_unlock(&w->mutex);
+   mtx_lock(&w->alloc_mutex); *bytes = w->allocated_bytes; *count = w->allocation_count; mtx_unlock(&w->alloc_mutex);
    return 0;
 }
 PUBLIC int hasvk_wddm_icd_query_compute_pipeline(VkPipeline handle, uint32_t *values)

@@ -108,16 +108,18 @@ void Device::wait_paging(uint64_t fence, DWORD timeout_ms)
 {
    auto *value = static_cast<volatile uint64_t *>(paging_.FenceValueCPUVirtualAddress);
    if (*value >= fence) return;
-   if (!paging_event_ && !(paging_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr)))
-      throw Error("CreateEventW", HRESULT_FROM_WIN32(GetLastError()));
+   /* An event per wait: allocations of several threads may wait at once. */
+   const HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+   if (!event) throw Error("CreateEventW", HRESULT_FROM_WIN32(GetLastError()));
+   struct Close { HANDLE h; ~Close() { CloseHandle(h); } } close_event{event};
    D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU wait{};
    wait.hDevice = device_;
    wait.ObjectCount = 1;
    wait.ObjectHandleArray = &paging_.hSyncObject;
    wait.FenceValueArray = &fence;
-   wait.hAsyncEvent = paging_event_;
+   wait.hAsyncEvent = event;
    check(D3DKMTWaitForSynchronizationObjectFromCpu(&wait), "Wait for paging fence");
-   if (WaitForSingleObject(paging_event_, timeout_ms) != WAIT_OBJECT_0 || *value < fence) {
+   if (WaitForSingleObject(event, timeout_ms) != WAIT_OBJECT_0 || *value < fence) {
       abort_context();
       throw std::runtime_error("GPU paging fence timed out");
    }
@@ -159,8 +161,10 @@ void Device::retire_oldest()
       const uint32_t state = execution_state();
       if (state != D3DKMT_DEVICEEXECUTION_ACTIVE)
          throw std::runtime_error("WDDM device is not active after submission (execution state " + std::to_string(state) + ")");
-      if (cpu_flush_enabled())   /* see submit(): coherent, no invalidation needed */
+      if (cpu_flush_enabled()) {   /* see submit(): coherent, no invalidation needed */
+         std::lock_guard<std::mutex> lock(buffers_mutex_);
          for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 2) buffer->flush();
+      }
       _mm_mfence();
    } catch (...) { abort_context(); throw; }
    completed_seq_ = pending_.front().first;
@@ -208,8 +212,10 @@ uint64_t Device::submit(uint64_t commands, uint32_t bytes, const std::vector<uin
        * (shared LLC; native/tests/coherence_probe.cpp: CPU-written, CPU-read
        * and CPU-dirtied lines in L2/L3 and beyond, both directions). CPU
        * write-back happens only with HASVK_WDDM_CPU_FLUSH=1 (diagnostics). */
-      if (cpu_flush_enabled())
+      if (cpu_flush_enabled()) {
+         std::lock_guard<std::mutex> lock(buffers_mutex_);
          for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 1) buffer->flush();
+      }
       _mm_mfence();
       QueryPerformanceCounter(&t1);
       /* Allocations this submission may use: their paging operations first. */
@@ -313,7 +319,6 @@ void Device::close() noexcept
 {
    abort_context();
    if (completed_) { CloseHandle(completed_); completed_ = nullptr; }
-   if (paging_event_) { CloseHandle(paging_event_); paging_event_ = nullptr; }
    for (auto &entry : pending_) CloseHandle(entry.second);
    for (HANDLE event : free_events_) CloseHandle(event);
    pending_.clear(); free_events_.clear();
@@ -393,6 +398,7 @@ Buffer::Buffer(Device &device, const std::vector<uint8_t> &metadata, uint64_t by
       device_.alloc_create_ticks += t[1].QuadPart - t[0].QuadPart; device_.alloc_map_ticks += t[2].QuadPart - t[1].QuadPart;
       device_.alloc_map_wait_ticks += t[3].QuadPart - t[2].QuadPart; device_.alloc_resident_ticks += t[4].QuadPart - t[3].QuadPart;
       device_.alloc_resident_wait_ticks += t[5].QuadPart - t[4].QuadPart;
+      std::lock_guard<std::mutex> lock(device_.buffers_mutex_);
       device_.buffers_.push_back(this);
    } catch (...) { close(); throw; }
 }
@@ -435,13 +441,17 @@ Buffer::Buffer(Device &device, WindowSurfaceTag, uint32_t width, uint32_t height
       resident.hPagingQueue = device_.queue(); resident.NumAllocations = 1; resident.AllocationList = &allocation_;
       check(D3DKMTMakeResident(&resident), "MakeResident (window surface)");
       device_.wait_paging(resident.PagingFenceValue);
+      std::lock_guard<std::mutex> lock(device_.buffers_mutex_);
       device_.buffers_.push_back(this);
    } catch (...) { close(); throw; }
 }
 void Buffer::close() noexcept
 {
-   auto &buffers = device_.buffers_;
-   buffers.erase(std::remove(buffers.begin(), buffers.end(), this), buffers.end());
+   {
+      std::lock_guard<std::mutex> lock(device_.buffers_mutex_);
+      auto &buffers = device_.buffers_;
+      buffers.erase(std::remove(buffers.begin(), buffers.end(), this), buffers.end());
+   }
    // If cancellation failed, leave allocations to device/process teardown.
    // They may still be referenced by GPU work and must not be freed here.
    if (device_.cancellation_failed_) return;

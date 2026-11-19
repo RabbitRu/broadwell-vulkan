@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <deque>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -94,12 +95,14 @@ private:
    D3DKMT_HANDLE adapter_ = 0, device_ = 0, context_ = 0;
    D3DKMT_CREATEPAGINGQUEUE paging_{};
    HANDLE completed_ = nullptr;
-   HANDLE paging_event_ = nullptr;   // signalled by the kernel at a paging fence value
    /* Highest paging fence value submissions must wait for, and the highest
     * one the context already waits for (see after_paging). */
    std::atomic<uint64_t> paging_pending_{0}, paging_gpu_waited_{0};
    uint64_t driver_version_ = 0;
    LUID luid_{};
+   /* Buffers are created and destroyed concurrently with submissions (the C
+    * API holds no lock around their kernel calls): buffers_ has its own lock. */
+   std::mutex buffers_mutex_;
    std::vector<Buffer *> buffers_;
    std::vector<uint8_t> context_buffer_;   // referenced by the context's private data
    std::deque<std::pair<uint64_t, HANDLE>> pending_;   // submissions not yet retired, oldest first
@@ -107,7 +110,7 @@ private:
    uint64_t next_seq_ = 0, completed_seq_ = 0;
    bool lost_ = false;
    bool cancellation_failed_ = false;
-   unsigned cleanup_errors_ = 0;
+   std::atomic<unsigned> cleanup_errors_{0};
 };
 
 class VaRange {

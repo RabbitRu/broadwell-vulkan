@@ -285,6 +285,35 @@ def main():
     print(f'  submissions in flight at each present: ' +
           ', '.join(f'{k}: {v}' for k, v in sorted(collections.Counter(ahead).items())))
 
+    # Slow frames: present to present over twice the median. Per frame: the
+    # application thread's CPU time (thread cycles at each present), the rest
+    # of the frame off the CPU, its long Vulkan calls, the GPU's busy time and
+    # the longest kernel call of the queue thread.
+    median = statistics.median(ft)
+    cycles = dict(frame_cycles)
+    slow = [(a, b) for a, b in zip(frames, frames[1:]) if b - a > 2 * median * 1e6]
+    print(f'\nslow frames (over {2 * median:.1f} ms): {len(slow)} of {nframes}')
+    sum_extra = sum_cpu_extra = sum_calls = 0.0
+    call_kinds = collections.Counter()
+    median_cpu = statistics.median((cycles[b] - cycles[a]) / tsc_hz * 1e3 for a, b in zip(frames, frames[1:]) if a in cycles and b in cycles)
+    for a, b in slow:
+        dt = (b - a) / 1e6
+        cpu = (cycles[b] - cycles[a]) / tsc_hz * 1e3 if a in cycles and b in cycles else float('nan')
+        calls = overlap(app_calls, app_starts, a, b)
+        long_calls = {CALLS.get(k, k): v / 1e6 for k, v in calls.items() if v > 2e5}
+        gpu = sum(max(0, min(sub[s]['ge_cpu'], b) - max(sub[s]['gs_cpu'], a)) for s in win) / 1e6
+        kernel = max([(sub[s]['ke'] - sub[s]['kb']) / 1e6 for s in win if a <= sub[s]['kb'] < b] or [0])
+        sum_extra += dt - median; sum_cpu_extra += cpu - median_cpu
+        for k, v in calls.items():
+            call_kinds[CALLS.get(k, k)] += v / 1e6
+        if len(slow) <= 40 or dt > 4 * median:
+            print(f'  {dt:6.1f} ms: app CPU {cpu:5.1f} ms, off CPU {dt - cpu:5.1f} ms, GPU busy {gpu:5.1f} ms, '
+                  f'longest kernel call {kernel:4.1f} ms' + (f'; calls ' + ', '.join(f'{k} {v:.1f} ms' for k, v in long_calls.items()) if long_calls else ''))
+    if slow:
+        print(f'  over the median frame ({median:.1f} ms, app CPU {median_cpu:.1f} ms): {sum_extra / len(slow):.1f} ms per slow frame, '
+              f'of it {sum_cpu_extra / len(slow):.1f} ms more application CPU; time in calls per slow frame: ' +
+              ', '.join(f'{k} {v / len(slow):.2f} ms' for k, v in call_kinds.most_common(5)))
+
 
 if __name__ == '__main__':
     main()

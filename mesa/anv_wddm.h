@@ -40,6 +40,12 @@ struct anv_wddm_device_state {
    /* Serializes kernel submissions (the shared entry BO): the queue thread
     * and windowed presents from application threads. */
    mtx_t submit_mutex;
+   /* Protects the VA heaps, BO ids and allocation counters. Creating and
+    * destroying the WDDM allocation itself happens outside any lock: the
+    * kernel can take ~10 ms (paging queue), and with mutex held that blocked
+    * the completion thread, fence queries and presents of other threads
+    * (Talos: 10-24 ms hitches while its streaming thread allocated). */
+   mtx_t alloc_mutex;
    struct u_cnd_monotonic condition;
    struct util_vma_heap client_heap;
    struct util_vma_heap state_heap;

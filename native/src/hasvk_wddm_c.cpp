@@ -155,13 +155,13 @@ static int bo_create(hasvk_wddm_device *device, uint64_t bytes, uint64_t request
    if (!device || !out) return failure("Missing allocation arguments");
    *out = nullptr;
    return checked([&] {
-      std::lock_guard<std::mutex> lock(device->mutex);
       if (!bytes || (bytes & 4095) || bytes > hasvk::wddm::kMaxLinearAllocationBytes ||
           (requested & 4095)) throw std::runtime_error("Invalid linear allocation size/address");
       auto bo = std::make_unique<hasvk_wddm_bo>();
       bo->device = device;
       bo->reservation = 0;
       if (requested) {
+         std::lock_guard<std::mutex> lock(device->mutex);
          for (const auto &entry : device->ranges) {
             if (requested >= entry.first && requested - entry.first <= entry.second->size() &&
                 bytes <= entry.second->size() - (requested - entry.first)) bo->reservation = entry.first;
@@ -171,7 +171,11 @@ static int bo_create(hasvk_wddm_device *device, uint64_t bytes, uint64_t request
             if (requested < pool->address + pool->bytes && pool->address < requested + bytes)
                throw std::runtime_error("Allocation overlaps a state pool");
       }
+      /* The kernel calls (CreateAllocation2, Lock2, MapGpuVirtualAddress,
+       * MakeResident) run without the device lock: they can take ~10 ms on the
+       * paging queue, and submissions and completion waits need the lock. */
       bo->native = std::make_unique<Buffer>(device->native, linear_metadata(bytes), bytes, writable ? 1 : 0, requested, cpu_map);
+      std::lock_guard<std::mutex> lock(device->mutex);
       device->buffers.insert(bo.get());
       *out = bo.release();
    });
@@ -180,9 +184,11 @@ extern "C" int hasvk_wddm_bo_destroy(hasvk_wddm_bo *bo)
 {
    if (!bo) return 0;
    return checked([&] {
-      std::lock_guard<std::mutex> lock(bo->device->mutex);
-      bo->device->buffers.erase(bo);
-      delete bo;
+      {
+         std::lock_guard<std::mutex> lock(bo->device->mutex);
+         bo->device->buffers.erase(bo);
+      }
+      delete bo;   /* kernel calls without the device lock, as in bo_create */
    });
 }
 extern "C" void *hasvk_wddm_bo_map(hasvk_wddm_bo *bo) { return bo ? bo->native->cpu() : nullptr; }
