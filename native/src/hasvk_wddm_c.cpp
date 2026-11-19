@@ -97,6 +97,15 @@ extern "C" int hasvk_wddm_device_destroy(hasvk_wddm_device *device)
       delete device;
    });
 }
+extern "C" int hasvk_wddm_get_alloc_profile(hasvk_wddm_device *device, hasvk_wddm_alloc_profile *out)
+{
+   if (!device || !out) return failure("Missing allocation profile arguments");
+   LARGE_INTEGER f; QueryPerformanceFrequency(&f); const double us = 1e6 / double(f.QuadPart);
+   const Device &n = device->native;   /* atomic counters: no device lock needed */
+   *out = {n.alloc_count.load(), n.alloc_bytes.load(), n.destroy_count.load(), n.alloc_create_ticks * us, n.alloc_map_ticks * us,
+           n.alloc_map_wait_ticks * us, n.alloc_resident_ticks * us, n.alloc_resident_wait_ticks * us, n.destroy_ticks * us};
+   return 0;
+}
 extern "C" int hasvk_wddm_device_get_info(hasvk_wddm_device *device, hasvk_wddm_adapter_info *out)
 {
    if (!device || !out) return failure("Missing adapter info arguments");

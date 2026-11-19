@@ -25,6 +25,7 @@
  * Import/export, sparse memory and capture/replay addresses remain disabled.
  */
 #include "anv_wddm.h"
+#include "util/os_time.h"
 
 /* Common helper from anv_cmd_buffer.c; kept here until that unit is ported. */
 #ifndef HASVK_WDDM_GRAPHICS
@@ -130,6 +131,27 @@ alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo
    mtx_unlock(&w->mutex);
    { static int profile = -1; if (profile < 0) profile = getenv("HASVK_WDDM_PROFILE") != NULL;
      if (profile) fprintf(stderr, "WDDM BO alloc %s %llu\n", name, (unsigned long long)size); }
+   /* HASVK_WDDM_PROFILE_PASSES: where creating allocations spends its time,
+    * every 5 s (differences of the transport's cumulative counters). */
+   {
+      static int passes = -1;
+      static struct hasvk_wddm_alloc_profile last;
+      static uint64_t last_ns;
+      if (passes < 0) passes = getenv("HASVK_WDDM_PROFILE_PASSES") != NULL;
+      struct hasvk_wddm_alloc_profile now;
+      const uint64_t now_ns = passes ? os_time_get_nano() : 0;
+      if (passes && !last_ns) last_ns = now_ns;
+      if (passes && now_ns - last_ns >= 5000000000ull && !hasvk_wddm_get_alloc_profile(w->transport, &now)) {
+         const uint64_t n = now.count - last.count;
+         fprintf(stderr, "HasVK/WDDM allocations: %llu (%.1f MiB) in 5 s: create %.1f ms, map %.1f + paging wait %.1f ms, "
+                 "resident %.1f + paging wait %.1f ms; %llu destroyed in %.1f ms\n",
+                 (unsigned long long)n, (now.bytes - last.bytes) / 1048576.0, (now.create_us - last.create_us) / 1e3,
+                 (now.map_us - last.map_us) / 1e3, (now.map_wait_us - last.map_wait_us) / 1e3,
+                 (now.resident_us - last.resident_us) / 1e3, (now.resident_wait_us - last.resident_wait_us) / 1e3,
+                 (unsigned long long)(now.destroys - last.destroys), (now.destroy_us - last.destroy_us) / 1e3);
+         last = now; last_ns = now_ns;
+      }
+   }
    *out = bo;
    return VK_SUCCESS;
 }

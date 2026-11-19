@@ -11431,7 +11431,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_memory.c
-@@ -0,0 +1,511 @@
+@@ -0,0 +1,533 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -11459,6 +11459,7 @@
 + * Import/export, sparse memory and capture/replay addresses remain disabled.
 + */
 +#include "anv_wddm.h"
++#include "util/os_time.h"
 +
 +/* Common helper from anv_cmd_buffer.c; kept here until that unit is ported. */
 +#ifndef HASVK_WDDM_GRAPHICS
@@ -11564,6 +11565,27 @@
 +   mtx_unlock(&w->mutex);
 +   { static int profile = -1; if (profile < 0) profile = getenv("HASVK_WDDM_PROFILE") != NULL;
 +     if (profile) fprintf(stderr, "WDDM BO alloc %s %llu\n", name, (unsigned long long)size); }
++   /* HASVK_WDDM_PROFILE_PASSES: where creating allocations spends its time,
++    * every 5 s (differences of the transport's cumulative counters). */
++   {
++      static int passes = -1;
++      static struct hasvk_wddm_alloc_profile last;
++      static uint64_t last_ns;
++      if (passes < 0) passes = getenv("HASVK_WDDM_PROFILE_PASSES") != NULL;
++      struct hasvk_wddm_alloc_profile now;
++      const uint64_t now_ns = passes ? os_time_get_nano() : 0;
++      if (passes && !last_ns) last_ns = now_ns;
++      if (passes && now_ns - last_ns >= 5000000000ull && !hasvk_wddm_get_alloc_profile(w->transport, &now)) {
++         const uint64_t n = now.count - last.count;
++         fprintf(stderr, "HasVK/WDDM allocations: %llu (%.1f MiB) in 5 s: create %.1f ms, map %.1f + paging wait %.1f ms, "
++                 "resident %.1f + paging wait %.1f ms; %llu destroyed in %.1f ms\n",
++                 (unsigned long long)n, (now.bytes - last.bytes) / 1048576.0, (now.create_us - last.create_us) / 1e3,
++                 (now.map_us - last.map_us) / 1e3, (now.map_wait_us - last.map_wait_us) / 1e3,
++                 (now.resident_us - last.resident_us) / 1e3, (now.resident_wait_us - last.resident_wait_us) / 1e3,
++                 (unsigned long long)(now.destroys - last.destroys), (now.destroy_us - last.destroy_us) / 1e3);
++         last = now; last_ns = now_ns;
++      }
++   }
 +   *out = bo;
 +   return VK_SUCCESS;
 +}
@@ -33546,7 +33568,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.h
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,86 @@
 +#pragma once
 +#include <stdint.h>
 +#ifdef __cplusplus
@@ -33620,12 +33642,22 @@
 +int hasvk_wddm_readonly_pool_map(struct hasvk_wddm_readonly_pool *pool, uint32_t offset,
 +                                uint32_t bytes, void **out);
 +int hasvk_wddm_readonly_pool_destroy(struct hasvk_wddm_readonly_pool *pool);
++/* Diagnostics: cumulative cost of creating and destroying allocations since
++ * the device was created (times in microseconds). */
++struct hasvk_wddm_alloc_profile {
++   uint64_t count, bytes, destroys;
++   double create_us;          /* CreateAllocation2 and Lock2 */
++   double map_us, map_wait_us; /* MapGpuVirtualAddress, then the CPU wait for its paging fence */
++   double resident_us, resident_wait_us; /* MakeResident, then the CPU wait for its paging fence */
++   double destroy_us;
++};
++int hasvk_wddm_get_alloc_profile(struct hasvk_wddm_device *device, struct hasvk_wddm_alloc_profile *out);
 +#ifdef __cplusplus
 +}
 +#endif
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.hpp
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,163 @@
 +#pragma once
 +#define NOMINMAX
 +#include <windows.h>
@@ -33673,6 +33705,11 @@
 +   Device(const Device &) = delete;
 +   Device &operator=(const Device &) = delete;
 +   void wait_paging(uint64_t fence, DWORD timeout_ms = 15000);
++   /* Paging operations (GPU VA mapping, residency) the next submission must
++    * wait for: submit() makes the GPU context wait for the paging fence instead
++    * of blocking the CPU at allocation time (as the WDDM 2 D3D runtimes do).
++    * HASVK_WDDM_SYNC_PAGING=1 waits on the CPU at allocation instead. */
++   void after_paging(uint64_t fence);
 +   /* present_token != 0: the submission is a redirected present
 +    * (D3DKMT_SUBMITCOMMANDFLAGS::PresentRedirected) with this present history
 +    * token, (0x80000000 | HWND) << 32 | shared surface handle, as the Intel
@@ -33704,6 +33741,11 @@
 +   std::wstring adapter_name;
 +   /* Profiling counters (QueryPerformanceCounter ticks, bytes). */
 +   std::atomic<uint64_t> flush_ticks{0}, kernel_ticks{0}, flushed_bytes{0};
++   /* Allocation profile (QueryPerformanceCounter ticks), see Buffer: count,
++    * bytes, CreateAllocation2+Lock2, MapGpuVirtualAddress and its paging fence
++    * wait, MakeResident and its paging fence wait; destructions and their time. */
++   std::atomic<uint64_t> alloc_count{0}, alloc_bytes{0}, alloc_create_ticks{0}, alloc_map_ticks{0}, alloc_map_wait_ticks{0},
++      alloc_resident_ticks{0}, alloc_resident_wait_ticks{0}, destroy_count{0}, destroy_ticks{0};
 +private:
 +   friend class Buffer;
 +   friend class VaRange;
@@ -33713,6 +33755,9 @@
 +   D3DKMT_CREATEPAGINGQUEUE paging_{};
 +   HANDLE completed_ = nullptr;
 +   HANDLE paging_event_ = nullptr;   // signalled by the kernel at a paging fence value
++   /* Highest paging fence value submissions must wait for, and the highest
++    * one the context already waits for (see after_paging). */
++   std::atomic<uint64_t> paging_pending_{0}, paging_gpu_waited_{0};
 +   uint64_t driver_version_ = 0;
 +   LUID luid_{};
 +   std::vector<Buffer *> buffers_;
@@ -33778,7 +33823,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.cpp
-@@ -0,0 +1,434 @@
+@@ -0,0 +1,478 @@
 +#include "hasvk_wddm.hpp"
 +#include <dxgi1_2.h>
 +#include <wrl/client.h>
@@ -33904,6 +33949,23 @@
 +   }
 +}
 +
++static bool sync_paging()
++{
++   static const bool enabled = GetEnvironmentVariableA("HASVK_WDDM_SYNC_PAGING", nullptr, 0) > 0;
++   return enabled;
++}
++/* Creating an allocation queues GPU VA and residency updates on the paging
++ * queue; while the GPU renders they execute only behind the work already
++ * queued, so a CPU wait for them stalled vkAllocateMemory for 10-30 ms per
++ * large allocation in games. The allocation's CPU mapping (Lock2) is usable
++ * at once; only GPU access has to come after the paging fence, which submit()
++ * guarantees with a GPU-side wait. */
++void Device::after_paging(uint64_t fence)
++{
++   if (sync_paging()) { wait_paging(fence); return; }
++   uint64_t pending = paging_pending_.load();
++   while (pending < fence && !paging_pending_.compare_exchange_weak(pending, fence)) {}
++}
 +void Device::submit_and_wait(uint64_t commands, uint32_t bytes,
 +                             const std::vector<uint8_t> &header, DWORD timeout_ms, uint64_t present_token)
 +{
@@ -33976,6 +34038,18 @@
 +         for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 1) buffer->flush();
 +      _mm_mfence();
 +      QueryPerformanceCounter(&t1);
++      /* Allocations this submission may use: their paging operations first. */
++      const uint64_t paging = paging_pending_.load();
++      if (paging > paging_gpu_waited_.load() &&
++          paging > *static_cast<volatile uint64_t *>(paging_.FenceValueCPUVirtualAddress)) {
++         D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMGPU wait{};
++         wait.hContext = context_;
++         wait.ObjectCount = 1;
++         wait.ObjectHandleArray = &paging_.hSyncObject;
++         wait.MonitoredFenceValueArray = &paging;
++         check(D3DKMTWaitForSynchronizationObjectFromGpu(&wait), "GPU wait for paging fence");
++      }
++      if (paging > paging_gpu_waited_.load()) paging_gpu_waited_ = paging;
 +      const LONG submitted = D3DKMTSubmitCommand(&submit);
 +      if (submitted < 0 && present_token && (ULONG)submitted >= 0xC01E0005u && (ULONG)submitted <= 0xC01E0007u) {
 +         refused = submitted;
@@ -34111,6 +34185,7 @@
 +      create.hDevice = device_.handle();
 +      create.NumAllocations = 1;
 +      create.pAllocationInfo2 = &info;
++      LARGE_INTEGER t[6]; QueryPerformanceCounter(&t[0]);
 +      check(D3DKMTCreateAllocation2(&create), "CreateAllocation2");
 +      allocation_ = info.hAllocation;
 +      if (cpu_map) {
@@ -34119,6 +34194,7 @@
 +         check(D3DKMTLock2(&lock), "Lock2");
 +         cpu_ = lock.pData;
 +      }
++      QueryPerformanceCounter(&t[1]);
 +      D3DDDI_MAPGPUVIRTUALADDRESS map{};
 +      map.hPagingQueue = device_.queue();
 +      map.hAllocation = allocation_;
@@ -34128,13 +34204,21 @@
 +      map.Protection.Value = protection;
 +      check(D3DKMTMapGpuVirtualAddress(&map), "MapGpuVirtualAddress");
 +      address_ = map.VirtualAddress;
-+      device_.wait_paging(map.PagingFenceValue);
++      QueryPerformanceCounter(&t[2]);
++      device_.after_paging(map.PagingFenceValue);
++      QueryPerformanceCounter(&t[3]);
 +      if (requested_va && address_ != requested_va) throw std::runtime_error("Exact GPU VA mapping was not honored");
 +      D3DDDI_MAKERESIDENT resident{};
 +      resident.hPagingQueue = device_.queue();
 +      resident.NumAllocations = 1; resident.AllocationList = &allocation_;
 +      check(D3DKMTMakeResident(&resident), "MakeResident");
-+      device_.wait_paging(resident.PagingFenceValue);
++      QueryPerformanceCounter(&t[4]);
++      device_.after_paging(resident.PagingFenceValue);
++      QueryPerformanceCounter(&t[5]);
++      ++device_.alloc_count; device_.alloc_bytes += bytes;
++      device_.alloc_create_ticks += t[1].QuadPart - t[0].QuadPart; device_.alloc_map_ticks += t[2].QuadPart - t[1].QuadPart;
++      device_.alloc_map_wait_ticks += t[3].QuadPart - t[2].QuadPart; device_.alloc_resident_ticks += t[4].QuadPart - t[3].QuadPart;
++      device_.alloc_resident_wait_ticks += t[5].QuadPart - t[4].QuadPart;
 +      device_.buffers_.push_back(this);
 +   } catch (...) { close(); throw; }
 +}
@@ -34187,6 +34271,11 @@
 +   // If cancellation failed, leave allocations to device/process teardown.
 +   // They may still be referenced by GPU work and must not be freed here.
 +   if (device_.cancellation_failed_) return;
++   LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
++   struct Timed {
++      Device &device; LARGE_INTEGER &t0, &t1; bool counted;
++      ~Timed() { if (!counted) return; QueryPerformanceCounter(&t1); ++device.destroy_count; device.destroy_ticks += t1.QuadPart - t0.QuadPart; }
++   } timed{device_, t0, t1, allocation_ != 0 && !resource_};
 +   if (cpu_) {
 +      D3DKMT_UNLOCK2 unlock{};
 +      unlock.hDevice = device_.handle(); unlock.hAllocation = allocation_;
@@ -34215,7 +34304,7 @@
 +} // namespace hasvk::wddm
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm_c.cpp
-@@ -0,0 +1,356 @@
+@@ -0,0 +1,365 @@
 +#include "hasvk_wddm.h"
 +#include "hasvk_wddm.hpp"
 +#include <cstdio>
@@ -34314,6 +34403,15 @@
 +      }
 +      delete device;
 +   });
++}
++extern "C" int hasvk_wddm_get_alloc_profile(hasvk_wddm_device *device, hasvk_wddm_alloc_profile *out)
++{
++   if (!device || !out) return failure("Missing allocation profile arguments");
++   LARGE_INTEGER f; QueryPerformanceFrequency(&f); const double us = 1e6 / double(f.QuadPart);
++   const Device &n = device->native;   /* atomic counters: no device lock needed */
++   *out = {n.alloc_count.load(), n.alloc_bytes.load(), n.destroy_count.load(), n.alloc_create_ticks * us, n.alloc_map_ticks * us,
++           n.alloc_map_wait_ticks * us, n.alloc_resident_ticks * us, n.alloc_resident_wait_ticks * us, n.destroy_ticks * us};
++   return 0;
 +}
 +extern "C" int hasvk_wddm_device_get_info(hasvk_wddm_device *device, hasvk_wddm_adapter_info *out)
 +{

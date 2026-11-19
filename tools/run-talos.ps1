@@ -15,6 +15,13 @@ shows a modal crash dialog), shows any other modal dialog, or exceeds
   -D3D11Proxy dll    Direct3D11 only: the timing proxy (native\tests\d3d11_proxy)
                      is copied next to Talos.exe for this run and removed
                      afterwards; its per-pass report goes to build\talos\<Tag>.d3d11-profile.txt
+  The game's script already skips the intro (prj_bSkipIntroSequence); most of
+  the ~45 s before the measurement are its wait for the menu's start screen
+  (~18 s) and its 10 s pause after loading. A modified script is refused by
+  the game ("Signature verification of executable failed").
+  -NoRetry           the game's test bot sometimes ends the level ~2 s after
+                     the start ("end of game"); such a run is repeated once
+                     unless -NoRetry is given.
 #>
 param(
    [ValidateSet('Vulkan', 'Direct3D11')][string]$Api = 'Vulkan',
@@ -24,7 +31,8 @@ param(
    [string]$Tag = '',
    [int]$TimeoutSeconds = 300,
    [string]$D3D11Proxy = '',
-   [string]$Game = 'C:\Program Files (x86)\Steam\steamapps\common\The Talos Principle'
+   [string]$Game = 'C:\Program Files (x86)\Steam\steamapps\common\The Talos Principle',
+   [switch]$NoRetry
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -103,8 +111,7 @@ if ($D3D11Proxy) {
    $start.EnvironmentVariables['D3D11_PROFILE_LOG'] = $proxyLog
 }
 try {
-if ($D3D11Proxy) { Copy-Item -LiteralPath $D3D11Proxy -Destination $proxyTarget; $proxyPlaced = $true }
-$watch = [Diagnostics.Stopwatch]::StartNew()
+if ($D3D11Proxy) { Copy-Item -LiteralPath $D3D11Proxy -Destination $proxyTarget; $proxyPlaced = $true }$watch = [Diagnostics.Stopwatch]::StartNew()
 $p = [Diagnostics.Process]::Start($start)
 $stdout = $p.StandardOutput.ReadToEndAsync()
 $stderr = $p.StandardError.ReadToEndAsync()
@@ -128,14 +135,25 @@ while (-not $p.WaitForExit(1000)) {
 if ($verdict) { try { $p.Kill() } catch {}; $p.WaitForExit() }
 } finally {
    if ($p -and -not $p.HasExited) { try { $p.Kill() } catch {}; $p.WaitForExit() }
-   if ($proxyPlaced) { Remove-Item -LiteralPath $proxyTarget -Force; "  proxy removed: $proxyTarget" }
-   foreach ($path in $saved.Keys) { [IO.File]::WriteAllBytes($path, $saved[$path]) }
+   if ($proxyPlaced) { Remove-Item -LiteralPath $proxyTarget -Force; "  proxy removed: $proxyTarget" }   foreach ($path in $saved.Keys) { [IO.File]::WriteAllBytes($path, $saved[$path]) }
 }
 foreach ($path in $saved.Keys) { [IO.File]::WriteAllBytes($path, $saved[$path]) }
 $text = $stdout.Result + "`n" + $stderr.Result
 [IO.File]::WriteAllText((Join-Path $out "$Tag.stdout.txt"), $text)
 if (Test-Path $log) { Copy-Item $log (Join-Path $out "$Tag.Talos.log") -Force }
 $fps = @(Get-Content $log -ErrorAction SilentlyContinue | Select-String 'Average:|Low 1%' | ForEach-Object { $_.Line -replace '^\S+\s+INF:\s*', '' })
+# The bot occasionally ends the level right after the start (benchmark of ~2 s
+# instead of 30): not a measurement. Repeat the run once.
+$duration = Get-Content $log -ErrorAction SilentlyContinue | Select-String 'Duration: ([\d.]+) seconds' | Select-Object -Last 1
+if (-not $verdict -and $duration -and [double]::Parse($duration.Matches[0].Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) -lt 20) {
+   $verdict = "benchmark ended early ($($duration.Matches[0].Groups[1].Value) s, bot reached the level end)"
+   if (-not $NoRetry) {
+      "$Api [$Tag]: $verdict; running again"
+      $again = @{} + $PSBoundParameters; $again['NoRetry'] = $true
+      & $PSCommandPath @again
+      exit $LASTEXITCODE
+   }
+}
 "$Api [$Tag]: exit=$($p.ExitCode) wall=$([math]::Round($watch.Elapsed.TotalSeconds))s $verdict"
 if ($verdict -like 'crashed*' -or $verdict -eq 'modal dialog') {
    Get-Content $log | Select-String 'RIP:|Crashed!|ERR:' | Select-Object -First 5 | ForEach-Object { '  ' + $_.Line.Trim() }

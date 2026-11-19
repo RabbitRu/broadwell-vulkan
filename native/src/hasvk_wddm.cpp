@@ -123,6 +123,23 @@ void Device::wait_paging(uint64_t fence, DWORD timeout_ms)
    }
 }
 
+static bool sync_paging()
+{
+   static const bool enabled = GetEnvironmentVariableA("HASVK_WDDM_SYNC_PAGING", nullptr, 0) > 0;
+   return enabled;
+}
+/* Creating an allocation queues GPU VA and residency updates on the paging
+ * queue; while the GPU renders they execute only behind the work already
+ * queued, so a CPU wait for them stalled vkAllocateMemory for 10-30 ms per
+ * large allocation in games. The allocation's CPU mapping (Lock2) is usable
+ * at once; only GPU access has to come after the paging fence, which submit()
+ * guarantees with a GPU-side wait. */
+void Device::after_paging(uint64_t fence)
+{
+   if (sync_paging()) { wait_paging(fence); return; }
+   uint64_t pending = paging_pending_.load();
+   while (pending < fence && !paging_pending_.compare_exchange_weak(pending, fence)) {}
+}
 void Device::submit_and_wait(uint64_t commands, uint32_t bytes,
                              const std::vector<uint8_t> &header, DWORD timeout_ms, uint64_t present_token)
 {
@@ -195,6 +212,18 @@ uint64_t Device::submit(uint64_t commands, uint32_t bytes, const std::vector<uin
          for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 1) buffer->flush();
       _mm_mfence();
       QueryPerformanceCounter(&t1);
+      /* Allocations this submission may use: their paging operations first. */
+      const uint64_t paging = paging_pending_.load();
+      if (paging > paging_gpu_waited_.load() &&
+          paging > *static_cast<volatile uint64_t *>(paging_.FenceValueCPUVirtualAddress)) {
+         D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMGPU wait{};
+         wait.hContext = context_;
+         wait.ObjectCount = 1;
+         wait.ObjectHandleArray = &paging_.hSyncObject;
+         wait.MonitoredFenceValueArray = &paging;
+         check(D3DKMTWaitForSynchronizationObjectFromGpu(&wait), "GPU wait for paging fence");
+      }
+      if (paging > paging_gpu_waited_.load()) paging_gpu_waited_ = paging;
       const LONG submitted = D3DKMTSubmitCommand(&submit);
       if (submitted < 0 && present_token && (ULONG)submitted >= 0xC01E0005u && (ULONG)submitted <= 0xC01E0007u) {
          refused = submitted;
@@ -330,6 +359,7 @@ Buffer::Buffer(Device &device, const std::vector<uint8_t> &metadata, uint64_t by
       create.hDevice = device_.handle();
       create.NumAllocations = 1;
       create.pAllocationInfo2 = &info;
+      LARGE_INTEGER t[6]; QueryPerformanceCounter(&t[0]);
       check(D3DKMTCreateAllocation2(&create), "CreateAllocation2");
       allocation_ = info.hAllocation;
       if (cpu_map) {
@@ -338,6 +368,7 @@ Buffer::Buffer(Device &device, const std::vector<uint8_t> &metadata, uint64_t by
          check(D3DKMTLock2(&lock), "Lock2");
          cpu_ = lock.pData;
       }
+      QueryPerformanceCounter(&t[1]);
       D3DDDI_MAPGPUVIRTUALADDRESS map{};
       map.hPagingQueue = device_.queue();
       map.hAllocation = allocation_;
@@ -347,13 +378,21 @@ Buffer::Buffer(Device &device, const std::vector<uint8_t> &metadata, uint64_t by
       map.Protection.Value = protection;
       check(D3DKMTMapGpuVirtualAddress(&map), "MapGpuVirtualAddress");
       address_ = map.VirtualAddress;
-      device_.wait_paging(map.PagingFenceValue);
+      QueryPerformanceCounter(&t[2]);
+      device_.after_paging(map.PagingFenceValue);
+      QueryPerformanceCounter(&t[3]);
       if (requested_va && address_ != requested_va) throw std::runtime_error("Exact GPU VA mapping was not honored");
       D3DDDI_MAKERESIDENT resident{};
       resident.hPagingQueue = device_.queue();
       resident.NumAllocations = 1; resident.AllocationList = &allocation_;
       check(D3DKMTMakeResident(&resident), "MakeResident");
-      device_.wait_paging(resident.PagingFenceValue);
+      QueryPerformanceCounter(&t[4]);
+      device_.after_paging(resident.PagingFenceValue);
+      QueryPerformanceCounter(&t[5]);
+      ++device_.alloc_count; device_.alloc_bytes += bytes;
+      device_.alloc_create_ticks += t[1].QuadPart - t[0].QuadPart; device_.alloc_map_ticks += t[2].QuadPart - t[1].QuadPart;
+      device_.alloc_map_wait_ticks += t[3].QuadPart - t[2].QuadPart; device_.alloc_resident_ticks += t[4].QuadPart - t[3].QuadPart;
+      device_.alloc_resident_wait_ticks += t[5].QuadPart - t[4].QuadPart;
       device_.buffers_.push_back(this);
    } catch (...) { close(); throw; }
 }
@@ -406,6 +445,11 @@ void Buffer::close() noexcept
    // If cancellation failed, leave allocations to device/process teardown.
    // They may still be referenced by GPU work and must not be freed here.
    if (device_.cancellation_failed_) return;
+   LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+   struct Timed {
+      Device &device; LARGE_INTEGER &t0, &t1; bool counted;
+      ~Timed() { if (!counted) return; QueryPerformanceCounter(&t1); ++device.destroy_count; device.destroy_ticks += t1.QuadPart - t0.QuadPart; }
+   } timed{device_, t0, t1, allocation_ != 0 && !resource_};
    if (cpu_) {
       D3DKMT_UNLOCK2 unlock{};
       unlock.hDevice = device_.handle(); unlock.hAllocation = allocation_;

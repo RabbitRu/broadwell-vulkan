@@ -45,6 +45,11 @@ public:
    Device(const Device &) = delete;
    Device &operator=(const Device &) = delete;
    void wait_paging(uint64_t fence, DWORD timeout_ms = 15000);
+   /* Paging operations (GPU VA mapping, residency) the next submission must
+    * wait for: submit() makes the GPU context wait for the paging fence instead
+    * of blocking the CPU at allocation time (as the WDDM 2 D3D runtimes do).
+    * HASVK_WDDM_SYNC_PAGING=1 waits on the CPU at allocation instead. */
+   void after_paging(uint64_t fence);
    /* present_token != 0: the submission is a redirected present
     * (D3DKMT_SUBMITCOMMANDFLAGS::PresentRedirected) with this present history
     * token, (0x80000000 | HWND) << 32 | shared surface handle, as the Intel
@@ -76,6 +81,11 @@ public:
    std::wstring adapter_name;
    /* Profiling counters (QueryPerformanceCounter ticks, bytes). */
    std::atomic<uint64_t> flush_ticks{0}, kernel_ticks{0}, flushed_bytes{0};
+   /* Allocation profile (QueryPerformanceCounter ticks), see Buffer: count,
+    * bytes, CreateAllocation2+Lock2, MapGpuVirtualAddress and its paging fence
+    * wait, MakeResident and its paging fence wait; destructions and their time. */
+   std::atomic<uint64_t> alloc_count{0}, alloc_bytes{0}, alloc_create_ticks{0}, alloc_map_ticks{0}, alloc_map_wait_ticks{0},
+      alloc_resident_ticks{0}, alloc_resident_wait_ticks{0}, destroy_count{0}, destroy_ticks{0};
 private:
    friend class Buffer;
    friend class VaRange;
@@ -85,6 +95,9 @@ private:
    D3DKMT_CREATEPAGINGQUEUE paging_{};
    HANDLE completed_ = nullptr;
    HANDLE paging_event_ = nullptr;   // signalled by the kernel at a paging fence value
+   /* Highest paging fence value submissions must wait for, and the highest
+    * one the context already waits for (see after_paging). */
+   std::atomic<uint64_t> paging_pending_{0}, paging_gpu_waited_{0};
    uint64_t driver_version_ = 0;
    LUID luid_{};
    std::vector<Buffer *> buffers_;
