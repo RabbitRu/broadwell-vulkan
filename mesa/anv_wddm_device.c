@@ -27,15 +27,24 @@ anv_wddm_pipeline_cache_uuid(uint8_t *uuid)
    HMODULE module = NULL;
    wchar_t path[MAX_PATH * 2];
    WIN32_FILE_ATTRIBUTE_DATA data;
-   if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           (LPCWSTR)(void *)anv_wddm_pipeline_cache_uuid, &module))
-      return;
-   const DWORD length = GetModuleFileNameW(module, path, ARRAY_SIZE(path));
-   if (!length || length >= ARRAY_SIZE(path) || !GetFileAttributesExW(path, GetFileExInfoStandard, &data))
-      return;
-   memcpy(uuid, "HVK3", 4);
-   memcpy(uuid + 4, &data.ftLastWriteTime, 8);
-   memcpy(uuid + 12, &data.nFileSizeLow, 4);
+   if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          (LPCWSTR)(void *)anv_wddm_pipeline_cache_uuid, &module)) {
+      const DWORD length = GetModuleFileNameW(module, path, ARRAY_SIZE(path));
+      if (length && length < ARRAY_SIZE(path) && GetFileAttributesExW(path, GetFileExInfoStandard, &data)) {
+         memcpy(uuid, "HVK3", 4);
+         memcpy(uuid + 4, &data.ftLastWriteTime, 8);
+         memcpy(uuid + 12, &data.nFileSizeLow, 4);
+      }
+   }
+   /* INTEL_DEBUG changes the generated code (SIMD widths, scheduling, ...)
+    * but not the shaders' hashes, which are the cache keys: code compiled with
+    * other flags must not be taken from an application's cache or ours. */
+   const char *debug = getenv("INTEL_DEBUG");
+   if (debug && *debug) {
+      uint32_t hash = 2166136261u;   /* FNV-1a */
+      for (const char *c = debug; *c; ++c) hash = (hash ^ (uint8_t)*c) * 16777619u;
+      uint32_t last; memcpy(&last, uuid + 12, 4); last ^= hash; memcpy(uuid + 12, &last, 4);
+   }
 }
 
 /* pending: serial of a submission that will signal this sync and has gone to
