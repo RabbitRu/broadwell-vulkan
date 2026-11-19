@@ -22,6 +22,8 @@
 #include "util/os_time.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <intrin.h>
 
 #define PAIRS 16384u
 #define BUCKETS 512u
@@ -103,6 +105,10 @@ static int enabled(void)
 }
 
 static VkDevice device_handle(struct anv_device *device) { return anv_device_to_handle(device); }
+
+/* Timeline (HASVK_WDDM_TIMELINE): call begin/end around a wrapped entry point. */
+#define TL_BEGIN(call) do { if (anv_wddm_timeline_on) anv_wddm_timeline_event(ANV_TL_CALL_BEGIN, (call), 0); } while (0)
+#define TL_END(call, result) do { if (anv_wddm_timeline_on) anv_wddm_timeline_event(ANV_TL_CALL_END, (call), (uint64_t)(int64_t)(result)); } while (0)
 
 /* Returns slot + 1, or 0 if this command is not profiled. */
 static uint32_t begin(struct anv_cmd_buffer *cmd, const struct meta *meta)
@@ -311,9 +317,11 @@ static VKAPI_ATTR VkResult VKAPI_CALL wrap_CreateGraphicsPipelines(VkDevice d, V
    const VkGraphicsPipelineCreateInfo *infos, const VkAllocationCallbacks *alloc, VkPipeline *pipelines)
 {
    const uint64_t start = os_time_get_nano();
+   TL_BEGIN(ANV_TL_CREATE_PIPELINES);
    const VkResult r = g.orig.CreateGraphicsPipelines(d, cache, n, infos, alloc, pipelines);
+   TL_END(ANV_TL_CREATE_PIPELINES, r);
    p_atomic_add(&g.pipeline_ns, os_time_get_nano() - start); p_atomic_add(&g.pipelines_created, n);
-   anv_wddm_capture_pipelines(infos, n, pipelines);
+   if (enabled()) anv_wddm_capture_pipelines(infos, n, pipelines);
    return r;
 }
 static VKAPI_ATTR void VKAPI_CALL wrap_CmdDrawIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s)
@@ -428,42 +436,123 @@ static VKAPI_ATTR VkResult VKAPI_CALL wrap_CreateComputePipelines(VkDevice d, Vk
    const VkComputePipelineCreateInfo *infos, const VkAllocationCallbacks *alloc, VkPipeline *pipelines)
 {
    const uint64_t start = os_time_get_nano();
+   TL_BEGIN(ANV_TL_CREATE_PIPELINES);
    const VkResult r = g.orig.CreateComputePipelines(d, cache, n, infos, alloc, pipelines);
+   TL_END(ANV_TL_CREATE_PIPELINES, r);
    p_atomic_add(&g.pipeline_ns, os_time_get_nano() - start); p_atomic_add(&g.pipelines_created, n);
    return r;
 }
 static VKAPI_ATTR VkResult VKAPI_CALL wrap_AllocateMemory(VkDevice d, const VkMemoryAllocateInfo *info, const VkAllocationCallbacks *a, VkDeviceMemory *m)
 {
    const uint64_t start = os_time_get_nano();
+   TL_BEGIN(ANV_TL_ALLOCATE);
    const VkResult r = g.orig.AllocateMemory(d, info, a, m);
+   TL_END(ANV_TL_ALLOCATE, r);
    p_atomic_add(&g.alloc_ns, os_time_get_nano() - start); p_atomic_inc(&g.allocs); p_atomic_add(&g.alloc_bytes, info->allocationSize);
    return r;
 }
 static VKAPI_ATTR VkResult VKAPI_CALL wrap_QueueSubmit(VkQueue q, uint32_t n, const VkSubmitInfo *s, VkFence f)
 {
    const uint64_t start = os_time_get_nano();
+   TL_BEGIN(ANV_TL_QUEUE_SUBMIT);
    const VkResult r = g.orig.QueueSubmit(q, n, s, f);
+   TL_END(ANV_TL_QUEUE_SUBMIT, r);
    p_atomic_add(&g.submit_ns, os_time_get_nano() - start); p_atomic_inc(&g.submits);
+   return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL wrap_QueueSubmit2(VkQueue q, uint32_t n, const VkSubmitInfo2 *s, VkFence f)
+{
+   TL_BEGIN(ANV_TL_QUEUE_SUBMIT);
+   const VkResult r = g.orig.QueueSubmit2(q, n, s, f);
+   TL_END(ANV_TL_QUEUE_SUBMIT, r);
    return r;
 }
 static VKAPI_ATTR VkResult VKAPI_CALL wrap_WaitForFences(VkDevice d, uint32_t n, const VkFence *f, VkBool32 all, uint64_t timeout)
 {
    const uint64_t start = os_time_get_nano();
+   TL_BEGIN(ANV_TL_WAIT_FENCES);
    const VkResult r = g.orig.WaitForFences(d, n, f, all, timeout);
+   TL_END(ANV_TL_WAIT_FENCES, r);
    p_atomic_add(&g.wait_ns, os_time_get_nano() - start); p_atomic_inc(&g.waits);
    return r;
 }
 static VKAPI_ATTR VkResult VKAPI_CALL wrap_AcquireNextImageKHR(VkDevice d, VkSwapchainKHR s, uint64_t t, VkSemaphore sem, VkFence f, uint32_t *i)
 {
    const uint64_t start = os_time_get_nano();
+   TL_BEGIN(ANV_TL_ACQUIRE);
    const VkResult r = g.orig.AcquireNextImageKHR(d, s, t, sem, f, i);
+   TL_END(ANV_TL_ACQUIRE, r);
    p_atomic_add(&g.acquire_ns, os_time_get_nano() - start);
+   return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL wrap_GetFenceStatus(VkDevice d, VkFence f)
+{
+   TL_BEGIN(ANV_TL_FENCE_STATUS);
+   const VkResult r = g.orig.GetFenceStatus(d, f);
+   TL_END(ANV_TL_FENCE_STATUS, r);
+   return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL wrap_GetQueryPoolResults(VkDevice d, VkQueryPool p, uint32_t first, uint32_t n, size_t size, void *data,
+   VkDeviceSize stride, VkQueryResultFlags flags)
+{
+   TL_BEGIN(ANV_TL_QUERY_RESULTS);
+   const VkResult r = g.orig.GetQueryPoolResults(d, p, first, n, size, data, stride, flags);
+   TL_END(ANV_TL_QUERY_RESULTS, r);
+   return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL wrap_QueueWaitIdle(VkQueue q)
+{
+   TL_BEGIN(ANV_TL_QUEUE_WAIT_IDLE);
+   const VkResult r = g.orig.QueueWaitIdle(q);
+   TL_END(ANV_TL_QUEUE_WAIT_IDLE, r);
+   return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL wrap_DeviceWaitIdle(VkDevice d)
+{
+   TL_BEGIN(ANV_TL_DEVICE_WAIT_IDLE);
+   const VkResult r = g.orig.DeviceWaitIdle(d);
+   TL_END(ANV_TL_DEVICE_WAIT_IDLE, r);
+   return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL wrap_MapMemory(VkDevice d, VkDeviceMemory m, VkDeviceSize o, VkDeviceSize size, VkMemoryMapFlags flags, void **data)
+{
+   TL_BEGIN(ANV_TL_MAP);
+   const VkResult r = g.orig.MapMemory(d, m, o, size, flags, data);
+   TL_END(ANV_TL_MAP, r);
+   return r;
+}
+static VKAPI_ATTR void VKAPI_CALL wrap_FreeMemory(VkDevice d, VkDeviceMemory m, const VkAllocationCallbacks *a)
+{
+   TL_BEGIN(ANV_TL_FREE);
+   g.orig.FreeMemory(d, m, a);
+   TL_END(ANV_TL_FREE, 0);
+}
+static VKAPI_ATTR VkResult VKAPI_CALL wrap_ResetFences(VkDevice d, uint32_t n, const VkFence *f)
+{
+   TL_BEGIN(ANV_TL_RESET_FENCES);
+   const VkResult r = g.orig.ResetFences(d, n, f);
+   TL_END(ANV_TL_RESET_FENCES, r);
+   return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL wrap_WaitSemaphores(VkDevice d, const VkSemaphoreWaitInfo *info, uint64_t timeout)
+{
+   TL_BEGIN(ANV_TL_WAIT_SEMAPHORES);
+   const VkResult r = g.orig.WaitSemaphores(d, info, timeout);
+   TL_END(ANV_TL_WAIT_SEMAPHORES, r);
+   return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL wrap_ResetCommandPool(VkDevice d, VkCommandPool p, VkCommandPoolResetFlags flags)
+{
+   TL_BEGIN(ANV_TL_RESET_POOL);
+   const VkResult r = g.orig.ResetCommandPool(d, p, flags);
+   TL_END(ANV_TL_RESET_POOL, r);
    return r;
 }
 static VKAPI_ATTR VkResult VKAPI_CALL wrap_QueuePresentKHR(VkQueue q, const VkPresentInfoKHR *info)
 {
+   if (anv_wddm_timeline_on) anv_wddm_timeline_event(ANV_TL_CALL_BEGIN, ANV_TL_QUEUE_PRESENT, anv_wddm_timeline_thread_cycles());
    p_atomic_inc(&g.frames);
-   {
+   if (enabled()) {
       const uint64_t now = os_time_get_nano(), last = p_atomic_xchg(&g.last_present_ns, now);
       const uint64_t pipeline_ns = p_atomic_xchg(&g.pipeline_ns, 0), created = p_atomic_xchg(&g.pipelines_created, 0);
       const uint64_t frame = p_atomic_inc_return(&g.total_frames);
@@ -488,28 +577,101 @@ static VKAPI_ATTR VkResult VKAPI_CALL wrap_QueuePresentKHR(VkQueue q, const VkPr
    p_atomic_add(&g.present_total_ns, g.last_present_call_ns); p_atomic_inc(&g.present_count);
    if (g.last_present_call_ns > g.present_max_ns) g.present_max_ns = g.last_present_call_ns;
    if (g.last_present_call_ns > 10000000ull) p_atomic_inc(&g.present_over_10ms);
+   TL_END(ANV_TL_QUEUE_PRESENT, present_result);
    return present_result;
+}
+
+/* ---- timeline (HASVK_WDDM_TIMELINE=<file.csv>) ---- */
+bool anv_wddm_timeline_on;
+struct timeline_event { uint64_t ns; uint32_t type, thread; uint64_t a, b; };
+#define TIMELINE_EVENTS (4u << 20)   /* 128 MiB; a Talos benchmark run needs well under a million */
+static struct { struct timeline_event *events; uint32_t next, dropped; char path[MAX_PATH]; bool written; } tl;
+
+bool anv_wddm_timeline_enabled(void)
+{
+   static int on = -1;
+   if (on < 0) {
+      const char *path = getenv("HASVK_WDDM_TIMELINE");
+      on = path && *path && strlen(path) < sizeof(tl.path);
+      if (on) {
+         strcpy(tl.path, path);
+         tl.events = calloc(TIMELINE_EVENTS, sizeof(*tl.events));
+         on = tl.events != NULL;
+      }
+      if (on) {
+         FILETIME utc, local; GetSystemTimeAsFileTime(&utc); FileTimeToLocalFileTime(&utc, &local);
+         anv_wddm_timeline_on = true;
+         anv_wddm_timeline_event(ANV_TL_CALIBRATE, __rdtsc(), ((uint64_t)local.dwHighDateTime << 32) | local.dwLowDateTime);
+      }
+   }
+   return on;
+}
+
+void anv_wddm_timeline_event(uint32_t type, uint64_t a, uint64_t b)
+{
+   if (!anv_wddm_timeline_on) return;
+   const uint32_t i = p_atomic_inc_return(&tl.next) - 1;
+   if (i >= TIMELINE_EVENTS) { p_atomic_inc(&tl.dropped); return; }
+   tl.events[i] = (struct timeline_event){os_time_get_nano(), type, GetCurrentThreadId(), a, b};
+}
+
+uint64_t anv_wddm_timeline_thread_cycles(void)
+{
+   ULONG64 cycles = 0;
+   QueryThreadCycleTime(GetCurrentThread(), &cycles);
+   return cycles;
+}
+
+/* CSV: ns,type,thread,a,b. ns from os_time_get_nano (QueryPerformanceCounter);
+ * the first and last rows calibrate rdtsc (thread cycles) and give the local
+ * wall-clock time, to find the application's own log lines. */
+void anv_wddm_timeline_write(void)
+{
+   if (!anv_wddm_timeline_on || tl.written) return;
+   FILETIME utc, local; GetSystemTimeAsFileTime(&utc); FileTimeToLocalFileTime(&utc, &local);
+   anv_wddm_timeline_event(ANV_TL_CALIBRATE, __rdtsc(), ((uint64_t)local.dwHighDateTime << 32) | local.dwLowDateTime);
+   anv_wddm_timeline_on = false;
+   tl.written = true;
+   FILE *f = fopen(tl.path, "wb");
+   if (!f) { fprintf(stderr, "HasVK/WDDM timeline: cannot write %s\n", tl.path); return; }
+   const uint32_t count = MIN2(tl.next, TIMELINE_EVENTS);
+   fprintf(f, "ns,type,thread,a,b\n");
+   for (uint32_t i = 0; i < count; ++i) {
+      const struct timeline_event *e = &tl.events[i];
+      if (!e->type) continue;   /* claimed but not yet written when recording stopped */
+      fprintf(f, "%llu,%u,%u,%llu,%llu\n", (unsigned long long)e->ns, e->type, e->thread, (unsigned long long)e->a, (unsigned long long)e->b);
+   }
+   fclose(f);
+   fprintf(stderr, "HasVK/WDDM timeline: %u events (%u dropped) written to %s\n", count, tl.dropped, tl.path);
 }
 
 void
 anv_wddm_profile_install(struct vk_device_dispatch_table *d)
 {
-   if (!enabled()) return;
+   const bool timeline = anv_wddm_timeline_enabled();
+   if (!enabled() && !timeline) return;
    static int installed;
    if (installed++) { fprintf(stderr, "HasVK/WDDM profile: only the first device is profiled\n"); return; }
    mtx_init(&g.mutex, mtx_plain);
    mtx_init(&pipe_mutex, mtx_plain);
-   anv_wddm_profile_pipe_bits_enabled = true;
    g.orig = *d;
 #define WRAP(name) if (d->name) d->name = wrap_##name
+   /* Calls that can block the application's thread (both modes). */
+   WRAP(CreateGraphicsPipelines); WRAP(CreateComputePipelines); WRAP(AllocateMemory); WRAP(QueueSubmit);
+   WRAP(WaitForFences); WRAP(AcquireNextImageKHR); WRAP(QueuePresentKHR);
+   if (timeline) {
+      WRAP(QueueSubmit2); WRAP(GetFenceStatus); WRAP(GetQueryPoolResults); WRAP(QueueWaitIdle); WRAP(DeviceWaitIdle);
+      WRAP(MapMemory); WRAP(FreeMemory); WRAP(ResetFences); WRAP(WaitSemaphores); WRAP(ResetCommandPool);
+      fprintf(stderr, "HasVK/WDDM timeline: recording to %s\n", tl.path);
+   }
+   if (!enabled()) { return; }
+   anv_wddm_profile_pipe_bits_enabled = true;
    WRAP(CmdBeginRenderPass); WRAP(CmdBeginRenderPass2); WRAP(CmdEndRenderPass); WRAP(CmdEndRenderPass2);
    WRAP(CmdDraw); WRAP(CmdDrawIndexed); WRAP(CmdDrawIndirect); WRAP(CmdDrawIndexedIndirect);
-   WRAP(BeginCommandBuffer); WRAP(CmdExecuteCommands); WRAP(CmdBindPipeline); WRAP(CreateGraphicsPipelines); WRAP(CreateComputePipelines); WRAP(EndCommandBuffer);
-   WRAP(AllocateMemory); WRAP(QueueSubmit); WRAP(WaitForFences); WRAP(AcquireNextImageKHR);
+   WRAP(BeginCommandBuffer); WRAP(CmdExecuteCommands); WRAP(CmdBindPipeline); WRAP(EndCommandBuffer);
    WRAP(CmdDispatch); WRAP(CmdDispatchIndirect); WRAP(CmdCopyBuffer); WRAP(CmdCopyImage);
    WRAP(CmdCopyBufferToImage); WRAP(CmdCopyImageToBuffer); WRAP(CmdBlitImage); WRAP(CmdResolveImage);
    WRAP(CmdClearColorImage); WRAP(CmdClearDepthStencilImage); WRAP(CmdFillBuffer); WRAP(CmdUpdateBuffer);
-   WRAP(QueuePresentKHR);
 #undef WRAP
    fprintf(stderr, "HasVK/WDDM profile: timing render passes, dispatches and transfers\n");
 }

@@ -629,6 +629,7 @@ static VkResult submit(struct vk_queue *queue, struct vk_queue_submit *work)
     * HASVK_WDDM_CPU_SEMAPHORE_WAITS=1 waits for all of them as before. */
    static int cpu_waits = -1;
    if (cpu_waits < 0) cpu_waits = getenv("HASVK_WDDM_CPU_SEMAPHORE_WAITS") != NULL;
+   anv_wddm_timeline_event(ANV_TL_SUBMIT_BEGIN, work->command_buffer_count, work->wait_count);
    STACK_ARRAY(struct vk_sync_wait, waits, work->wait_count);
    uint32_t wait_count = 0;
    mtx_lock(&w->mutex);
@@ -645,6 +646,7 @@ static VkResult submit(struct vk_queue *queue, struct vk_queue_submit *work)
    if (diag < 0) diag = getenv("HASVK_WDDM_PROFILE_PASSES") != NULL;
    const uint64_t wait_start = diag ? os_time_get_nano() : 0;
    VkResult result = vk_sync_wait_many(&device->vk, wait_count, waits, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
+   anv_wddm_timeline_event(ANV_TL_SUBMIT_WAITED, wait_count, 0);
    if (diag) {   /* where submitting threads wait on the CPU (HASVK_WDDM_PROFILE_PASSES) */
       diag_ns += os_time_get_nano() - wait_start; diag_waited += wait_count; diag_skipped += work->wait_count - wait_count;
       const uint64_t now_ms = os_time_get_nano() / 1000000;
@@ -679,8 +681,11 @@ static VkResult submit(struct vk_queue *queue, struct vk_queue_submit *work)
    mtx_lock(&w->submit_mutex);
    pending->serial = ++w->next_serial;
    const uint64_t kernel_start = os_time_get_nano();
+   anv_wddm_timeline_event(ANV_TL_KERNEL_BEGIN, pending->serial, present_token != 0);
    const int failed = anv_wddm_execute_commands(device, work->command_buffers, work->command_buffer_count,
                                                 pending->serial, present_token, true, &pending->seq);
+   pending->slot = w->last_slot;
+   if (anv_wddm_timeline_on) anv_wddm_timeline_event(ANV_TL_KERNEL_END, pending->serial, anv_wddm_timeline_thread_cycles());
    {  /* HASVK_WDDM_PROFILE_PASSES: kernel submission time, presents apart, every 5 s */
       static int kdiag = -1; static uint64_t k_ns[2], k_count[2], k_max[2], k_last_ms;
       if (kdiag < 0) kdiag = getenv("HASVK_WDDM_PROFILE_PASSES") != NULL;
@@ -750,6 +755,11 @@ static int completion_main(void *data)
       const char *error = NULL;
       if (vk_device_is_lost_no_report(&device->vk)) error = "device lost earlier";
       else if (hasvk_wddm_wait_submission(w->transport, p->seq)) error = hasvk_wddm_error();
+      if (anv_wddm_timeline_on) {
+         const uint8_t *slot = (const uint8_t *)hasvk_wddm_bo_map(w->entry) + p->slot * 128;
+         anv_wddm_timeline_event(ANV_TL_GPU_DONE, p->serial, *(const volatile uint32_t *)(slot + ANV_WDDM_TIMELINE_START) |
+                                 (uint64_t)*(const volatile uint32_t *)(slot + ANV_WDDM_TIMELINE_END) << 32);
+      }
       for (uint32_t i = 0; !error && i < p->command_count; ++i)
          if (p->commands[i]->wddm->seq == p->seq && anv_wddm_check_completed(p->commands[i])) error = "command buffer completion check failed";
       if (!error) {
@@ -775,6 +785,7 @@ static int completion_main(void *data)
       list_del(&p->link);
       w->verified_seq = p->seq; ++w->completed;
       u_cnd_monotonic_broadcast(&w->condition);
+      if (anv_wddm_timeline_on) anv_wddm_timeline_event(ANV_TL_SIGNALED, p->serial, anv_wddm_timeline_thread_cycles());
       vk_free(&device->vk.alloc, p);
    }
    mtx_unlock(&w->mutex);
@@ -1035,6 +1046,7 @@ VKAPI_ATTR void VKAPI_CALL anv_DestroyDevice(VkDevice handle, const VkAllocation
    if (!device) return;
    vk_queue_finish(&device->queues[0].vk); vk_free(&device->vk.alloc, device->queues);
    completion_finish(device);   /* drains every non-blocking submission */
+   anv_wddm_timeline_write();
 #ifdef HASVK_WDDM_GRAPHICS
    cache_file_write(device, L"default-cache.bin", device->default_pipeline_cache, device->wddm->default_cache_loaded);
 #endif

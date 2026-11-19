@@ -362,10 +362,24 @@ static int take_slot(struct anv_wddm_device_state *w, uint32_t *slot)
 }
 /* One kernel submission from a slot whose jump goes to start. Waits for the
  * GPU unless seq is given (non-blocking: *seq receives its number). */
+/* HASVK_WDDM_TIMELINE: TIMESTAMP (low 32 bits, 0x2358) into the entry slot at
+ * offset, by MI_STORE_REGISTER_MEM (4 dwords at dw). */
+static void store_timestamp(struct anv_wddm_device_state *w, uint32_t *dw, uint32_t slot, uint32_t offset)
+{
+   struct GENX(MI_STORE_REGISTER_MEM) store = { GENX(MI_STORE_REGISTER_MEM_header), .RegisterAddress = 0x2358,
+      .MemoryAddress = {NULL, hasvk_wddm_bo_address(w->entry) + slot * 128 + offset} };
+   GENX(MI_STORE_REGISTER_MEM_pack)(NULL, dw, &store);
+}
 static int submit_run(struct anv_wddm_device_state *w, uint32_t slot, struct anv_address start, uint64_t present_token,
                       uint64_t *seq)
 {
-   write_tail((uint32_t *)hasvk_wddm_bo_map(w->entry) + slot * 32, start, true);
+   uint32_t *entry = (uint32_t *)hasvk_wddm_bo_map(w->entry) + slot * 32;
+   if (anv_wddm_timeline_on) {   /* the GPU's start time of this kernel submission, then the jump */
+      store_timestamp(w, entry, slot, ANV_WDDM_TIMELINE_START);
+      write_tail(entry + 4, start, true);
+   } else
+      write_tail(entry, start, true);
+   w->last_slot = slot;
    const uint32_t offset = slot * 128;
    const int failed = seq ? (present_token ? hasvk_wddm_submit_present_async(w->transport, w->entry, offset, 16, present_token, seq)
                                            : hasvk_wddm_submit_async(w->transport, w->entry, offset, 16, seq))
@@ -420,6 +434,10 @@ int anv_wddm_execute_commands(struct anv_device *device, struct vk_command_buffe
    uint32_t final_slot;
    if (take_slot(w, &final_slot)) return -1;
    uint32_t *completion = (uint32_t *)hasvk_wddm_bo_map(w->entry) + final_slot * 32 + 16;
+   if (anv_wddm_timeline_on) {   /* the GPU's end time (after the last buffer's CS stall), then the write */
+      store_timestamp(w, completion, final_slot, ANV_WDDM_TIMELINE_END);
+      completion += 4;
+   }
    const uint64_t counter = intel_canonical_address(hasvk_wddm_bo_address(w->completion));
    completion[0] = 0x10000002; completion[1] = (uint32_t)counter; completion[2] = counter >> 32; completion[3] = serial;
    completion[4] = 0x05000000; completion[5] = 0;   /* MI_STORE_DATA_IMM serial, MI_BATCH_BUFFER_END */
