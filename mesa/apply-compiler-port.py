@@ -51,6 +51,36 @@ names = {
     'src/intel/vulkan_hasvk/anv_device.c',
     'src/intel/vulkan_hasvk/genX_query.c', 'src/intel/vulkan_hasvk/genX_gpu_memcpy.c',
 }
+# Broadwell (Gen8) only: comparisons of the device generation with a constant
+# (devinfo->ver >= 8, pdevice->info.verx10 == 75, ...) are folded to true or
+# false in every upstream source of these directories that is built, so the
+# compiler removes the branches for other generations.
+GEN8_FOLD_DIRS = ['src/intel/vulkan_hasvk', 'src/intel/compiler/elk', 'src/intel/blorp',
+                  'src/intel/common', 'src/intel/compiler']
+_GEN8_NOT_UPSTREAM = ('anv_wddm', 'elk_gfx8_stages', 'elk_win32_compat', 'blorp_bounds_nir', 'elk_test_')
+gen8_fold_names = set()
+for folder in GEN8_FOLD_DIRS:
+    for path in sorted((MESA / folder).glob('*')):
+        if path.is_file() and path.suffix in ('.c', '.cpp', '.h') and not path.name.startswith(_GEN8_NOT_UPSTREAM):
+            gen8_fold_names.add(f'{folder}/{path.name}')
+names |= gen8_fold_names
+_GEN8_COMPARISON = re.compile(
+    r'\b((?:\w+\s*(?:->|\.)\s*)*(?:devinfo|info))\s*(->|\.)\s*(verx10|ver)\s*(==|!=|<=|>=|<|>)\s*(\d+)\b')
+
+
+def gen8_fold(text):
+    """Every comparison of an intel_device_info generation field with an
+    integer, evaluated for Broadwell (ver 8, verx10 80)."""
+    def value(match):
+        actual = 80 if match.group(3) == 'verx10' else 8
+        expected = int(match.group(5))
+        result = {'==': actual == expected, '!=': actual != expected, '<=': actual <= expected,
+                  '>=': actual >= expected, '<': actual < expected, '>': actual > expected}[match.group(4)]
+        return 'true' if result else 'false'
+    return _GEN8_COMPARISON.sub(value, text)
+
+
+edited_names = set()
 missing = {name for name in names if not (originals / name).exists()}
 if missing:
     # One streaming decompression pass instead of seeking through xz for every
@@ -83,6 +113,9 @@ def edit(name, replacements):
         if after.count(old) != expected:
             raise ValueError(f"Unexpected source context: {name}: {old[:80]!r}")
         after = after.replace(old, new)
+    edited_names.add(name)
+    if name in gen8_fold_names:
+        after = gen8_fold(after)
     if after != before:
         if path.read_text(encoding="utf-8") != after:
             path.write_text(after, encoding="utf-8", newline="\n")
@@ -1255,6 +1288,12 @@ shared_library('vulkan_hasvk_wddm', anv_wddm_entrypoints[1],
   install : false,
 )
 '''
+for name in sorted(gen8_fold_names - edited_names):
+    edit(name, [])
+for name in list(owned_sources):
+    # Generated from upstream genX/capability sources, built for Gen8 only.
+    if name.startswith('src/intel/wddm_compiler/anv_wddm_') and name.endswith('.c'):
+        owned_sources[name] = gen8_fold(owned_sources[name])
 for name, contents in owned_sources.items():
     target = MESA / name
     target.parent.mkdir(exist_ok=True)
