@@ -4,8 +4,10 @@
 # USER objects, CPU time. After a 30 s warm-up nothing may grow beyond noise
 # (private memory +1 MiB, handles +4, GDI/USER objects +0). A watchdog kills
 # the process if it does not finish in time.
+# -Build runs the ICD of build\icd through VK_DRIVER_FILES instead of the
+# installed copy (the installed one is replaced only by install-icd.ps1).
 # Report: native\artifacts\stability-vkcubepp-<seconds>s.json.
-param([int]$Seconds = 180, [int]$Hz = 60, [string]$Cube = 'C:\VulkanSDK-local\Bin\vkcubepp.exe')
+param([int]$Seconds = 180, [int]$Hz = 60, [string]$Cube = 'C:\VulkanSDK-local\Bin\vkcubepp.exe', [switch]$Build)
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path $PSScriptRoot -Parent
 if (-not (Test-Path $Cube)) { throw "vkcubepp not found: $Cube" }
@@ -19,6 +21,11 @@ $start.UseShellExecute = $false
 $start.RedirectStandardOutput = $true
 $start.RedirectStandardError = $true
 foreach ($name in 'VK_DRIVER_FILES', 'VK_ICD_FILENAMES', 'VK_ADD_DRIVER_FILES') { $start.EnvironmentVariables.Remove($name) }
+$icdDll = Join-Path $env:ProgramFiles 'HasVK-WDDM\vulkan_hasvk_wddm.dll'
+if ($Build) {
+    $icdDll = Join-Path $taskRoot 'build\icd\vulkan_hasvk_wddm.dll'
+    $start.EnvironmentVariables['VK_DRIVER_FILES'] = Join-Path $taskRoot 'build\icd\intel_hasvk_wddm_icd.json'
+}
 $start.EnvironmentVariables['VK_LOADER_LAYERS_DISABLE'] = '*'
 $p = [Diagnostics.Process]::Start($start)
 $out = $p.StandardOutput.ReadToEndAsync(); $err = $p.StandardError.ReadToEndAsync()
@@ -43,8 +50,8 @@ if ($steady.Count -ge 2) {
 }
 $cpuShare = if ($samples.Count) { [math]::Round($samples[-1].cpu / $samples[-1].t * 100, 1) } else { 0 }
 $passed = -not $timedOut -and $p.ExitCode -eq 0 -and $growth -and $growth.privateMB -le 1 -and $growth.handles -le 4 -and $growth.gdi -le 0 -and $growth.user -le 0
-$report = [ordered]@{ schema = 1; testedUtc = [DateTime]::UtcNow.ToString('o'); icd = 'system-registered';
-    icdSha256 = (Get-FileHash (Join-Path $env:ProgramFiles 'HasVK-WDDM\vulkan_hasvk_wddm.dll') -Algorithm SHA256).Hash.ToLowerInvariant();
+$report = [ordered]@{ schema = 1; testedUtc = [DateTime]::UtcNow.ToString('o'); icd = $(if ($Build) { 'build\icd' } else { 'system-registered' });
+    icdSha256 = (Get-FileHash $icdDll -Algorithm SHA256).Hash.ToLowerInvariant();
     seconds = $Seconds; frames = $frames; elapsedSeconds = $elapsed; exitCode = $p.ExitCode; timedOut = $timedOut;
     cpuPercentOfOneCore = $cpuShare; growthAfterWarmup = $growth; passed = $passed; samples = $samples;
     stderrTail = (($err.Result -split "`n") | Where-Object { $_ -and $_ -notmatch 'SIMD\d+ shader' } | Select-Object -Last 10) }

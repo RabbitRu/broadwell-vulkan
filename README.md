@@ -87,7 +87,8 @@ MSVC 14.44.35207, SDK 10.0.26100.0 и хеши компиляторов/заго
   `test-stability.ps1`.
 - CTS: `build-cts.ps1`, `run-cts.ps1` и срезы по группам
   (`run-cts-sample.ps1`, `run-cts-groups.ps1`, `run-cts-vk13.ps1`,
-  `run-cts-extensions.ps1`).
+  `run-cts-extensions.ps1`); полный mustpass (2,89 млн тестов, 8–10 часов,
+  возобновляемый) — `run-cts-full.ps1`, ход в `build\cts-full\progress.log`.
 - `run-talos.ps1` — встроенный бенчмарк The Talos Principle под Vulkan и DX11
   (`-Sample` — потоки, частота CPU и загрузка GPU в окне замера;
   `-RipModule` — сэмплы стеков; `-D3D11Proxy` — разбивка кадра DX11).
