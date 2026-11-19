@@ -27,6 +27,7 @@
 #include <string.h>
 
 void proxy_resolve_stubs(HMODULE real);
+static BOOL split_enabled(void);
 
 typedef HRESULT(WINAPI *PFN_CREATE)(IDXGIAdapter *, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL *, UINT, UINT,
                                     ID3D11Device **, D3D_FEATURE_LEVEL *, ID3D11DeviceContext **);
@@ -95,6 +96,14 @@ static void (STDMETHODCALLTYPE *o_CopySubresourceRegion)(ID3D11DeviceContext *, 
 static void (STDMETHODCALLTYPE *o_ResolveSubresource)(ID3D11DeviceContext *, ID3D11Resource *, UINT, ID3D11Resource *, UINT, DXGI_FORMAT);
 static void (STDMETHODCALLTYPE *o_ExecuteCommandList)(ID3D11DeviceContext *, ID3D11CommandList *, BOOL);
 static HRESULT (STDMETHODCALLTYPE *o_Present)(IDXGISwapChain *, UINT, UINT);
+static void (STDMETHODCALLTYPE *o_VSSetShader)(ID3D11DeviceContext *, ID3D11VertexShader *, ID3D11ClassInstance *const *, UINT);
+static void (STDMETHODCALLTYPE *o_PSSetShader)(ID3D11DeviceContext *, ID3D11PixelShader *, ID3D11ClassInstance *const *, UINT);
+static void (STDMETHODCALLTYPE *o_OMSetDepthStencilState)(ID3D11DeviceContext *, ID3D11DepthStencilState *, UINT);
+static void (STDMETHODCALLTYPE *o_RSSetState)(ID3D11DeviceContext *, ID3D11RasterizerState *);
+static void (STDMETHODCALLTYPE *o_RSSetViewports)(ID3D11DeviceContext *, UINT, const D3D11_VIEWPORT *);
+static void (STDMETHODCALLTYPE *o_RSSetScissorRects)(ID3D11DeviceContext *, UINT, const D3D11_RECT *);
+static HRESULT (STDMETHODCALLTYPE *o_CreatePixelShader)(ID3D11Device *, const void *, SIZE_T, ID3D11ClassLinkage *, ID3D11PixelShader **);
+static HRESULT (STDMETHODCALLTYPE *o_CreateVertexShader)(ID3D11Device *, const void *, SIZE_T, ID3D11ClassLinkage *, ID3D11VertexShader **);
 static HRESULT (STDMETHODCALLTYPE *o_Present1)(IDXGISwapChain1 *, UINT, UINT, const DXGI_PRESENT_PARAMETERS *);
 
 static BOOL describe_view(ID3D11View *view, char *out, size_t size, const char *what)
@@ -210,10 +219,10 @@ static void end_frame(void)
       const double n = (double)p.window_frames;
       logf_("D3D11 profile: %llu frames in %.1f s, GPU time %.2f ms/frame (%llu frames dropped)\n", p.window_frames,
             (now - p.window_start) / 1000.0, total / n, p.dropped);
-      for (UINT i = 0; i < p.bucket_count && i < 25; ++i)
+      for (UINT i = 0; i < p.bucket_count && i < (split_enabled() ? 45u : 25u); ++i)
          logf_("  %6.2f ms/frame %5.1f/frame avg %6.3f ms draws %6.1f | %s\n", p.buckets[i].ms / n, p.buckets[i].count / n,
                p.buckets[i].ms / p.buckets[i].count, (double)p.buckets[i].draws / p.buckets[i].count, p.buckets[i].key);
-      for (UINT i = 0; i < p.bucket_count && i < 8; ++i)
+      for (UINT i = 0; i < p.bucket_count && i < (split_enabled() ? 40u : 8u); ++i)
          if (p.buckets[i].stats_count)
             logf_("    per segment: max %.2f ms, max %.0fk PS, %llu of %llu segments over 100k PS | %s\n", p.buckets[i].max_ms, p.buckets[i].max_ps / 1e3,
                   p.buckets[i].heavy, p.buckets[i].stats_count, p.buckets[i].key),
@@ -281,6 +290,70 @@ static void track_shadow(ID3D11DeviceContext *ctx, ID3D11DepthStencilView *dsv)
    if (res) ID3D11Resource_Release(res);
 }
 
+/* ---- shader split (D3D11_SPLIT_SHADERS=1): inside 1536x1536 depth targets
+ * (shadow maps) every vertex/pixel shader change starts a segment keyed by the
+ * shader pair, numbered in order of first use ("none" = no pixel shader). ---- */
+static char shader_target[96];
+static BOOL split_shaders;
+static const void *vs_seen[512], *ps_seen[512];
+static UINT vs_seen_count, ps_seen_count;
+static int cur_vs = -1, cur_ps = -1;
+static char cur_depth[24] = "z?", cur_raster[24] = "r?", cur_view[40] = "";
+static volatile LONG n_vsset, n_psset;
+/* Bytecode of every created shader (for D3D11_SPLIT_SHADERS with
+ * D3D11_DUMP_DIR: <dir>\vs<n>.dxbc / ps<n>.dxbc as each gets its number). */
+struct code { const void *shader; void *data; SIZE_T size; };
+static struct code *codes; static UINT code_count, code_capacity;
+static CRITICAL_SECTION code_lock;
+static void keep_code(const void *shader, const void *data, SIZE_T size)
+{
+   if (!split_enabled() || !shader) return;
+   EnterCriticalSection(&code_lock);
+   if (code_count == code_capacity) { code_capacity = code_capacity ? code_capacity * 2 : 1024; codes = realloc(codes, code_capacity * sizeof(*codes)); }
+   codes[code_count].shader = shader; codes[code_count].data = malloc(size); codes[code_count].size = size;
+   if (codes[code_count].data) { memcpy(codes[code_count].data, data, size); ++code_count; }
+   LeaveCriticalSection(&code_lock);
+}
+static void dump_code(const void *shader, const char *kind, int index)
+{
+   char dir[MAX_PATH]; if (!GetEnvironmentVariableA("D3D11_DUMP_DIR", dir, sizeof(dir))) return;
+   EnterCriticalSection(&code_lock);
+   for (UINT i = code_count; i-- > 0;)
+      if (codes[i].shader == shader) {
+         char path[MAX_PATH + 32]; snprintf(path, sizeof(path), "%s\\%s%d.dxbc", dir, kind, index);
+         FILE *out = fopen(path, "wb"); if (out) { fwrite(codes[i].data, 1, codes[i].size, out); fclose(out); }
+         break;
+      }
+   LeaveCriticalSection(&code_lock);
+}
+static int shader_index(const void *shader, const void **seen, UINT *count)
+{
+   if (!shader) return -1;
+   for (UINT i = 0; i < *count; ++i) if (seen[i] == shader) return (int)i;
+   if (*count == 512) return 511;
+   seen[*count] = shader;
+   dump_code(shader, seen == vs_seen ? "vs" : "ps", (int)*count);
+   return (int)(*count)++;
+}
+static HRESULT STDMETHODCALLTYPE h_CreatePixelShader(ID3D11Device *d, const void *b, SIZE_T n, ID3D11ClassLinkage *l, ID3D11PixelShader **s)
+{ const HRESULT r = o_CreatePixelShader(d, b, n, l, s); if (SUCCEEDED(r) && s) keep_code(*s, b, n); return r; }
+static HRESULT STDMETHODCALLTYPE h_CreateVertexShader(ID3D11Device *d, const void *b, SIZE_T n, ID3D11ClassLinkage *l, ID3D11VertexShader **s)
+{ const HRESULT r = o_CreateVertexShader(d, b, n, l, s); if (SUCCEEDED(r) && s) keep_code(*s, b, n); return r; }
+static BOOL split_enabled(void)
+{
+   static int on = -1;
+   if (on < 0) { char v[8]; on = GetEnvironmentVariableA("D3D11_SPLIT_SHADERS", v, sizeof(v)) > 0; }
+   return on;
+}
+static void shader_mark(ID3D11DeviceContext *c)
+{
+   if (!p.ready || c != p.context || !split_shaders || !split_enabled()) return;
+   char ps[16]; if (cur_ps < 0) strcpy(ps, "none"); else snprintf(ps, sizeof(ps), "#%d", cur_ps);
+   char key[96]; snprintf(key, sizeof(key), "%.30s|VS%d PS %s %s %s%s", shader_target + 9, cur_vs, ps, cur_depth, cur_raster, cur_view);
+   if (!strcmp(key, p.last_key)) return;
+   strcpy(p.last_key, key); p.remark = FALSE; mark(c, key);
+}
+
 /* ---- hooks ---- */
 static volatile LONG n_omset_immediate, n_omset_other, n_draw_immediate, n_draw_other, n_ecl, n_end_frame;
 static void target_key(UINT count, ID3D11RenderTargetView *const *rtvs, ID3D11DepthStencilView *dsv)
@@ -298,6 +371,8 @@ static void target_key(UINT count, ID3D11RenderTargetView *const *rtvs, ID3D11De
    if (p.on_backbuffer && !back && (count || dsv)) end_frame();   /* the next frame starts */
    if (count || dsv) p.on_backbuffer = back;
    snprintf(p.last_key, sizeof(p.last_key), "%u: %s + %s", count, rt, ds);
+   snprintf(shader_target, sizeof(shader_target), "%s", p.last_key);
+   split_shaders = strstr(ds, "1536x1536") != NULL;
 }
 static void STDMETHODCALLTYPE h_OMSetRenderTargets(ID3D11DeviceContext *c, UINT n, ID3D11RenderTargetView *const *r, ID3D11DepthStencilView *d)
 {
@@ -329,6 +404,41 @@ static void STDMETHODCALLTYPE h_ResolveSubresource(ID3D11DeviceContext *c, ID3D1
 { mark(c, "resolve"); o_ResolveSubresource(c, d, ds, s, ss, f); mark(c, p.last_key); }
 static void STDMETHODCALLTYPE h_ExecuteCommandList(ID3D11DeviceContext *c, ID3D11CommandList *l, BOOL r)
 { InterlockedIncrement(&n_ecl); mark(c, "command list"); p.remark = TRUE; o_ExecuteCommandList(c, l, r); }
+static void STDMETHODCALLTYPE h_VSSetShader(ID3D11DeviceContext *c, ID3D11VertexShader *s, ID3D11ClassInstance *const *ci, UINT n)
+{ InterlockedIncrement(&n_vsset); if (c == p.context) { cur_vs = shader_index(s, vs_seen, &vs_seen_count); shader_mark(c); } o_VSSetShader(c, s, ci, n); }
+static void STDMETHODCALLTYPE h_PSSetShader(ID3D11DeviceContext *c, ID3D11PixelShader *s, ID3D11ClassInstance *const *ci, UINT n)
+{ InterlockedIncrement(&n_psset); if (c == p.context) { cur_ps = shader_index(s, ps_seen, &ps_seen_count); shader_mark(c); } o_PSSetShader(c, s, ci, n); }
+static void STDMETHODCALLTYPE h_OMSetDepthStencilState(ID3D11DeviceContext *c, ID3D11DepthStencilState *s, UINT ref)
+{
+   if (c == p.context) {
+      if (!s) strcpy(cur_depth, "z-default");
+      else { D3D11_DEPTH_STENCIL_DESC d; ID3D11DepthStencilState_GetDesc(s, &d);
+             snprintf(cur_depth, sizeof(cur_depth), "z%d f%d w%d", d.DepthEnable, (int)d.DepthFunc, (int)d.DepthWriteMask); }
+      shader_mark(c);
+   }
+   o_OMSetDepthStencilState(c, s, ref);
+}
+static D3D11_VIEWPORT last_vp; static D3D11_RECT last_sc; static BOOL scissor_on;
+static void view_key(ID3D11DeviceContext *c)
+{
+   char sc[24] = ""; if (scissor_on) snprintf(sc, sizeof(sc), " sc%ldx%ld", last_sc.right - last_sc.left, last_sc.bottom - last_sc.top);
+   snprintf(cur_view, sizeof(cur_view), " vp%.0f,%.0f %.0fx%.0f%s", last_vp.TopLeftX, last_vp.TopLeftY, last_vp.Width, last_vp.Height, sc);
+   shader_mark(c);
+}
+static void STDMETHODCALLTYPE h_RSSetViewports(ID3D11DeviceContext *c, UINT n, const D3D11_VIEWPORT *v)
+{ if (c == p.context && n && v) { last_vp = v[0]; view_key(c); } o_RSSetViewports(c, n, v); }
+static void STDMETHODCALLTYPE h_RSSetScissorRects(ID3D11DeviceContext *c, UINT n, const D3D11_RECT *r)
+{ if (c == p.context && n && r) { last_sc = r[0]; view_key(c); } o_RSSetScissorRects(c, n, r); }
+static void STDMETHODCALLTYPE h_RSSetState(ID3D11DeviceContext *c, ID3D11RasterizerState *s)
+{
+   if (c == p.context) {
+      if (!s) strcpy(cur_raster, "r-default");
+      else { D3D11_RASTERIZER_DESC d; ID3D11RasterizerState_GetDesc(s, &d);
+             snprintf(cur_raster, sizeof(cur_raster), "cull%d s%.1f", (int)d.CullMode, d.SlopeScaledDepthBias); scissor_on = d.ScissorEnable; view_key(c); }
+      shader_mark(c);
+   }
+   o_RSSetState(c, s);
+}
 static HRESULT STDMETHODCALLTYPE h_Present(IDXGISwapChain *s, UINT i, UINT f) { end_frame(); return o_Present(s, i, f); }
 static HRESULT STDMETHODCALLTYPE h_Present1(IDXGISwapChain1 *s, UINT i, UINT f, const DXGI_PRESENT_PARAMETERS *pp) { end_frame(); return o_Present1(s, i, f, pp); }
 
@@ -402,6 +512,17 @@ static void install(ID3D11Device *device, ID3D11DeviceContext *ctx)
    if (hooked) { p.ready = TRUE; LeaveCriticalSection(&lock); logf_("D3D11 proxy: profiling a newer device\n"); return; }
    o_End = ctx->lpVtbl->End; o_Begin = ctx->lpVtbl->Begin; o_GetData = ctx->lpVtbl->GetData;
    PATCH_CTX(OMSetRenderTargets, h_OMSetRenderTargets, o_OMSetRenderTargets);
+   PATCH_CTX(VSSetShader, h_VSSetShader, o_VSSetShader);
+   PATCH_CTX(PSSetShader, h_PSSetShader, o_PSSetShader);
+   PATCH_CTX(OMSetDepthStencilState, h_OMSetDepthStencilState, o_OMSetDepthStencilState);
+   if (split_enabled()) {
+      InitializeCriticalSection(&code_lock);
+      patch((void **)device->lpVtbl, offsetof(ID3D11DeviceVtbl, CreatePixelShader), (void *)h_CreatePixelShader, (void **)&o_CreatePixelShader);
+      patch((void **)device->lpVtbl, offsetof(ID3D11DeviceVtbl, CreateVertexShader), (void *)h_CreateVertexShader, (void **)&o_CreateVertexShader);
+   }
+   PATCH_CTX(RSSetState, h_RSSetState, o_RSSetState);
+   PATCH_CTX(RSSetViewports, h_RSSetViewports, o_RSSetViewports);
+   PATCH_CTX(RSSetScissorRects, h_RSSetScissorRects, o_RSSetScissorRects);
    PATCH_CTX(OMSetRenderTargetsAndUnorderedAccessViews, h_OMSetRTUAV, o_OMSetRTUAV);
    PATCH_CTX(Draw, h_Draw, o_Draw);
    PATCH_CTX(DrawIndexed, h_DrawIndexed, o_DrawIndexed);
@@ -463,6 +584,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
    } else if (reason == DLL_PROCESS_DETACH) {
       logf_("D3D11 proxy: calls  OMSetRenderTargets immediate %ld other %ld, draws immediate %ld other %ld, ExecuteCommandList %ld, frames ended %ld\n",
             n_omset_immediate, n_omset_other, n_draw_immediate2, n_draw_other2, n_ecl, n_frames_ended);
+      logf_("D3D11 proxy: VSSetShader %ld, PSSetShader %ld calls; %u vertex and %u pixel shaders seen\n", n_vsset, n_psset, vs_seen_count, ps_seen_count);
       if (p.context) {
          void **now = (void **)p.context->lpVtbl;
          const size_t draw = offsetof(ID3D11DeviceContextVtbl, DrawIndexed) / sizeof(void *);

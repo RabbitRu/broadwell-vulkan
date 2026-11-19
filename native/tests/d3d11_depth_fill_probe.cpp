@@ -65,7 +65,9 @@ int main(int argc, char **argv)
    ID3D11Texture2D *depth; CHECK(dev->CreateTexture2D(&td, nullptr, &depth));
    D3D11_DEPTH_STENCIL_VIEW_DESC dvd{}; dvd.Format = DXGI_FORMAT_D16_UNORM; dvd.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
    ID3D11DepthStencilView *dsv; CHECK(dev->CreateDepthStencilView(depth, &dvd, &dsv));
-   std::vector<uint32_t> texels(512 * 512, 0xff000080u);
+   /* D3D11_PROBE_ALPHA=<0..255>: texture alpha (default opaque; 0 makes the alpha test discard every pixel) */
+   char alpha_env[8] = ""; const uint32_t alpha = GetEnvironmentVariableA("D3D11_PROBE_ALPHA", alpha_env, sizeof(alpha_env)) ? (uint32_t)atoi(alpha_env) & 255u : 255u;
+   std::vector<uint32_t> texels(512 * 512, (alpha << 24) | 0x000080u);
    D3D11_TEXTURE2D_DESC cd{}; cd.Width = cd.Height = 512; cd.MipLevels = cd.ArraySize = 1; cd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
    cd.SampleDesc.Count = 1; cd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
    D3D11_SUBRESOURCE_DATA init{texels.data(), 2048, 0};
