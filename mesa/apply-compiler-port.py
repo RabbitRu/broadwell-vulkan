@@ -1142,6 +1142,59 @@ edit("src/intel/compiler/elk/elk_fs_bank_conflicts.cpp", [
 edit("src/intel/compiler/elk/elk_fs.cpp", [
     ('#include "util/u_math.h"', '#include "util/u_math.h"\n#include "util/u_string.h"'),
 ])
+# Loop-invariant immediates out of loops. 3-source instructions (MAD, LRP, ...)
+# cannot take immediates, so combine_constants loads them into a GRF with
+# WE_all MOVs placed in the common dominator of their uses: for uses inside a
+# loop that is the loop body, which reloads them on every iteration (an 8-FMA
+# loop: 2 of 13 instructions). The preheader (immediate dominator of the DO
+# block) dominates every block of the loop, and WE_all MOVs do not depend on
+# the channel mask, so loading there is equivalent. One loop level; not when
+# the preheader is a DO block or ends a loop (consecutive loops), where the
+# MOV would land inside another loop. HASVK_WDDM_NO_CONST_HOIST=1 disables it.
+edit("src/intel/compiler/elk/elk_fs_combine_constants.cpp", [
+    ('''   table.imm = ralloc_array(const_ctx, struct imm, result->num_values_to_emit);
+   table.len = 0;
+''', '''   table.imm = ralloc_array(const_ctx, struct imm, result->num_values_to_emit);
+   table.len = 0;
+
+   /* Innermost DO block enclosing each block (structured loops). */
+   static int no_hoist = -1;
+   if (no_hoist < 0) no_hoist = getenv("HASVK_WDDM_NO_CONST_HOIST") != NULL;
+   elk_bblock_t **loop_header = ralloc_array(const_ctx, elk_bblock_t *, cfg->num_blocks);
+   bool hoist = !no_hoist;
+   {
+      elk_bblock_t *open[64];
+      unsigned depth = 0;
+      foreach_block(block, cfg) {
+         if (block->start()->opcode == ELK_OPCODE_DO) {
+            if (depth == ARRAY_SIZE(open)) { hoist = false; break; }
+            open[depth++] = block;
+         }
+         loop_header[block->num] = depth ? open[depth - 1] : NULL;
+         if (block->end()->opcode == ELK_OPCODE_WHILE && depth)
+            depth--;
+      }
+   }
+'''),
+    ('''         if (ib->inst->src[src].type == ELK_REGISTER_TYPE_HF)
+            imm->is_half_float = true;
+      }
+''', '''         if (ib->inst->src[src].type == ELK_REGISTER_TYPE_HF)
+            imm->is_half_float = true;
+      }
+
+      /* Loop-invariant: load it once in the loop's preheader. */
+      if (hoist && imm->block && loop_header[imm->block->num]) {
+         elk_bblock_t *preheader = idom.parent(loop_header[imm->block->num]);
+         if (preheader && preheader->start()->opcode != ELK_OPCODE_DO &&
+             preheader->end()->opcode != ELK_OPCODE_WHILE) {
+            imm->block = preheader;
+            imm->inst = NULL;
+            imm->used_in_single_block = false;
+         }
+      }
+'''),
+])
 for name, enum_names in {
     'src/intel/compiler/elk/elk_eu_defines.h': ['elk_reg_file', 'elk_predicate'],
     'src/intel/compiler/elk/elk_reg_type.h': ['elk_reg_type'],

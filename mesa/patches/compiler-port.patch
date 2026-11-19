@@ -4234,6 +4234,88 @@
  
     /* The thread ID should be stored in the last param dword */
     assert(subgroup_id_index == -1 ||
+--- a/src/intel/compiler/elk/elk_fs_combine_constants.cpp
++++ b/src/intel/compiler/elk/elk_fs_combine_constants.cpp
+@@ -763,7 +763,7 @@
+           inst->opcode == ELK_OPCODE_ADD ||
+           inst->opcode == ELK_OPCODE_MUL);
+ 
+-   if (devinfo->ver != 7)
++   if (true)
+       return false;
+ 
+    /* Only float instructions can coissue.  We don't have a great
+@@ -1218,7 +1218,7 @@
+                                     devinfo, const_ctx);
+          }
+ 
+-         if (inst->src[1].file == IMM && devinfo->ver < 8) {
++         if (inst->src[1].file == IMM && false) {
+             add_candidate_immediate(&table, inst, ip, 1, true, false, block,
+                                     devinfo, const_ctx);
+          }
+@@ -1317,6 +1317,25 @@
+    table.imm = ralloc_array(const_ctx, struct imm, result->num_values_to_emit);
+    table.len = 0;
+ 
++   /* Innermost DO block enclosing each block (structured loops). */
++   static int no_hoist = -1;
++   if (no_hoist < 0) no_hoist = getenv("HASVK_WDDM_NO_CONST_HOIST") != NULL;
++   elk_bblock_t **loop_header = ralloc_array(const_ctx, elk_bblock_t *, cfg->num_blocks);
++   bool hoist = !no_hoist;
++   {
++      elk_bblock_t *open[64];
++      unsigned depth = 0;
++      foreach_block(block, cfg) {
++         if (block->start()->opcode == ELK_OPCODE_DO) {
++            if (depth == ARRAY_SIZE(open)) { hoist = false; break; }
++            open[depth++] = block;
++         }
++         loop_header[block->num] = depth ? open[depth - 1] : NULL;
++         if (block->end()->opcode == ELK_OPCODE_WHILE && depth)
++            depth--;
++      }
++   }
++
+    for (unsigned i = 0; i < result->num_values_to_emit; i++) {
+       struct imm *imm = &table.imm[table.len];
+ 
+@@ -1401,6 +1420,17 @@
+             imm->is_half_float = true;
+       }
+ 
++      /* Loop-invariant: load it once in the loop's preheader. */
++      if (hoist && imm->block && loop_header[imm->block->num]) {
++         elk_bblock_t *preheader = idom.parent(loop_header[imm->block->num]);
++         if (preheader && preheader->start()->opcode != ELK_OPCODE_DO &&
++             preheader->end()->opcode != ELK_OPCODE_WHILE) {
++            imm->block = preheader;
++            imm->inst = NULL;
++            imm->used_in_single_block = false;
++         }
++      }
++
+       /* Remove constants from the table that don't have enough uses to make
+        * them profitable to store in a register.
+        */
+@@ -1417,7 +1447,7 @@
+    if (cfg->num_blocks != 1)
+       qsort(table.imm, table.len, sizeof(struct imm), compare);
+ 
+-   if (devinfo->ver > 7) {
++   if (true) {
+       struct register_allocation *regs =
+          (struct register_allocation *) calloc(table.len, sizeof(regs[0]));
+ 
+@@ -1526,7 +1556,7 @@
+        * replicating the single one we want. To avoid this, we always populate
+        * both HF slots within a DWord with the constant.
+        */
+-      const uint32_t width = devinfo->ver == 8 && imm->is_half_float ? 2 : 1;
++      const uint32_t width = true && imm->is_half_float ? 2 : 1;
+       const fs_builder ibld = fs_builder(this, width).at(insert_block, n).exec_all();
+ 
+       elk_fs_reg reg(VGRF, imm->nr);
 --- a/src/intel/compiler/elk/elk_eu_defines.h
 +++ b/src/intel/compiler/elk/elk_eu_defines.h
 @@ -8,6 +8,7 @@
@@ -6705,44 +6787,6 @@
                    } else {
                       inst->remove(block, true);
                       progress = true;
---- a/src/intel/compiler/elk/elk_fs_combine_constants.cpp
-+++ b/src/intel/compiler/elk/elk_fs_combine_constants.cpp
-@@ -763,7 +763,7 @@
-           inst->opcode == ELK_OPCODE_ADD ||
-           inst->opcode == ELK_OPCODE_MUL);
- 
--   if (devinfo->ver != 7)
-+   if (true)
-       return false;
- 
-    /* Only float instructions can coissue.  We don't have a great
-@@ -1218,7 +1218,7 @@
-                                     devinfo, const_ctx);
-          }
- 
--         if (inst->src[1].file == IMM && devinfo->ver < 8) {
-+         if (inst->src[1].file == IMM && false) {
-             add_candidate_immediate(&table, inst, ip, 1, true, false, block,
-                                     devinfo, const_ctx);
-          }
-@@ -1417,7 +1417,7 @@
-    if (cfg->num_blocks != 1)
-       qsort(table.imm, table.len, sizeof(struct imm), compare);
- 
--   if (devinfo->ver > 7) {
-+   if (true) {
-       struct register_allocation *regs =
-          (struct register_allocation *) calloc(table.len, sizeof(regs[0]));
- 
-@@ -1526,7 +1526,7 @@
-        * replicating the single one we want. To avoid this, we always populate
-        * both HF slots within a DWord with the constant.
-        */
--      const uint32_t width = devinfo->ver == 8 && imm->is_half_float ? 2 : 1;
-+      const uint32_t width = true && imm->is_half_float ? 2 : 1;
-       const fs_builder ibld = fs_builder(this, width).at(insert_block, n).exec_all();
- 
-       elk_fs_reg reg(VGRF, imm->nr);
 --- a/src/intel/compiler/elk/elk_fs_copy_propagation.cpp
 +++ b/src/intel/compiler/elk/elk_fs_copy_propagation.cpp
 @@ -615,10 +615,10 @@
