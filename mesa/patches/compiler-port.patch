@@ -16245,7 +16245,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_format_table.c
-@@ -0,0 +1,1640 @@
+@@ -0,0 +1,1647 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -17259,6 +17259,13 @@
 +
 +   if (!format_feature_flags)
 +      goto unsupported;
++
++#ifdef _WIN32
++   if (info->type == VK_IMAGE_TYPE_3D &&
++       (info->flags & VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT) &&
++       isl_format_is_compressed(format->planes[0].isl_format))
++      goto unsupported;
++#endif
 +
 +   switch (info->type) {
 +   default:

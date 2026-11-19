@@ -1251,6 +1251,30 @@ format_caps = format_caps.replace(old, '#ifdef _WIN32\n   (void)physical_device;
 old = '      switch (external_info->handleType) {\n      case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:'
 assert format_caps.count(old) == 1
 format_caps = format_caps.replace(old, '#ifdef _WIN32\n      result = vk_errorf(physical_device, VK_ERROR_FORMAT_NOT_SUPPORTED,\n                         "no external memory handle types on Windows");\n      goto fail;\n#endif\n' + old)
+# An uncompressed view of a compressed image must describe the surface in
+# the view's format; on Gen8 that works only for one array slice
+# (isl_surf_get_uncompressed_surf returns false for array_len > 1 before
+# Gfx9: no X/Y offsets with arrays, and QPitch must suit the reinterpreted
+# alignment). Views of a 3D image always span all its depth slices, so
+# upstream HasVK hit an assert there and, without asserts, filled the surface
+# state from an uninitialized surface (CTS texel_view_compatible 3d_image:
+# access violations). Such images are reported unsupported instead.
+old = '''   if (!format_feature_flags)
+      goto unsupported;
+
+   switch (info->type) {'''
+assert format_caps.count(old) == 1
+format_caps = format_caps.replace(old, '''   if (!format_feature_flags)
+      goto unsupported;
+
+#ifdef _WIN32
+   if (info->type == VK_IMAGE_TYPE_3D &&
+       (info->flags & VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT) &&
+       isl_format_is_compressed(format->planes[0].isl_format))
+      goto unsupported;
+#endif
+
+   switch (info->type) {''')
 owned_sources['src/intel/wddm_compiler/anv_wddm_format_table.c'] = (
     formats[:format_split] + '#ifdef HASVK_WDDM_GRAPHICS\n' + format_caps + '\n#endif\n')
 owned_sources.update(generate_compute_sources(originals))

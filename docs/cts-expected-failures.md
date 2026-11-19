@@ -19,7 +19,6 @@ CTS ещё не выполнялся.
 
 | Тест | Результат | Что известно |
 |---|---|---|
-| `dEQP-VK.image.texel_view_compatible.compute.basic.3d_image.*` с BC1/ETC2 | Падение процесса (access violation) | Несжатый вид сжатого 3D-изображения. Upstream HasVK допускает его только для одного уровня и одного слоя (`assert(view.array_len == 1)` при заполнении surface state), а у 3D-вида `array_len` — глубина. В сборке без assert `isl_surf_get_uncompressed_surf` не срабатывает и остаётся неинициализированная поверхность. Исправление: вид 3D-среза по одному слою или отказ при создании вида. |
 | `dEQP-VK.glsl.builtin.precision.{sin,cos}.{mediump,highp}.scalar` (4 теста) | Fail | Причина не установлена. Проверить диапазон аргументов теста против допуска точности sin/cos на Gen8. |
 | `dEQP-VK.subgroups.clustered.compute.subgroupclusteredor_i64vec4_requiredsubgroupsize` | Fail | Причина не установлена: 64-битная кластерная операция при заданном размере подгруппы. |
 
@@ -28,4 +27,5 @@ CTS ещё не выполнялся.
 | Группа | Причина |
 |---|---|
 | `api.copy_and_blit.multiplanar_xfer.*` | Нужна отдельная transfer-очередь; у HasVK (и у этого ICD) одна очередь графики и compute. |
+| `image.texel_view_compatible.*.3d_image.*` для сжатых форматов | Несжатый вид сжатого изображения Gen8 описывает только для одного слоя (`isl_surf_get_uncompressed_surf` до Gfx9), а вид 3D-изображения всегда охватывает все срезы глубины. Upstream HasVK объявлял поддержку и падал на `assert` (без них — access violation на неинициализированной поверхности); порт сообщает `VK_ERROR_FORMAT_NOT_SUPPORTED` для 3D + сжатый формат + `BLOCK_TEXEL_VIEW_COMPATIBLE` (с 2026-11-20; было 68 падений на каждом 6-м случае группы). |
 | Расширения только для Linux | dma-buf, DRM-модификаторы, fd-дескрипторы памяти и семафоров, `pci_bus_info`, `queue_family_foreign`. |
