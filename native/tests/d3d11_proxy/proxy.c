@@ -229,6 +229,7 @@ static void end_frame(void)
  * shadow pass): every 1536x1536 depth buffer of one frame, when the game
  * switches away from it, as raw 16-bit rows (<dir>\d3d11-shadow-<n>.r16). ---- */
 static ID3D11Resource *shadow_res;
+static UINT shadow_slice;   /* array slice the depth view renders into */
 static DWORD shadow_first_ms;
 static UINT dump_frame = UINT_MAX, dump_count;
 static void dump_shadow(ID3D11DeviceContext *ctx)
@@ -247,13 +248,14 @@ static void dump_shadow(ID3D11DeviceContext *ctx)
    if (SUCCEEDED(ID3D11Device_CreateTexture2D(p.device, &desc, NULL, &staging))) {
       o_CopyResource(ctx, (ID3D11Resource *)staging, shadow_res);
       D3D11_MAPPED_SUBRESOURCE map;
-      if (SUCCEEDED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)staging, 0, D3D11_MAP_READ, 0, &map))) {
+      const UINT sub = shadow_slice * desc.MipLevels;   /* D3D11CalcSubresource(0, slice, mips) */
+      if (SUCCEEDED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)staging, sub, D3D11_MAP_READ, 0, &map))) {
          char path[MAX_PATH + 32]; snprintf(path, sizeof(path), "%s\\d3d11-shadow-%u.r16", dir, dump_count);
          FILE *out = fopen(path, "wb");
          if (out) { for (UINT y = 0; y < desc.Height; ++y) fwrite((const char *)map.pData + (size_t)y * map.RowPitch, 2, desc.Width, out); fclose(out); }
-         ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)staging, 0);
-         logf_("D3D11 proxy: dumped shadow map %u (%ux%u format %d, frame %u, %.1f s after the first) to %s\n", dump_count, desc.Width, desc.Height,
-               (int)desc.Format, p.frame, (now - shadow_first_ms) / 1000.0, path);
+         ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)staging, sub);
+         logf_("D3D11 proxy: dumped shadow map %u (%ux%u format %d, slice %u of %u, frame %u, %.1f s after the first) to %s\n", dump_count, desc.Width,
+               desc.Height, (int)desc.Format, shadow_slice, desc.ArraySize, p.frame, (now - shadow_first_ms) / 1000.0, path);
          ++dump_count;
       }
       ID3D11Texture2D_Release(staging);
@@ -269,7 +271,11 @@ static void track_shadow(ID3D11DeviceContext *ctx, ID3D11DepthStencilView *dsv)
    ID3D11View_GetResource((ID3D11View *)dsv, &res);
    if (res && SUCCEEDED(ID3D11Resource_QueryInterface(res, &IID_ID3D11Texture2D, (void **)&tex))) {
       D3D11_TEXTURE2D_DESC desc; ID3D11Texture2D_GetDesc(tex, &desc);
-      if (desc.Width == 1536 && desc.Height == 1536) { shadow_res = res; res = NULL; }
+      if (desc.Width == 1536 && desc.Height == 1536) {
+         shadow_res = res; res = NULL;
+         D3D11_DEPTH_STENCIL_VIEW_DESC vd; ID3D11DepthStencilView_GetDesc(dsv, &vd);
+         shadow_slice = vd.ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2DARRAY ? vd.Texture2DArray.FirstArraySlice : 0;
+      }
       ID3D11Texture2D_Release(tex);
    }
    if (res) ID3D11Resource_Release(res);
