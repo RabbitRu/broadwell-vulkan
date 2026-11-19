@@ -15,6 +15,9 @@
  *   REPLAY_LIST=<n>          with REPLAY_PER_DRAW: the n slowest draws, with samples passed
  *   REPLAY_SORT=1            draws grouped by pipeline (first use order)
  *   REPLAY_NO_DEPTH_BIAS=1   depth bias off
+ *   REPLAY_NO_TEXTURES=1     placeholders instead of the captured textures
+ *   REPLAY_SCISSOR_1X1=1     1x1 scissor: vertex work only (dynamic scissor)
+ *   REPLAY_VS_<i>=<spv>      replacement vertex shader for pipeline i
  *   REPLAY_LAYERS=<n>        depth image array layers (default: as captured)
  *   REPLAY_REPEAT_FIRST=1    the first draw twice (the second is timed in the list as draw 0) */
 #define NOMINMAX
@@ -67,7 +70,9 @@ struct Pipeline {
    VkPipeline pipeline = VK_NULL_HANDLE;
    bool has(VkDynamicState s) const { return std::find(dynamic.begin(), dynamic.end(), s) != dynamic.end(); }
 };
-struct Desc { std::string kind; uint32_t set, binding, element, type; int id; uint64_t range; int view_type; };
+struct Desc { std::string kind; uint32_t set, binding, element, type; int id; uint64_t range; int view_type;
+              int format = 0, image_id = -1; uint32_t base_mip = 0, levels = 1, base_layer = 0, layer_count = 1; };
+struct ImageData { std::string file; int format; uint32_t width, height, depth, mips, layers, type; uint64_t size; };
 struct Draw {
    int pipeline; uint32_t indexed, count, instances, first, first_instance; int32_t vertex_offset;
    VkViewport viewport{}; VkRect2D scissor{}; float bias_const = 0, bias_clamp = 0, bias_slope = 0;
@@ -111,6 +116,7 @@ int main(int argc, char **argv)
    }
    /* ---- pass.txt ---- */
    std::map<int, std::pair<std::string, uint64_t>> buffer_files;
+   std::map<int, ImageData> image_data;
    std::vector<Draw> draws;
    uint32_t width = 1536, height = 1536, layers = 1; int format = VK_FORMAT_D16_UNORM, final_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
    float clear_depth = 0;
@@ -122,6 +128,10 @@ int main(int argc, char **argv)
          std::istringstream s(line); std::string key; s >> key;
          if (key == "pass") s >> width >> height;
          else if (key == "attachment") { std::string w; uint32_t i, stencil; s >> i >> w >> format >> w >> w >> w >> final_layout >> w >> clear_depth >> stencil >> w >> layers; }
+         else if (key == "image_data") {
+            int id; ImageData im; std::string w; s >> id >> im.file >> w >> im.format >> w >> im.width >> im.height >> im.depth >> w >> im.mips >> w >> im.layers >> w >> im.type >> w >> im.size;
+            image_data[id] = im;
+         }
          else if (key == "buffer") { int id; std::string f; uint64_t size; s >> id >> f >> size; buffer_files[id] = {f, size}; }
          else if (key == "draw") { draws.emplace_back(); d = &draws.back(); s >> d->pipeline >> d->indexed >> d->count >> d->instances >> d->first >> d->vertex_offset >> d->first_instance; }
          else if (!d) continue;
@@ -130,7 +140,11 @@ int main(int argc, char **argv)
          else if (key == "bias") s >> d->bias_const >> d->bias_clamp >> d->bias_slope;
          else if (key == "push") { std::string hex; s >> hex; d->push = unhex(hex); }
          else if (key == "buf") { Desc x{key}; s >> x.set >> x.binding >> x.element >> x.type >> x.id >> x.range; d->descs.push_back(x); }
-         else if (key == "image") { Desc x{key}; int fmt; s >> x.set >> x.binding >> x.element >> x.type >> x.view_type >> fmt; d->descs.push_back(x); }
+         else if (key == "image") {
+            Desc x{key}; s >> x.set >> x.binding >> x.element >> x.type >> x.view_type >> x.format;
+            if (!(s >> x.image_id)) x.image_id = -1; else s >> x.base_mip >> x.levels >> x.base_layer >> x.layer_count;
+            d->descs.push_back(x);
+         }
          else if (key == "texel" || key == "null") { Desc x{key}; s >> x.set >> x.binding >> x.element >> x.type; d->descs.push_back(x); }
          else if (key == "vb") { uint32_t b; int id; uint64_t off; s >> b >> id >> off; d->vbs.push_back({b, {id, off}}); }
          else if (key == "ib") s >> d->ib >> d->ib_offset >> d->ib_type;
@@ -173,7 +187,7 @@ int main(int argc, char **argv)
    F(vkGetQueryPoolResults); F(vkQueueSubmit); F(vkQueueWaitIdle); F(vkCreateRenderPass); F(vkCreateFramebuffer); F(vkCmdBeginRenderPass);
    F(vkCmdEndRenderPass); F(vkCreateImage); F(vkGetImageMemoryRequirements); F(vkBindImageMemory); F(vkCreateImageView); F(vkCreateSampler);
    F(vkCmdBindVertexBuffers); F(vkCmdBindIndexBuffer); F(vkCmdSetViewport); F(vkCmdSetScissor); F(vkCmdSetDepthBias); F(vkCmdPipelineBarrier);
-   F(vkCmdClearColorImage); F(vkCmdBeginQuery); F(vkCmdEndQuery);
+   F(vkCmdClearColorImage); F(vkCmdBeginQuery); F(vkCmdEndQuery); F(vkCmdCopyBufferToImage);
    VkQueue queue; vkGetDeviceQueue(d, 0, 0, &queue);
 
    auto make_buffer = [&](const std::vector<char> &data, uint64_t size, VkBuffer *buffer) {
@@ -214,6 +228,51 @@ int main(int argc, char **argv)
    const VkImageViewType view_types[3] = {VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_IMAGE_VIEW_TYPE_CUBE};
    for (int i = 0; i < 3; ++i) make_image(view_types[i], &images[i], &views[i]);
    auto view_for = [&](int type) { return type == VK_IMAGE_VIEW_TYPE_2D_ARRAY ? views[1] : type == VK_IMAGE_VIEW_TYPE_CUBE ? views[2] : views[0]; };
+   /* Captured textures (REPLAY_NO_TEXTURES=1: placeholders only), uploaded below. */
+   const bool use_textures = !getenv("REPLAY_NO_TEXTURES");
+   struct RealImage { VkImage image; VkBuffer staging; std::vector<VkBufferImageCopy> regions; };
+   std::map<int, RealImage> real_images; std::map<std::string, VkImageView> real_views;
+   auto real_view = [&](const Desc &x) -> VkImageView {
+      auto it = image_data.find(x.image_id);
+      if (!use_textures || x.image_id < 0 || it == image_data.end()) return view_for(x.view_type);
+      const ImageData &im = it->second;
+      if (!real_images.count(x.image_id)) {
+         std::vector<char> data = load(dir + "\\" + im.file);
+         if (data.size() < im.size) return view_for(x.view_type);
+         RealImage r{};
+         VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; ii.imageType = (VkImageType)im.type; ii.format = (VkFormat)im.format;
+         ii.extent = {im.width, im.height, im.depth}; ii.mipLevels = im.mips; ii.arrayLayers = im.layers; ii.samples = VK_SAMPLE_COUNT_1_BIT;
+         ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+         if (im.type == VK_IMAGE_TYPE_2D && im.layers >= 6 && im.width == im.height) ii.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+         CHECK(vkCreateImage(d, &ii, nullptr, &r.image));
+         VkMemoryRequirements req; vkGetImageMemoryRequirements(d, r.image, &req); VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+         ai.allocationSize = req.size; VkDeviceMemory mem; CHECK(vkAllocateMemory(d, &ai, nullptr, &mem)); CHECK(vkBindImageMemory(d, r.image, mem, 0));
+         make_buffer(data, im.size, &r.staging);
+         /* block size from the packed size of the top level and the extents */
+         uint64_t texels_total = 0;
+         for (uint32_t l = 0; l < im.mips; ++l) {
+            const uint32_t w = std::max(1u, im.width >> l), h = std::max(1u, im.height >> l), dd = std::max(1u, im.depth >> l);
+            const bool bc = im.format >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && im.format <= VK_FORMAT_BC7_SRGB_BLOCK;
+            texels_total += (uint64_t)(bc ? ((w + 3) / 4) * ((h + 3) / 4) : (uint64_t)w * h) * dd * im.layers;
+         }
+         const uint64_t unit = texels_total ? im.size / texels_total : 4;   /* bytes per block or texel */
+         uint64_t offset = 0;
+         for (uint32_t l = 0; l < im.mips; ++l) {
+            const uint32_t w = std::max(1u, im.width >> l), h = std::max(1u, im.height >> l), dd = std::max(1u, im.depth >> l);
+            const bool bc = im.format >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && im.format <= VK_FORMAT_BC7_SRGB_BLOCK;
+            VkBufferImageCopy region{}; region.bufferOffset = offset; region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, im.layers};
+            region.imageExtent = {w, h, dd}; r.regions.push_back(region);
+            offset += (uint64_t)(bc ? ((w + 3) / 4) * ((h + 3) / 4) : (uint64_t)w * h) * dd * im.layers * unit;
+         }
+         real_images[x.image_id] = r;
+      }
+      char key[96]; snprintf(key, sizeof(key), "%d/%d/%d/%u/%u/%u/%u", x.image_id, x.view_type, x.format, x.base_mip, x.levels, x.base_layer, x.layer_count);
+      auto v = real_views.find(key);
+      if (v != real_views.end()) return v->second;
+      VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO}; vi.image = real_images[x.image_id].image; vi.viewType = (VkImageViewType)x.view_type;
+      vi.format = (VkFormat)x.format; vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, x.base_mip, x.levels, x.base_layer, x.layer_count};
+      VkImageView view; CHECK(vkCreateImageView(d, &vi, nullptr, &view)); real_views[key] = view; return view;
+   };
    VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO}; sci.magFilter = sci.minFilter = VK_FILTER_LINEAR;
    sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT; sci.maxLod = 16;
    VkSampler sampler; CHECK(vkCreateSampler(d, &sci, nullptr, &sampler));
@@ -261,7 +320,10 @@ int main(int argc, char **argv)
          if (!p.stages.count(name) || p.stages[name].file.empty() || p.stages[name].file == "none") continue;
          if (!strcmp(name, "fs") && no_fs) continue;
          Stage &st = p.stages[name];
-         std::vector<char> code = load(dir + "\\" + st.file);
+         const std::string override_name = "REPLAY_VS_" + std::to_string(index);
+         const char *override_file = !strcmp(name, "vs") ? getenv(override_name.c_str()) : nullptr;
+         std::vector<char> code = load(override_file ? std::string(override_file) : dir + "\\" + st.file);
+         if (override_file) { st.map.clear(); st.entry = "main"; }
          if (code.empty()) { printf("pipeline %d: missing %s\n", index, st.file.c_str()); return 1; }
          VkShaderModuleCreateInfo smi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO}; smi.codeSize = code.size(); smi.pCode = (const uint32_t *)code.data();
          VkShaderModule module; CHECK(vkCreateShaderModule(d, &smi, nullptr, &module));
@@ -317,7 +379,7 @@ int main(int argc, char **argv)
             VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; w.dstSet = dr->sets[b.set]; w.dstBinding = b.binding; w.dstArrayElement = e;
             w.descriptorCount = 1; w.descriptorType = (VkDescriptorType)b.type;
             VkDescriptorBufferInfo bi{dummy, 0, 256};
-            VkDescriptorImageInfo ii{sampler, view_for(x && x->kind == "image" ? x->view_type : VK_IMAGE_VIEW_TYPE_2D), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            VkDescriptorImageInfo ii{sampler, x && x->kind == "image" ? real_view(*x) : view_for(VK_IMAGE_VIEW_TYPE_2D), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
             switch (b.type) {
             case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER: case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
             case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC: case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
@@ -366,7 +428,18 @@ int main(int argc, char **argv)
          b.oldLayout = b.newLayout; b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; b.srcAccessMask = b.dstAccessMask; b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
          vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
       }
+      for (auto &kv : real_images) {
+         VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER}; b.image = kv.second.image;
+         b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+         b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+         b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+         vkCmdCopyBufferToImage(cmd, kv.second.staging, kv.second.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)kv.second.regions.size(), kv.second.regions.data());
+         b.oldLayout = b.newLayout; b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; b.srcAccessMask = b.dstAccessMask; b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+      }
       CHECK(vkEndCommandBuffer(cmd)); CHECK(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE)); CHECK(vkQueueWaitIdle(queue));
+      printf("textures: %zu captured images, %zu views%s\n", real_images.size(), real_views.size(), use_textures ? "" : " (disabled)");
    }
    double best = 1e9; uint64_t stats[4] = {};
    std::map<int, double> best_by_pipeline; std::map<int, int> draws_by_pipeline;
@@ -390,7 +463,7 @@ int main(int argc, char **argv)
          std::vector<uint8_t> push = dr->push; push.resize(128);
          vkCmdPushConstants(cmd, p.layout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, 128, push.data());
          if (p.has(VK_DYNAMIC_STATE_VIEWPORT)) vkCmdSetViewport(cmd, 0, 1, &dr->viewport);
-         if (p.has(VK_DYNAMIC_STATE_SCISSOR)) vkCmdSetScissor(cmd, 0, 1, &dr->scissor);
+         if (p.has(VK_DYNAMIC_STATE_SCISSOR)) { VkRect2D sc = dr->scissor; if (getenv("REPLAY_SCISSOR_1X1")) sc.extent = {1, 1}; vkCmdSetScissor(cmd, 0, 1, &sc); }
          if (p.has(VK_DYNAMIC_STATE_DEPTH_BIAS)) vkCmdSetDepthBias(cmd, dr->bias_const, dr->bias_clamp, dr->bias_slope);
          for (auto &vb : dr->vbs) { VkBuffer b = get_buffer(vb.second.first); VkDeviceSize off = vb.second.second; vkCmdBindVertexBuffers(cmd, vb.first, 1, &b, &off); }
          if (dr->indexed && dr->ib >= 0)
