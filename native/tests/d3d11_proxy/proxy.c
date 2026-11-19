@@ -21,6 +21,7 @@
 #include <dxgi1_2.h>
 #include <stdarg.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -54,13 +55,14 @@ static void logf_(const char *fmt, ...)
 struct segment { UINT query; UINT draws; char key[96]; };
 #define STATS 4096u   /* pipeline statistics queries, one per segment */
 struct frame { ID3D11Query *disjoint; UINT count; UINT end_query; BOOL open, overflow; struct segment seg[SEGMENTS]; };
-struct bucket { char key[96]; double ms, max_ms; unsigned long long count, draws, stats_count; double ia_vertices, vs, c_prims, ps, max_ps;
+struct bucket { char key[96]; double ms, max_ms; unsigned long long count, draws, stats_count; double ia_vertices, vs, c_prims, ps, max_ps, samples, c_inv;
                 unsigned long long heavy;   /* segments with more than 100k PS invocations */ };
 static struct {
    ID3D11Device *device;
    ID3D11DeviceContext *context;
    ID3D11Query *queries[QUERIES];
    ID3D11Query *stats[STATS];   /* index = timestamp query % STATS of the segment start */
+   ID3D11Query *occlusion[STATS];   /* samples passed, same index (D3D11_SPLIT_SHADERS only) */
    BOOL stats_open; UINT stats_open_index;
    UINT next_query;
    struct frame frames[FRAMES];
@@ -101,6 +103,7 @@ static void (STDMETHODCALLTYPE *o_PSSetShader)(ID3D11DeviceContext *, ID3D11Pixe
 static void (STDMETHODCALLTYPE *o_OMSetDepthStencilState)(ID3D11DeviceContext *, ID3D11DepthStencilState *, UINT);
 static void (STDMETHODCALLTYPE *o_RSSetState)(ID3D11DeviceContext *, ID3D11RasterizerState *);
 static void (STDMETHODCALLTYPE *o_RSSetViewports)(ID3D11DeviceContext *, UINT, const D3D11_VIEWPORT *);
+static void (STDMETHODCALLTYPE *o_ClearDepthStencilView)(ID3D11DeviceContext *, ID3D11DepthStencilView *, UINT, FLOAT, UINT8);
 static void (STDMETHODCALLTYPE *o_RSSetScissorRects)(ID3D11DeviceContext *, UINT, const D3D11_RECT *);
 static HRESULT (STDMETHODCALLTYPE *o_CreatePixelShader)(ID3D11Device *, const void *, SIZE_T, ID3D11ClassLinkage *, ID3D11PixelShader **);
 static HRESULT (STDMETHODCALLTYPE *o_CreateVertexShader)(ID3D11Device *, const void *, SIZE_T, ID3D11ClassLinkage *, ID3D11VertexShader **);
@@ -125,7 +128,7 @@ static BOOL describe_view(ID3D11View *view, char *out, size_t size, const char *
    return back;
 }
 
-static void bucket_add(const char *key, double ms, UINT draws, const D3D11_QUERY_DATA_PIPELINE_STATISTICS *ps)
+static void bucket_add(const char *key, double ms, UINT draws, const D3D11_QUERY_DATA_PIPELINE_STATISTICS *ps, UINT64 samples)
 {
    UINT i = 0;
    while (i < p.bucket_count && strcmp(p.buckets[i].key, key)) ++i;
@@ -135,7 +138,8 @@ static void bucket_add(const char *key, double ms, UINT draws, const D3D11_QUERY
    if (ps && (double)ps->PSInvocations > p.buckets[i].max_ps) p.buckets[i].max_ps = (double)ps->PSInvocations;
    if (ps && ps->PSInvocations > 100000) ++p.buckets[i].heavy;
    if (ps) { ++p.buckets[i].stats_count; p.buckets[i].ia_vertices += (double)ps->IAVertices; p.buckets[i].vs += (double)ps->VSInvocations;
-             p.buckets[i].c_prims += (double)ps->CPrimitives; p.buckets[i].ps += (double)ps->PSInvocations; }
+             p.buckets[i].c_prims += (double)ps->CPrimitives; p.buckets[i].ps += (double)ps->PSInvocations; p.buckets[i].c_inv += (double)ps->CInvocations; }
+   if (samples != UINT64_MAX) p.buckets[i].samples += (double)samples;
 }
 
 /* Starts a new segment (and the frame, if none is open). */
@@ -149,8 +153,10 @@ static void mark(ID3D11DeviceContext *ctx, const char *key)
    s->query = p.next_query++ % QUERIES; s->draws = 0;
    strncpy(s->key, key, sizeof(s->key) - 1); s->key[sizeof(s->key) - 1] = 0;
    o_End(ctx, (ID3D11Asynchronous *)p.queries[s->query]);
-   if (p.stats_open) o_End(ctx, (ID3D11Asynchronous *)p.stats[p.stats_open_index]);
+   if (p.stats_open) { o_End(ctx, (ID3D11Asynchronous *)p.stats[p.stats_open_index]);
+                       if (p.occlusion[p.stats_open_index]) o_End(ctx, (ID3D11Asynchronous *)p.occlusion[p.stats_open_index]); }
    p.stats_open_index = s->query % STATS; o_Begin(ctx, (ID3D11Asynchronous *)p.stats[p.stats_open_index]); p.stats_open = TRUE;
+   if (p.occlusion[p.stats_open_index]) o_Begin(ctx, (ID3D11Asynchronous *)p.occlusion[p.stats_open_index]);
 }
 
 static volatile LONG n_draw_immediate2, n_draw_other2;
@@ -180,7 +186,9 @@ static void collect(struct frame *f)
          D3D11_QUERY_DATA_PIPELINE_STATISTICS ps;
          const BOOL have = o_GetData(p.context, (ID3D11Asynchronous *)p.stats[f->seg[i - 1].query % STATS], &ps, sizeof(ps),
                                      D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
-         bucket_add(f->seg[i - 1].key, (double)(t - previous) * 1000.0 / (double)dj.Frequency, f->seg[i - 1].draws, have ? &ps : NULL);
+         UINT64 samples = UINT64_MAX; ID3D11Query *oq = p.occlusion[f->seg[i - 1].query % STATS];
+         if (oq && o_GetData(p.context, (ID3D11Asynchronous *)oq, &samples, sizeof(samples), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) samples = UINT64_MAX;
+         bucket_add(f->seg[i - 1].key, (double)(t - previous) * 1000.0 / (double)dj.Frequency, f->seg[i - 1].draws, have ? &ps : NULL, samples);
       }
       previous = t;
    }
@@ -204,7 +212,8 @@ static void end_frame(void)
    if (f->open) {
       f->end_query = p.next_query++ % QUERIES;
       o_End(p.context, (ID3D11Asynchronous *)p.queries[f->end_query]);
-      if (p.stats_open) { o_End(p.context, (ID3D11Asynchronous *)p.stats[p.stats_open_index]); p.stats_open = FALSE; }
+      if (p.stats_open) { o_End(p.context, (ID3D11Asynchronous *)p.stats[p.stats_open_index]);
+                          if (p.occlusion[p.stats_open_index]) o_End(p.context, (ID3D11Asynchronous *)p.occlusion[p.stats_open_index]); p.stats_open = FALSE; }
       o_End(p.context, (ID3D11Asynchronous *)f->disjoint);
       f->open = FALSE;
    }
@@ -226,9 +235,11 @@ static void end_frame(void)
          if (p.buckets[i].stats_count)
             logf_("    per segment: max %.2f ms, max %.0fk PS, %llu of %llu segments over 100k PS | %s\n", p.buckets[i].max_ms, p.buckets[i].max_ps / 1e3,
                   p.buckets[i].heavy, p.buckets[i].stats_count, p.buckets[i].key),
-            logf_("    per segment: %.0fk IA vertices, %.0fk VS, %.0fk clip out, %.0fk PS | %s\n", p.buckets[i].ia_vertices / 1e3 / p.buckets[i].stats_count,
-                  p.buckets[i].vs / 1e3 / p.buckets[i].stats_count, p.buckets[i].c_prims / 1e3 / p.buckets[i].stats_count,
-                  p.buckets[i].ps / 1e3 / p.buckets[i].stats_count, p.buckets[i].key);
+            logf_("    per segment: %.0fk IA vertices, %.0fk VS, %.1fk clip in, %.1fk clip out, %.1fk PS, %.1fk samples passed | %s\n",
+                  p.buckets[i].ia_vertices / 1e3 / p.buckets[i].stats_count,
+                  p.buckets[i].vs / 1e3 / p.buckets[i].stats_count, p.buckets[i].c_inv / 1e3 / p.buckets[i].stats_count,
+                  p.buckets[i].c_prims / 1e3 / p.buckets[i].stats_count,
+                  p.buckets[i].ps / 1e3 / p.buckets[i].stats_count, p.buckets[i].samples / 1e3 / p.buckets[i].stats_count, p.buckets[i].key);
       p.bucket_count = 0; p.window_frames = 0; p.dropped = 0; p.window_start = now;
    }
    LeaveCriticalSection(&lock);
@@ -241,7 +252,9 @@ static ID3D11Resource *shadow_res;
 static UINT shadow_slice;   /* array slice the depth view renders into */
 static DWORD shadow_first_ms;
 static UINT dump_frame = UINT_MAX, dump_count;
-static void dump_shadow(ID3D11DeviceContext *ctx)
+static void dump_shadow_as(ID3D11DeviceContext *ctx, const char *suffix);
+static void dump_shadow(ID3D11DeviceContext *ctx) { dump_shadow_as(ctx, ""); }
+static void dump_shadow_as(ID3D11DeviceContext *ctx, const char *suffix)
 {
    char dir[MAX_PATH], at[32];
    if (!shadow_res || !GetEnvironmentVariableA("D3D11_DUMP_DIR", dir, sizeof(dir))) return;
@@ -259,13 +272,13 @@ static void dump_shadow(ID3D11DeviceContext *ctx)
       D3D11_MAPPED_SUBRESOURCE map;
       const UINT sub = shadow_slice * desc.MipLevels;   /* D3D11CalcSubresource(0, slice, mips) */
       if (SUCCEEDED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)staging, sub, D3D11_MAP_READ, 0, &map))) {
-         char path[MAX_PATH + 32]; snprintf(path, sizeof(path), "%s\\d3d11-shadow-%u.r16", dir, dump_count);
+         char path[MAX_PATH + 40]; snprintf(path, sizeof(path), "%s\\d3d11-shadow-%u%s.r16", dir, dump_count, suffix);
          FILE *out = fopen(path, "wb");
          if (out) { for (UINT y = 0; y < desc.Height; ++y) fwrite((const char *)map.pData + (size_t)y * map.RowPitch, 2, desc.Width, out); fclose(out); }
          ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)staging, sub);
-         logf_("D3D11 proxy: dumped shadow map %u (%ux%u format %d, slice %u of %u, frame %u, %.1f s after the first) to %s\n", dump_count, desc.Width,
-               desc.Height, (int)desc.Format, shadow_slice, desc.ArraySize, p.frame, (now - shadow_first_ms) / 1000.0, path);
-         ++dump_count;
+         logf_("D3D11 proxy: dumped shadow map %u%s (%ux%u format %d, slice %u of %u, frame %u, %.1f s after the first) to %s\n", dump_count, suffix,
+               desc.Width, desc.Height, (int)desc.Format, shadow_slice, desc.ArraySize, p.frame, (now - shadow_first_ms) / 1000.0, path);
+         if (!*suffix) ++dump_count;
       }
       ID3D11Texture2D_Release(staging);
    }
@@ -284,6 +297,7 @@ static void track_shadow(ID3D11DeviceContext *ctx, ID3D11DepthStencilView *dsv)
          shadow_res = res; res = NULL;
          D3D11_DEPTH_STENCIL_VIEW_DESC vd; ID3D11DepthStencilView_GetDesc(dsv, &vd);
          shadow_slice = vd.ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2DARRAY ? vd.Texture2DArray.FirstArraySlice : 0;
+         dump_shadow_as(ctx, "-before");   /* the content the frame starts from */
       }
       ID3D11Texture2D_Release(tex);
    }
@@ -429,6 +443,27 @@ static void STDMETHODCALLTYPE h_RSSetViewports(ID3D11DeviceContext *c, UINT n, c
 { if (c == p.context && n && v) { last_vp = v[0]; view_key(c); } o_RSSetViewports(c, n, v); }
 static void STDMETHODCALLTYPE h_RSSetScissorRects(ID3D11DeviceContext *c, UINT n, const D3D11_RECT *r)
 { if (c == p.context && n && r) { last_sc = r[0]; view_key(c); } o_RSSetScissorRects(c, n, r); }
+/* Depth clears of 1536x1536 targets: counted by (slice, flags, value), logged with the profile. */
+static struct { UINT slice, flags; float depth; unsigned long long count; } clears[32]; static UINT clear_kinds;
+static void STDMETHODCALLTYPE h_ClearDepthStencilView(ID3D11DeviceContext *c, ID3D11DepthStencilView *v, UINT flags, FLOAT depth, UINT8 stencil)
+{
+   if (c == p.context && v && split_enabled()) {
+      ID3D11Resource *res = NULL; ID3D11Texture2D *tex = NULL; ID3D11View_GetResource((ID3D11View *)v, &res);
+      if (res && SUCCEEDED(ID3D11Resource_QueryInterface(res, &IID_ID3D11Texture2D, (void **)&tex))) {
+         D3D11_TEXTURE2D_DESC desc; ID3D11Texture2D_GetDesc(tex, &desc);
+         if (desc.Width == 1536) {
+            D3D11_DEPTH_STENCIL_VIEW_DESC vd; ID3D11DepthStencilView_GetDesc(v, &vd);
+            const UINT slice = vd.ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2DARRAY ? vd.Texture2DArray.FirstArraySlice : 0;
+            UINT i = 0; while (i < clear_kinds && !(clears[i].slice == slice && clears[i].flags == flags && clears[i].depth == depth)) ++i;
+            if (i == clear_kinds && i < 32) { clears[i].slice = slice; clears[i].flags = flags; clears[i].depth = depth; clears[i].count = 0; ++clear_kinds; }
+            if (i < 32) ++clears[i].count;
+         }
+         ID3D11Texture2D_Release(tex);
+      }
+      if (res) ID3D11Resource_Release(res);
+   }
+   o_ClearDepthStencilView(c, v, flags, depth, stencil);
+}
 static void STDMETHODCALLTYPE h_RSSetState(ID3D11DeviceContext *c, ID3D11RasterizerState *s)
 {
    if (c == p.context) {
@@ -504,6 +539,7 @@ static void install(ID3D11Device *device, ID3D11DeviceContext *ctx)
       if (FAILED(ID3D11Device_CreateQuery(device, &qd, &p.queries[i]))) { LeaveCriticalSection(&lock); logf_("D3D11 proxy: CreateQuery failed\n"); return; }
    qd.Query = D3D11_QUERY_PIPELINE_STATISTICS;
    for (UINT i = 0; i < STATS; ++i) if (!p.stats[i]) ID3D11Device_CreateQuery(device, &qd, &p.stats[i]);
+   if (split_enabled()) { qd.Query = D3D11_QUERY_OCCLUSION; for (UINT i = 0; i < STATS; ++i) if (!p.occlusion[i]) ID3D11Device_CreateQuery(device, &qd, &p.occlusion[i]); }
    p.stats_open = FALSE;
    qd.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
    for (UINT i = 0; i < FRAMES; ++i) ID3D11Device_CreateQuery(device, &qd, &p.frames[i].disjoint);
@@ -522,6 +558,7 @@ static void install(ID3D11Device *device, ID3D11DeviceContext *ctx)
    }
    PATCH_CTX(RSSetState, h_RSSetState, o_RSSetState);
    PATCH_CTX(RSSetViewports, h_RSSetViewports, o_RSSetViewports);
+   PATCH_CTX(ClearDepthStencilView, h_ClearDepthStencilView, o_ClearDepthStencilView);
    PATCH_CTX(RSSetScissorRects, h_RSSetScissorRects, o_RSSetScissorRects);
    PATCH_CTX(OMSetRenderTargetsAndUnorderedAccessViews, h_OMSetRTUAV, o_OMSetRTUAV);
    PATCH_CTX(Draw, h_Draw, o_Draw);
@@ -585,6 +622,8 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
       logf_("D3D11 proxy: calls  OMSetRenderTargets immediate %ld other %ld, draws immediate %ld other %ld, ExecuteCommandList %ld, frames ended %ld\n",
             n_omset_immediate, n_omset_other, n_draw_immediate2, n_draw_other2, n_ecl, n_frames_ended);
       logf_("D3D11 proxy: VSSetShader %ld, PSSetShader %ld calls; %u vertex and %u pixel shaders seen\n", n_vsset, n_psset, vs_seen_count, ps_seen_count);
+      for (UINT i = 0; i < clear_kinds; ++i)
+         logf_("D3D11 proxy: 1536x1536 depth clear slice %u flags %u value %g: %llu times\n", clears[i].slice, clears[i].flags, clears[i].depth, clears[i].count);
       if (p.context) {
          void **now = (void **)p.context->lpVtbl;
          const size_t draw = offsetof(ID3D11DeviceContextVtbl, DrawIndexed) / sizeof(void *);

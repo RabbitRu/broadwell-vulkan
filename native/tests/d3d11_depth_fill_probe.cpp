@@ -87,6 +87,7 @@ int main(int argc, char **argv)
    D3D11_SUBRESOURCE_DATA cinit{order, 0, 0}; ID3D11Buffer *cb; CHECK(dev->CreateBuffer(&cbd, &cinit, &cb));
    qd.Query = D3D11_QUERY_PIPELINE_STATISTICS; ID3D11Query *stats; CHECK(dev->CreateQuery(&qd, &stats));
    D3D11_QUERY_DATA_PIPELINE_STATISTICS ps{};
+   qd.Query = D3D11_QUERY_OCCLUSION; ID3D11Query *occlusion; CHECK(dev->CreateQuery(&qd, &occlusion)); UINT64 samples = 0;
    D3D11_VIEWPORT vp{0, 0, (float)size, (float)size, 0, 1};
    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
    ctx->VSSetShader(vs, nullptr, 0); ctx->PSSetShader(pixel, nullptr, 0); ctx->VSSetConstantBuffers(0, 1, &cb);
@@ -97,11 +98,12 @@ int main(int argc, char **argv)
    for (int rep = 0; rep < reps; ++rep) {
       ctx->Begin(disjoint); ctx->End(t0);
       ctx->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
-      ctx->Begin(stats);
+      ctx->Begin(stats); ctx->Begin(occlusion);
       ctx->DrawInstanced(3, layers, 0, 0);
-      ctx->End(stats);
+      ctx->End(occlusion); ctx->End(stats);
       ctx->End(t1); ctx->End(disjoint);
       while (ctx->GetData(stats, &ps, sizeof(ps), 0) != S_OK) {}
+      while (ctx->GetData(occlusion, &samples, sizeof(samples), 0) != S_OK) {}
       D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj; UINT64 a, b;
       while (ctx->GetData(disjoint, &dj, sizeof(dj), 0) != S_OK) {}
       while (ctx->GetData(t0, &a, sizeof(a), 0) != S_OK) {}
@@ -110,7 +112,7 @@ int main(int argc, char **argv)
       const double ms = (b - a) * 1000.0 / dj.Frequency;
       if (ms < best) best = ms;
    }
-   printf("d3d11 %s %s: best %.3f ms for %u layers -> %.2f Gpixels/s, %.2fM PS invocations\n", mode, front_to_back ? "front-to-back" : "back-to-front",
-          best, layers, (double)size * size * layers / (best / 1000) / 1e9, ps.PSInvocations / 1e6);
+   printf("d3d11 %s %s: best %.3f ms for %u layers -> %.2f Gpixels/s, %.2fM PS invocations, %.2fM samples passed\n", mode, front_to_back ? "front-to-back" : "back-to-front",
+          best, layers, (double)size * size * layers / (best / 1000) / 1e9, ps.PSInvocations / 1e6, samples / 1e6);
    return 0;
 }
