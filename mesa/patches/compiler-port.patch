@@ -10293,7 +10293,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,1043 @@
+@@ -0,0 +1,1046 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -11133,6 +11133,9 @@
 +   }
 +   w->origin = (w->reservation + 0xffffffffull) & ~0xffffffffull;
 +   util_vma_heap_init(&w->client_heap, w->origin + 0x1c0000000, 4ull << 30);
++   /* Bottom first: application vertex buffers stay within 4 GiB of the
++    * dynamic state pool below (anv_wddm_pools.c, Gen8 VF cache). */
++   w->client_heap.alloc_high = false;
 +   util_vma_heap_init(&w->state_heap, w->origin + 0x200000, (7ull << 30) - 0x200000);
 +   w->client_heap_initialized = true;
 +   if (hasvk_wddm_bo_create(w->transport, 8192, w->origin + 0x2c0000000, 1, &w->entry) ||
@@ -12140,7 +12143,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_pools.c
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,158 @@
 +/* Initialization and hardware diagnostics for the real HasVK state pools. */
 +#include "anv_wddm.h"
 +#undef __gen_address_type
@@ -12166,7 +12169,14 @@
 +   if (pthread_mutex_init(&device->mutex, NULL)) return VK_ERROR_OUT_OF_HOST_MEMORY;
 +   w->device_mutex_initialized = true;
 +   struct anv_state_pool *pools[5]; pool_list(device, pools);
-+   const uint64_t bases[5] = {w->origin, w->origin + (3ull << 30), w->origin + (6ull << 30),
++   /* Dynamic state (where BLORP's vertex data lives) right below the client
++    * heap at origin + 7 GiB, which is filled from its bottom: Gen8's VF cache
++    * holds 32-bit addresses, and a vertex buffer slot whose bindings since the
++    * last VF invalidation span more than 4 GiB costs a CS stall and an
++    * invalidation (anv_gfx8_9_vb_cache_range_needs_workaround). With dynamic
++    * state at 3 GiB every BLORP operation followed by a draw from application
++    * memory did so (~14 per frame in The Talos Principle). */
++   const uint64_t bases[5] = {w->origin, w->origin + (6ull << 30), w->origin + (3ull << 30),
 +      w->origin + (5ull << 30), w->origin + (5ull << 30)};
 +   const int32_t offsets[5] = {0x200000, 0, 0, 0, -(1 << 30)};
 +   const uint32_t blocks[5] = {16384, 16384, 16384, 4096, BINDING_TABLE_POOL_BLOCK_SIZE};

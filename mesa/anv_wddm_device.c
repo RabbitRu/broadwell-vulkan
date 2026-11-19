@@ -837,6 +837,9 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle
    }
    w->origin = (w->reservation + 0xffffffffull) & ~0xffffffffull;
    util_vma_heap_init(&w->client_heap, w->origin + 0x1c0000000, 4ull << 30);
+   /* Bottom first: application vertex buffers stay within 4 GiB of the
+    * dynamic state pool below (anv_wddm_pools.c, Gen8 VF cache). */
+   w->client_heap.alloc_high = false;
    util_vma_heap_init(&w->state_heap, w->origin + 0x200000, (7ull << 30) - 0x200000);
    w->client_heap_initialized = true;
    if (hasvk_wddm_bo_create(w->transport, 8192, w->origin + 0x2c0000000, 1, &w->entry) ||

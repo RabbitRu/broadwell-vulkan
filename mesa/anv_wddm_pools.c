@@ -23,7 +23,14 @@ VkResult anv_wddm_pools_init(struct anv_device *device)
    if (pthread_mutex_init(&device->mutex, NULL)) return VK_ERROR_OUT_OF_HOST_MEMORY;
    w->device_mutex_initialized = true;
    struct anv_state_pool *pools[5]; pool_list(device, pools);
-   const uint64_t bases[5] = {w->origin, w->origin + (3ull << 30), w->origin + (6ull << 30),
+   /* Dynamic state (where BLORP's vertex data lives) right below the client
+    * heap at origin + 7 GiB, which is filled from its bottom: Gen8's VF cache
+    * holds 32-bit addresses, and a vertex buffer slot whose bindings since the
+    * last VF invalidation span more than 4 GiB costs a CS stall and an
+    * invalidation (anv_gfx8_9_vb_cache_range_needs_workaround). With dynamic
+    * state at 3 GiB every BLORP operation followed by a draw from application
+    * memory did so (~14 per frame in The Talos Principle). */
+   const uint64_t bases[5] = {w->origin, w->origin + (6ull << 30), w->origin + (3ull << 30),
       w->origin + (5ull << 30), w->origin + (5ull << 30)};
    const int32_t offsets[5] = {0x200000, 0, 0, 0, -(1 << 30)};
    const uint32_t blocks[5] = {16384, 16384, 16384, 4096, BINDING_TABLE_POOL_BLOCK_SIZE};
