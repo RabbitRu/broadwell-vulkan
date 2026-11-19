@@ -289,9 +289,23 @@ static void draw_end(VkCommandBuffer handle, uint32_t slot)
    end(cmd, slot);
 }
 static VKAPI_ATTR void VKAPI_CALL wrap_CmdDraw(VkCommandBuffer c, uint32_t a, uint32_t b, uint32_t d, uint32_t e)
-{ uint32_t s = draw_begin(c, (uint64_t)a * b); g.orig.CmdDraw(c, a, b, d, e); draw_end(c, s); }
+{ anv_wddm_capture_draw(anv_cmd_buffer_from_handle(c), false, a, b, d, 0, e);
+  uint32_t s = draw_begin(c, (uint64_t)a * b); g.orig.CmdDraw(c, a, b, d, e); draw_end(c, s); }
 static VKAPI_ATTR void VKAPI_CALL wrap_CmdDrawIndexed(VkCommandBuffer c, uint32_t a, uint32_t b, uint32_t d, int32_t e, uint32_t f)
-{ uint32_t s = draw_begin(c, (uint64_t)a * b); g.orig.CmdDrawIndexed(c, a, b, d, e, f); draw_end(c, s); }
+{ anv_wddm_capture_draw(anv_cmd_buffer_from_handle(c), true, a, b, d, e, f);
+  uint32_t s = draw_begin(c, (uint64_t)a * b); g.orig.CmdDrawIndexed(c, a, b, d, e, f); draw_end(c, s); }
+static VKAPI_ATTR VkResult VKAPI_CALL wrap_EndCommandBuffer(VkCommandBuffer c)
+{
+   anv_wddm_capture_end_command_buffer(anv_cmd_buffer_from_handle(c));
+   return g.orig.EndCommandBuffer(c);
+}
+static VKAPI_ATTR VkResult VKAPI_CALL wrap_CreateGraphicsPipelines(VkDevice d, VkPipelineCache cache, uint32_t n,
+   const VkGraphicsPipelineCreateInfo *infos, const VkAllocationCallbacks *alloc, VkPipeline *pipelines)
+{
+   const VkResult r = g.orig.CreateGraphicsPipelines(d, cache, n, infos, alloc, pipelines);
+   anv_wddm_capture_pipelines(infos, n, pipelines);
+   return r;
+}
 static VKAPI_ATTR void VKAPI_CALL wrap_CmdDrawIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s)
 { uint32_t t = draw_begin(c, 0); g.orig.CmdDrawIndirect(c, b, o, n, s); draw_end(c, t); }
 static VKAPI_ATTR void VKAPI_CALL wrap_CmdDrawIndexedIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s)
@@ -411,7 +425,7 @@ anv_wddm_profile_install(struct vk_device_dispatch_table *d)
 #define WRAP(name) if (d->name) d->name = wrap_##name
    WRAP(CmdBeginRenderPass); WRAP(CmdBeginRenderPass2); WRAP(CmdEndRenderPass); WRAP(CmdEndRenderPass2);
    WRAP(CmdDraw); WRAP(CmdDrawIndexed); WRAP(CmdDrawIndirect); WRAP(CmdDrawIndexedIndirect);
-   WRAP(BeginCommandBuffer); WRAP(CmdExecuteCommands); WRAP(CmdBindPipeline);
+   WRAP(BeginCommandBuffer); WRAP(CmdExecuteCommands); WRAP(CmdBindPipeline); WRAP(CreateGraphicsPipelines); WRAP(EndCommandBuffer);
    WRAP(CmdDispatch); WRAP(CmdDispatchIndirect); WRAP(CmdCopyBuffer); WRAP(CmdCopyImage);
    WRAP(CmdCopyBufferToImage); WRAP(CmdCopyImageToBuffer); WRAP(CmdBlitImage); WRAP(CmdResolveImage);
    WRAP(CmdClearColorImage); WRAP(CmdClearDepthStencilImage); WRAP(CmdFillBuffer); WRAP(CmdUpdateBuffer);
@@ -469,6 +483,7 @@ anv_wddm_profile_report(struct anv_device *device)
    if (!enabled() || !g.pool || g.device != device) return;
    if (mtx_trylock(&g.mutex) != thrd_success) return;
    write_dumps();
+   anv_wddm_capture_poll();
    const VkDevice handle = device_handle(device);
    const uint64_t mask = device->physical->info.timestamp_frequency ? (1ull << 36) - 1 : ~0ull;
    for (uint32_t slot = 0; slot < PAIRS; ++slot) {

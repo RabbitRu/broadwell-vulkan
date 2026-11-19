@@ -797,6 +797,7 @@ owned_sources = {
     'src/intel/vulkan_hasvk/anv_wddm_command.c': (ROOT / 'mesa/anv_wddm_command.c').read_text(encoding='utf-8'),
     'src/intel/vulkan_hasvk/anv_wddm_present.c': (ROOT / 'mesa/anv_wddm_present.c').read_text(encoding='utf-8'),
     'src/intel/vulkan_hasvk/anv_wddm_profile.c': (ROOT / 'mesa/anv_wddm_profile.c').read_text(encoding='utf-8'),
+    'src/intel/vulkan_hasvk/anv_wddm_capture.c': (ROOT / 'mesa/anv_wddm_capture.c').read_text(encoding='utf-8'),
     'src/intel/wddm_compiler/vulkan_hasvk_wddm.def': (ROOT / 'mesa/anv_wddm.def').read_text(encoding='utf-8'),
     'src/intel/wddm_compiler/elk_compile_probe.c': (ROOT / 'mesa/elk_compile_probe.c').read_text(encoding='utf-8'),
     'src/intel/wddm_compiler/elk_abi_probe.cpp': (ROOT / 'mesa/elk_abi_probe.cpp').read_text(encoding='utf-8'),
@@ -906,7 +907,7 @@ if get_option('hasvk-wddm-graphics')
 endif
 libanv_wddm_objects = static_library('anv_wddm_objects',
   ['../vulkan_hasvk/anv_wddm_device.c', '../vulkan_hasvk/anv_wddm_memory.c', '../vulkan_hasvk/anv_wddm_pools.c', '../vulkan_hasvk/anv_allocator.c',
-   '../vulkan_hasvk/anv_wddm_present.c', '../vulkan_hasvk/anv_wddm_profile.c',
+   '../vulkan_hasvk/anv_wddm_present.c', '../vulkan_hasvk/anv_wddm_profile.c', '../vulkan_hasvk/anv_wddm_capture.c',
    '../vulkan_hasvk/anv_descriptor_set.c',
    '../vulkan_hasvk/anv_image.c', '../vulkan_hasvk/anv_android_stubs.c',
    '../vulkan_hasvk/anv_pipeline.c', '../vulkan_hasvk/anv_pipeline_cache.c', '../vulkan_hasvk/anv_wddm_batch.c',

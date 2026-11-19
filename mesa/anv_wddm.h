@@ -156,6 +156,11 @@ void anv_wddm_present_redirected_finish(VkDevice device, void *state);
 #ifdef HASVK_WDDM_GRAPHICS
 void anv_wddm_profile_install(struct vk_device_dispatch_table *dispatch);
 void anv_wddm_profile_report(struct anv_device *device);
+void anv_wddm_capture_pipelines(const VkGraphicsPipelineCreateInfo *infos, uint32_t count, const VkPipeline *pipelines);
+void anv_wddm_capture_draw(struct anv_cmd_buffer *cmd, bool indexed, uint32_t count, uint32_t instances, uint32_t first,
+                           int32_t vertex_offset, uint32_t first_instance);
+void anv_wddm_capture_end_command_buffer(struct anv_cmd_buffer *cmd);
+void anv_wddm_capture_poll(void);
 void anv_wddm_cmd_state_finish(struct anv_cmd_buffer *cmd);
 void anv_wddm_init_border_colors(struct anv_device *device);
 struct anv_address anv_wddm_event_address(struct anv_device *device, const struct anv_event *event);
