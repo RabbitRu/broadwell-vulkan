@@ -52,6 +52,79 @@ def fragment_dispatch(source):
     return source
 
 
+def _gen8_condition(expression):
+    """Value of an #if/#elif condition made only of GFX_VER/GFX_VERx10,
+    integers, comparisons and logical operators, for Gen8; None otherwise."""
+    expression = expression.split('/*')[0].split('//')[0].strip()
+    if not expression or expression.endswith('\\') or 'defined' in expression:
+        return None
+    text = expression.replace('GFX_VERx10', '80').replace('GFX_VER', '8')
+    if not re.fullmatch(r'[0-9\s()<>=!&|]+', text):
+        return None
+    text = text.replace('&&', ' and ').replace('||', ' or ')
+    text = re.sub(r'!(?!=)', ' not ', text)
+    try:
+        return bool(eval(text, {'__builtins__': {}}, {}))
+    except Exception:
+        return None
+
+
+def unifdef_gen8(source):
+    """Drops the branches of #if/#elif/#else chains whose conditions depend
+    only on GFX_VER/GFX_VERx10 and are false on Gen8 (these files are compiled
+    with GFX_VERx10=80 only), and the directives of such chains. Chains with
+    any other condition are kept as they are."""
+    out, stack = [], []   # frames: [known, active, taken]
+    def emitting():
+        return all(frame[1] for frame in stack if frame[0])
+    for line in source.split('\n'):
+        stripped = line.strip()
+        directive = re.match(r'#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)', stripped)
+        if not directive:
+            if emitting():
+                out.append(line)
+            continue
+        kind, rest = directive.group(1), directive.group(2)
+        if kind in ('if', 'ifdef', 'ifndef'):
+            value = _gen8_condition(rest) if kind == 'if' else None
+            if value is None:
+                if emitting():
+                    out.append(line)
+                stack.append([False, True, False])
+            else:
+                stack.append([True, value, value])
+        elif kind == 'elif':
+            frame = stack[-1]
+            if not frame[0]:
+                if emitting():
+                    out.append(line)
+                continue
+            if frame[2]:
+                frame[1] = False
+                continue
+            value = _gen8_condition(rest)
+            if value is None:
+                # Not foldable after foldable branches: keep the rest as an #if.
+                frame[0], frame[1] = False, True
+                stack.pop(); parent = emitting(); stack.append(frame)
+                if parent:
+                    out.append(line.replace('#elif', '#if', 1))
+                continue
+            frame[1] = value; frame[2] = value
+        elif kind == 'else':
+            frame = stack[-1]
+            if frame[0]:
+                frame[1] = not frame[2]; frame[2] = True
+            elif emitting():
+                out.append(line)
+        else:   # endif
+            frame = stack.pop()
+            if not frame[0] and emitting():
+                out.append(line)
+    assert not stack, 'unbalanced preprocessor conditionals'
+    return '\n'.join(out)
+
+
 def hiz_clear_value(hardware, blorp):
     """HiZ fast clears with the image's own clear value
     (anv_image_hiz_clear_value in anv_private.h) instead of the fixed 1.0:
@@ -238,15 +311,17 @@ anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct
        pCreateInfo->queryType != VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT)
       return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
 ''')
+    # Files compiled with GFX_VERx10=80 only (wddm_compiler/meson.build):
+    # their Gfx7/7.5 (and Gfx9+) preprocessor branches are dropped.
     return {
-        'src/intel/wddm_compiler/anv_wddm_graphics_query.c': query,
+        'src/intel/wddm_compiler/anv_wddm_graphics_query.c': unifdef_gen8(query),
         'src/intel/wddm_compiler/anv_wddm_capabilities.c': capabilities,
-        'src/intel/wddm_compiler/anv_wddm_graphics_memcpy.c': read('genX_gpu_memcpy.c'),
+        'src/intel/wddm_compiler/anv_wddm_graphics_memcpy.c': unifdef_gen8(read('genX_gpu_memcpy.c')),
         'src/intel/wddm_compiler/anv_wddm_graphics_common.c': instrumentation(common),
-        'src/intel/wddm_compiler/anv_wddm_graphics_gen8.c': instrumentation(hardware),
-        'src/intel/wddm_compiler/anv_wddm_graphics_state.c': state,
+        'src/intel/wddm_compiler/anv_wddm_graphics_gen8.c': unifdef_gen8(instrumentation(hardware)),
+        'src/intel/wddm_compiler/anv_wddm_graphics_state.c': unifdef_gen8(state),
         'src/intel/wddm_compiler/anv_wddm_graphics_blorp.c': blorp,
-        'src/intel/wddm_compiler/anv_wddm_graphics_blorp_exec.c': instrumentation(read('genX_blorp_exec.c')),
-        'src/intel/wddm_compiler/anv_wddm_graphics_dynamic.c': fragment_dispatch(read('gfx8_cmd_buffer.c').replace('#include <unistd.h>', '')),
-        'src/intel/wddm_compiler/anv_wddm_graphics_pipeline.c': read('genX_pipeline.c').replace('#include <unistd.h>', ''),
+        'src/intel/wddm_compiler/anv_wddm_graphics_blorp_exec.c': unifdef_gen8(instrumentation(read('genX_blorp_exec.c'))),
+        'src/intel/wddm_compiler/anv_wddm_graphics_dynamic.c': unifdef_gen8(fragment_dispatch(read('gfx8_cmd_buffer.c').replace('#include <unistd.h>', ''))),
+        'src/intel/wddm_compiler/anv_wddm_graphics_pipeline.c': unifdef_gen8(read('genX_pipeline.c').replace('#include <unistd.h>', '')),
     }

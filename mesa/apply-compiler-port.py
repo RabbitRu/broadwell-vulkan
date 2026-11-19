@@ -22,7 +22,9 @@ names = {
     'src/intel/compiler/meson.build', 'src/intel/dev/meson.build',
     'src/intel/dev/intel_debug.c', 'src/intel/dev/intel_device_info.c',
     'src/util/macros.h', 'src/util/u_atomic.h', 'include/drm-uapi/drm_fourcc.h',
-    'src/intel/compiler/elk/elk_eu.c',
+    'src/intel/compiler/elk/elk_eu.c', 'src/intel/compiler/elk/meson.build', 'src/intel/compiler/elk/elk_shader.cpp',
+    'src/intel/compiler/elk/elk_schedule_instructions.cpp', 'src/intel/compiler/elk/elk_ir_performance.cpp',
+    'src/intel/compiler/elk/elk_compiler.c', 'src/intel/blorp/blorp_elk.c',
     'src/intel/compiler/elk/elk_eu_validate.c',
     'src/intel/compiler/elk/elk_fs_bank_conflicts.cpp',
     'src/intel/compiler/elk/elk_fs.cpp',
@@ -32,7 +34,7 @@ names = {
     'src/intel/compiler/elk/elk_compiler.h',
     'src/intel/common/intel_measure.h', 'src/intel/blorp/blorp_clear.c',
     'src/intel/blorp/blorp_blit.c',
-    'src/intel/isl/isl_priv.h', 'src/intel/isl/isl_drm.c', 'src/intel/isl/isl_gfx8.c',
+    'src/intel/isl/isl_priv.h', 'src/intel/isl/isl_drm.c', 'src/intel/isl/isl_gfx8.c', 'src/intel/isl/isl.h', 'src/intel/isl/meson.build',
     'src/vulkan/wsi/wsi_common_win32.cpp', 'src/vulkan/wsi/meson.build',
     'src/vulkan/wsi/wsi_common.c', 'src/vulkan/wsi/wsi_common.h', 'src/vulkan/wsi/wsi_common_private.h',
     'src/intel/vulkan_hasvk/anv_private.h',
@@ -108,6 +110,31 @@ edit("src/intel/dev/intel_debug.c", [
 edit('src/intel/common/intel_measure.h', [
     ('#include <pthread.h>', '#ifdef _WIN32\n#include "util/simple_mtx.h"\n#else\n#include <pthread.h>\n#endif'),
     ('   pthread_mutex_t mutex;', '#ifdef _WIN32\n   simple_mtx_t mutex;\n#else\n   pthread_mutex_t mutex;\n#endif'),
+])
+# Gen8 only: ISL's generation is a compile-time constant (the mechanism isl.h
+# documents for CFLAGS), so the per-generation switches in isl.c fold and only
+# the Gen8 library is built (plus isl_gfx7.c, whose isl_gfx6_filter_tiling()
+# Gen8 uses as well).
+edit('src/intel/isl/isl.h', [
+    ('#ifndef ISL_GFX_VER\n/**\n * Get the hardware generation of isl_device.',
+     '#if defined(_WIN32) && !defined(ISL_GFX_VER)\n'
+     '/* Windows WDDM port: Broadwell (Gen8) only. */\n'
+     '#define ISL_GFX_VER(__dev) 8\n#define ISL_GFX_VERX10(__dev) 80\n#endif\n\n'
+     '#ifndef ISL_GFX_VER\n/**\n * Get the hardware generation of isl_device.'),
+    # Upstream's form is `assert(...) && ...`, which does not compile with
+    # NDEBUG (assert is then ((void)0)): one assert of both conditions.
+    ('#define ISL_GFX_VER_SANITIZE(__dev) \\\n   (assert(ISL_GFX_VER(__dev) == (__dev)->info->ver) && \\\n           ISL_GFX_VERX10(__dev) == (__dev)->info->verx10))',
+     '#define ISL_GFX_VER_SANITIZE(__dev) \\\n   assert(ISL_GFX_VER(__dev) == (__dev)->info->ver && \\\n          ISL_GFX_VERX10(__dev) == (__dev)->info->verx10)'),
+])
+edit('src/intel/isl/meson.build', [
+    ("""foreach g : [['40', isl_gfx4_files], ['50', []], ['60', isl_gfx6_files],
+             ['70', isl_gfx7_files], ['75', []], ['80', isl_gfx8_files],
+             ['90', isl_gfx9_files], ['110', []], ['120', isl_gfx12_files],
+             ['125', isl_gfx12_files], ['200', isl_gfx20_files],
+             ['300', isl_gfx20_files], ['350', isl_gfx20_files]]""",
+     """# Windows WDDM port: Gen8 only (isl.h makes the generation a constant);
+# isl_gfx7.c also holds isl_gfx6_filter_tiling(), which Gen8 uses.
+foreach g : [['80', isl_gfx8_files + isl_gfx7_files]]"""),
 ])
 edit('src/intel/isl/isl_priv.h', [
     ('#include <strings.h>', '#ifndef _WIN32\n#include <strings.h>\n#endif'),
@@ -555,6 +582,18 @@ anv_image_hiz_clear_value(const struct intel_device_info * const devinfo,
 
 void
 anv_cmd_buffer_mark_image_written('''),
+    # Gen8 relocations are 64-bit canonical addresses (the 32-bit form is Gfx7).
+    ('''   UNUSED unsigned reloc_size = 0;
+   if (device->info->ver >= 8) {
+      reloc_size = sizeof(uint64_t);
+      *(uint64_t *)p = intel_canonical_address(v);
+   } else {
+      reloc_size = sizeof(uint32_t);
+      *(uint32_t *)p = v;
+   }
+''', '''   UNUSED unsigned reloc_size = sizeof(uint64_t);
+   *(uint64_t *)p = intel_canonical_address(v);   /* Gen8 only */
+'''),
 ])
 # Keep Mesa's lock-free state/block allocators and free lists. Only the Linux
 # mmap backing and GEM BO implementation are replaced on Windows.
@@ -766,6 +805,56 @@ image_after = image_after.replace(hiz_state_old, '''   switch (aux_usage) {
 #endif
    case ISL_AUX_USAGE_CCS_D:
       /* We only support clear in exactly one state */''')
+def gen8_only(text, replacements):
+    """Gen7/7.5-only branches of upstream HasVK removed (Broadwell-only port)."""
+    for old, new in replacements:
+        assert text.count(old) == 1, old[:80]
+        text = text.replace(old, new)
+    return text
+
+
+image_after = gen8_only(image_after, [
+    # Gfx7 cannot sample W-tiled stencil and needed a shadow copy (Gen8 can).
+    ('''   if (devinfo->ver <= 7 &&
+       plane_format.aspect == VK_IMAGE_ASPECT_STENCIL_BIT &&
+       (vk_plane_usage & (VK_IMAGE_USAGE_SAMPLED_BIT |
+                          VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT))) {
+      /* gfx7 can't sample from W-tiled surfaces. */
+      return true;
+   }
+
+''', ''),
+    # Haswell 8xMSAA fast-clear artifacts.
+    ('''   /* Triangles rendered on non-zero fast cleared images with 8xMSAA can get
+    * black pixels around them on Haswell.
+    */
+   if (devinfo->ver == 7 && image->vk.samples == 8) {
+      return false;
+   }
+
+''', ''),
+    ('''      if (device->info->ver == 7) {
+         anv_perf_warn(VK_LOG_OBJS(&image->vk.base), "Implement gfx7 HiZ");
+         return VK_SUCCESS;
+      }
+
+''', ''),
+    ('''   /* For texturing from stencil on gfx7, we have to sample from a shadow
+    * surface because we don't support W-tiling in the sampler.
+    */
+   if (anv_surface_is_valid(&image->planes[plane].shadow_surface) &&
+       aspect == VK_IMAGE_ASPECT_STENCIL_BIT) {
+      assert(device->info->ver == 7);
+      assert(view_usage & ISL_SURF_USAGE_TEXTURE_BIT);
+      surface = &image->planes[plane].shadow_surface;
+   }
+
+''', ''),
+    ('''   /* On Ivy Bridge and Bay Trail we do the swizzle in the shader */
+   if (device->info->verx10 == 70)
+      view.swizzle = ISL_SWIZZLE_IDENTITY;
+''', ''),
+])
 edit(image_name, [(image_before, image_after)])
 # A shader upload that fails (out of memory) is returned to the caller, which
 # skips the operation; the driver marks the command buffer failed. Upstream
@@ -832,6 +921,118 @@ p_atomic_msvc_add64(__int64 volatile *address, __int64 value)
 }
 
 /* MSVC supports decltype keyword,'''),
+])
+# Gen8 only: ELK compiles every stage as a scalar program on Gen8, so the vec4
+# backend, its Gen6 geometry shader and the Gen4-5 fixed-function programs
+# (clip, SF, FF GS) are not built. elk_gfx8_stages.cpp holds the VS, GS and
+# TCS entry points (scalar branch only) that upstream keeps in the vec4 files.
+elk_vec4_sources = ['elk_clip_line.c', 'elk_clip_point.c', 'elk_clip_tri.c', 'elk_clip_unfilled.c', 'elk_clip_util.c',
+                    'elk_compile_clip.c', 'elk_compile_ff_gs.c', 'elk_compile_sf.c',
+                    'elk_vec4_cmod_propagation.cpp', 'elk_vec4_copy_propagation.cpp', 'elk_vec4.cpp', 'elk_vec4_cse.cpp',
+                    'elk_vec4_dead_code_eliminate.cpp', 'elk_vec4_generator.cpp', 'elk_vec4_gs_visitor.cpp',
+                    'elk_vec4_live_variables.cpp', 'elk_vec4_nir.cpp', 'elk_vec4_gs_nir.cpp', 'elk_vec4_reg_allocate.cpp',
+                    'elk_vec4_surface_builder.cpp', 'elk_vec4_tcs.cpp', 'elk_vec4_tes.cpp', 'elk_vec4_visitor.cpp',
+                    'elk_vec4_vs_visitor.cpp', 'elk_gfx6_gs_visitor.cpp']
+edit('src/intel/compiler/elk/meson.build',
+     [(f"  '{name}',\n", f"  # {name}: not built (Gen8 only, see elk_gfx8_stages.cpp)\n") for name in elk_vec4_sources] +
+     [("  'elk_vue_map.c',\n", "  'elk_vue_map.c',\n  'elk_gfx8_stages.cpp',\n")])
+def vec4_blocks(name, starts):
+    """Replacements wrapping each C/C++ block that begins with one of starts
+    (up to its matching closing brace, with a following ';') in #if 0: the
+    vec4 parts of files whose other code is live. COFF lld reports undefined
+    symbols even for code nothing calls, so they cannot stay compiled."""
+    text = (originals / name).read_text(encoding='utf-8')
+    replacements = []
+    for start in starts:
+        i = text.index(start)
+        k = text.index('{', i)
+        depth = 0
+        while True:
+            if text[k] == '{':
+                depth += 1
+            elif text[k] == '}':
+                depth -= 1
+                if depth == 0:
+                    break
+            k += 1
+        end = k + 1
+        if text[end] == ';':
+            end += 1
+        if text[end] == '\n':
+            end += 1
+        block = text[i:end]
+        replacements.append((block, '#if 0 /* vec4 backend: not built (Gen8 only) */\n' + block + '#endif\n'))
+    return replacements
+
+
+edit('src/intel/compiler/elk/elk_schedule_instructions.cpp', vec4_blocks('src/intel/compiler/elk/elk_schedule_instructions.cpp', [
+    'class elk_vec4_instruction_scheduler : public elk_instruction_scheduler\n',
+    'elk_vec4_instruction_scheduler::elk_vec4_instruction_scheduler(void *mem_ctx, const vec4_visitor *v,',
+    'void\nelk_vec4_instruction_scheduler::calculate_deps()',
+    'elk_schedule_node *\nelk_vec4_instruction_scheduler::choose_instruction_to_schedule()',
+    'void\nelk_vec4_instruction_scheduler::run()',
+    'void\nvec4_visitor::opt_schedule_instructions()',
+]))
+edit('src/intel/compiler/elk/elk_ir_performance.cpp', vec4_blocks('src/intel/compiler/elk/elk_ir_performance.cpp', [
+    '      instruction_info(const struct elk_isa_info *isa,\n                       const vec4_instruction *inst) :',
+    '   /**\n    * Model the performance behavior of a VEC4 back-end instruction.\n    */',
+    'elk::performance::performance(const vec4_visitor *v) :',
+]))
+edit('src/intel/compiler/elk/elk_compiler.c', [
+    ('   if (devinfo->ver < 8)\n      elk_vec4_alloc_reg_set(compiler);\n',
+     '   /* Gen8 only: no vec4 register set (the vec4 backend is not built). */\n'),
+])
+edit('src/intel/blorp/blorp_elk.c', [
+    ('''   /* Gfx6+ doesn't need a strips and fans program */
+   if (compiler->devinfo->ver >= 6)
+      return true;
+''', '''   /* Gfx6+ doesn't need a strips and fans program (Gen8-only build: the
+    * Gen4-5 SF compiler is not built). */
+   assert(compiler->devinfo->ver >= 6);
+   (void)fs_prog_data;
+   return true;
+#if 0
+'''),
+    ('''                           &params->sf_prog_kernel, &params->sf_prog_data);
+
+   ralloc_free(mem_ctx);
+
+   return result;
+}
+''', '''                           &params->sf_prog_kernel, &params->sf_prog_data);
+
+   ralloc_free(mem_ctx);
+
+   return result;
+#endif
+}
+'''),
+])
+edit('src/intel/compiler/elk/elk_shader.cpp', [
+    ('''   const bool is_scalar = compiler->scalar_stage[MESA_SHADER_TESS_EVAL];
+   const bool debug_enabled = elk_should_print_shader(nir, DEBUG_TES);''',
+     '''   assert(compiler->scalar_stage[MESA_SHADER_TESS_EVAL]);   /* Gen8 only: no vec4 backend */
+   const bool is_scalar = true;
+   const bool debug_enabled = elk_should_print_shader(nir, DEBUG_TES);'''),
+    ('''   } else {
+      elk::vec4_tes_visitor v(compiler, &params->base, key, prog_data,
+                              nir, debug_enabled);
+      if (!v.run()) {
+         params->base.error_str =
+            ralloc_strdup(params->base.mem_ctx, v.fail_msg);
+	 return NULL;
+      }
+
+      if (unlikely(debug_enabled))
+	 v.dump_instructions();
+
+      assembly = elk_vec4_generate_assembly(compiler, &params->base, nir,
+                                            &prog_data->base, v.cfg,
+                                            v.performance_analysis.require(),
+                                            debug_enabled);
+   }''', '''   } else {
+      UNREACHABLE("vec4 tessellation evaluation shaders are not built (Gen8 only)");
+   }'''),
 ])
 edit("src/intel/compiler/elk/elk_eu.c", [
     ('#include <fcntl.h>', '#include <fcntl.h>\n#ifdef _WIN32\n#include <stdint.h>\n#include <io.h>\ntypedef intptr_t ssize_t;\n#define S_ISREG(mode) (((mode) & _S_IFMT) == _S_IFREG)\n#else\n#define O_BINARY 0\n#endif'),
@@ -908,6 +1109,7 @@ owned_sources = {
     'src/intel/wddm_compiler/spirv_probe.h': (ROOT / 'mesa/spirv_probe.h').read_text(encoding='utf-8'),
     'src/intel/wddm_compiler/image_probe.c': (ROOT / 'mesa/image_probe.c').read_text(encoding='utf-8'),
     'src/intel/compiler/elk/elk_win32_compat.h': (ROOT / 'mesa/elk_win32_compat.h').read_text(encoding='utf-8'),
+    'src/intel/compiler/elk/elk_gfx8_stages.cpp': (ROOT / 'mesa/elk_gfx8_stages.cpp').read_text(encoding='utf-8'),
     'src/intel/blorp/blorp_bounds_nir.h': '''/* Equivalent NIR builder for blorp_shaders.cl::blorp_check_in_bounds.
  * Only for the bounded Gen8 Windows bring-up. Indirect-copy shaders are not
  * compiled in this target and no corresponding Vulkan extension is exposed. */
@@ -955,6 +1157,15 @@ format_split = formats.index('// Format capabilities')
 # The capability queries (format features, image format properties) are the
 # upstream ones whenever graphics is built.
 format_caps = formats[format_split:]
+format_caps = gen8_only(format_caps, [
+    ('''      /* Gfx7 doesn't support 8xMSAA with depth/stencil images when their width
+       * is greater than 8192 pixels. */
+      if (devinfo->ver == 7 &&
+         (format_feature_flags & VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT)) {
+         maxExtent.width = 8192;
+      }
+''', ''),
+])
 # No external memory handle type exists on this port (no fd, dma-buf, AHB).
 old = '   switch (pExternalBufferInfo->handleType) {'
 assert format_caps.count(old) == 1

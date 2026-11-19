@@ -120,6 +120,49 @@
     struct list_head queued_snapshots;
  
     /* Holds completed snapshots that may need to be combined before being
+--- a/src/intel/isl/isl.h
++++ b/src/intel/isl/isl.h
+@@ -53,6 +53,12 @@
+ 
+ struct intel_device_info;
+ 
++#if defined(_WIN32) && !defined(ISL_GFX_VER)
++/* Windows WDDM port: Broadwell (Gen8) only. */
++#define ISL_GFX_VER(__dev) 8
++#define ISL_GFX_VERX10(__dev) 80
++#endif
++
+ #ifndef ISL_GFX_VER
+ /**
+  * Get the hardware generation of isl_device.
+@@ -65,8 +71,8 @@
+ #define ISL_GFX_VER_SANITIZE(__dev)
+ #else
+ #define ISL_GFX_VER_SANITIZE(__dev) \
+-   (assert(ISL_GFX_VER(__dev) == (__dev)->info->ver) && \
+-           ISL_GFX_VERX10(__dev) == (__dev)->info->verx10))
++   assert(ISL_GFX_VER(__dev) == (__dev)->info->ver && \
++          ISL_GFX_VERX10(__dev) == (__dev)->info->verx10)
+ #endif
+ 
+ #ifndef ISL_DEV_IS_G4X
+--- a/src/intel/isl/meson.build
++++ b/src/intel/isl/meson.build
+@@ -49,11 +49,9 @@
+ )
+ 
+ isl_per_hw_ver_libs = []
+-foreach g : [['40', isl_gfx4_files], ['50', []], ['60', isl_gfx6_files],
+-             ['70', isl_gfx7_files], ['75', []], ['80', isl_gfx8_files],
+-             ['90', isl_gfx9_files], ['110', []], ['120', isl_gfx12_files],
+-             ['125', isl_gfx12_files], ['200', isl_gfx20_files],
+-             ['300', isl_gfx20_files], ['350', isl_gfx20_files]]
++# Windows WDDM port: Gen8 only (isl.h makes the generation a constant);
++# isl_gfx7.c also holds isl_gfx6_filter_tiling(), which Gen8 uses.
++foreach g : [['80', isl_gfx8_files + isl_gfx7_files]]
+   _gfx_ver = g[0]
+   isl_per_hw_ver_libs += static_library(
+     'isl_per_hw_ver@0@'.format(_gfx_ver),
 --- a/src/intel/isl/isl_priv.h
 +++ b/src/intel/isl/isl_priv.h
 @@ -26,7 +26,9 @@
@@ -664,7 +707,24 @@
  
      struct anv_physical_device *                physical;
      const struct intel_device_info *            info;
-@@ -1483,6 +1497,9 @@
+@@ -1371,14 +1385,8 @@
+ static inline void
+ write_reloc(const struct anv_device *device, void *p, uint64_t v, bool flush)
+ {
+-   UNUSED unsigned reloc_size = 0;
+-   if (device->info->ver >= 8) {
+-      reloc_size = sizeof(uint64_t);
+-      *(uint64_t *)p = intel_canonical_address(v);
+-   } else {
+-      reloc_size = sizeof(uint32_t);
+-      *(uint32_t *)p = v;
+-   }
++   UNUSED unsigned reloc_size = sizeof(uint64_t);
++   *(uint64_t *)p = intel_canonical_address(v);   /* Gen8 only */
+ 
+ #ifdef SUPPORT_INTEL_INTEGRATED_GPUS
+    if (flush && device->physical->memory.need_flush)
+@@ -1483,6 +1491,9 @@
  
  struct anv_device_memory {
     struct vk_object_base                        base;
@@ -674,7 +734,7 @@
  
     struct list_head                             link;
  
-@@ -2503,6 +2520,9 @@
+@@ -2503,6 +2514,9 @@
  
  struct anv_cmd_buffer {
     struct vk_command_buffer                     vk;
@@ -684,7 +744,7 @@
  
     struct anv_device *                          device;
     struct anv_queue_family *                    queue_family;
-@@ -2927,7 +2947,11 @@
+@@ -2927,7 +2941,11 @@
  }
  
  struct anv_format_plane {
@@ -696,7 +756,7 @@
     struct isl_swizzle swizzle;
  
     /* Whether this plane contains chroma channels */
-@@ -3213,8 +3237,12 @@
+@@ -3213,8 +3231,12 @@
  static inline bool
  anv_image_is_externally_shared(const struct anv_image *image)
  {
@@ -709,7 +769,7 @@
  }
  
  static inline bool
-@@ -3349,8 +3377,32 @@
+@@ -3349,8 +3371,32 @@
      */
     if (devinfo->ver != 8 && !devinfo->has_sample_with_hiz)
        return false;
@@ -742,7 +802,7 @@
  }
  
  void
-@@ -3635,12 +3687,19 @@
+@@ -3635,12 +3681,19 @@
  void
  anv_dump_pipe_bits(enum anv_pipe_bits bits);
  
@@ -762,7 +822,7 @@
     if (INTEL_DEBUG(DEBUG_PIPE_CONTROL) && bits)
     {
        fputs("pc: add ", stderr);
-@@ -3762,6 +3821,10 @@
+@@ -3762,6 +3815,10 @@
                                 VkPerformanceConfigurationINTEL,
                                 VK_OBJECT_TYPE_PERFORMANCE_CONFIGURATION_INTEL)
  
@@ -773,7 +833,7 @@
  #define anv_genX(devinfo, thing) ({             \
     __typeof(&gfx7_##thing) genX_thing;          \
     switch ((devinfo)->verx10) {                 \
-@@ -3779,6 +3842,7 @@
+@@ -3779,6 +3836,7 @@
     }                                            \
     genX_thing;                                  \
  })
@@ -1147,7 +1207,48 @@
  
        plane = aspect - VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT;
     } else {
-@@ -590,6 +603,12 @@
+@@ -357,14 +370,6 @@
+       return true;
+    }
+ 
+-   if (devinfo->ver <= 7 &&
+-       plane_format.aspect == VK_IMAGE_ASPECT_STENCIL_BIT &&
+-       (vk_plane_usage & (VK_IMAGE_USAGE_SAMPLED_BIT |
+-                          VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT))) {
+-      /* gfx7 can't sample from W-tiled surfaces. */
+-      return true;
+-   }
+-
+    return false;
+ }
+ 
+@@ -374,13 +379,6 @@
+                                    uint32_t plane,
+                                    const VkImageFormatListCreateInfo *fmt_list)
+ {
+-   /* Triangles rendered on non-zero fast cleared images with 8xMSAA can get
+-    * black pixels around them on Haswell.
+-    */
+-   if (devinfo->ver == 7 && image->vk.samples == 8) {
+-      return false;
+-   }
+-
+    /* If we don't have an AUX surface where fast clears apply, we can return
+     * early.
+     */
+@@ -569,11 +567,6 @@
+          return VK_SUCCESS;
+       }
+ 
+-      if (device->info->ver == 7) {
+-         anv_perf_warn(VK_LOG_OBJS(&image->vk.base), "Implement gfx7 HiZ");
+-         return VK_SUCCESS;
+-      }
+-
+       if (image->vk.mip_levels > 1) {
+          anv_perf_warn(VK_LOG_OBJS(&image->vk.base), "Enable multi-LOD HiZ");
+          return VK_SUCCESS;
+@@ -590,6 +583,12 @@
                                   &image->planes[plane].aux_surface.isl);
        if (!ok)
           return VK_SUCCESS;
@@ -1160,7 +1261,7 @@
     } else if ((aspect & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV) && image->vk.samples == 1) {
        if (image->n_planes != 1) {
           /* Multiplanar images seem to hit a sampler bug with CCS and R16G16
-@@ -623,7 +642,7 @@
+@@ -623,7 +622,7 @@
        enum anv_image_memory_binding binding =
           ANV_IMAGE_MEMORY_BINDING_PLANE_0 + plane;
  
@@ -1169,7 +1270,7 @@
           binding = ANV_IMAGE_MEMORY_BINDING_PRIVATE;
  
        result = add_surface(device, image, &image->planes[plane].aux_surface,
-@@ -849,7 +868,7 @@
+@@ -849,7 +848,7 @@
            * buffer (ANV_IMAGE_MEMORY_BINDING_PRIVATE).
            */
           if (anv_image_is_externally_shared(image) &&
@@ -1178,7 +1279,7 @@
              binding = ANV_IMAGE_MEMORY_BINDING_PRIVATE;
           }
  
-@@ -913,14 +932,14 @@
+@@ -913,14 +912,14 @@
                       const struct anv_image *image)
  {
     /* Image must have a modifier if and only if it has modifier tiling. */
@@ -1196,7 +1297,7 @@
  
     /* Driver must support the modifier. */
     assert(isl_drm_modifier_get_score(device->info, isl_mod_info->modifier));
-@@ -1175,6 +1194,24 @@
+@@ -1175,6 +1174,24 @@
     const struct isl_drm_modifier_info *isl_mod_info = NULL;
     VkResult r;
  
@@ -1221,7 +1322,7 @@
     vk_image_init(&device->vk, &image->vk, pCreateInfo);
  
     image->vk.usage = anv_image_create_usage(pCreateInfo, image->vk.usage);
-@@ -1198,8 +1235,10 @@
+@@ -1198,8 +1215,10 @@
        }
  
        assert(isl_mod_info);
@@ -1233,7 +1334,7 @@
     }
  
     for (int i = 0; i < ANV_IMAGE_MEMORY_BINDING_END; ++i) {
-@@ -1769,7 +1808,7 @@
+@@ -1769,7 +1788,7 @@
           UNREACHABLE("bad VkImageAspectFlags");
        }
  
@@ -1242,7 +1343,7 @@
           assert(image->n_planes == 1);
           /* If the memory binding differs between primary and aux, then the
            * returned offset will be incorrect.
-@@ -1922,7 +1961,7 @@
+@@ -1922,7 +1941,7 @@
        assert(image->vk.aspects == VK_IMAGE_ASPECT_COLOR_BIT);
  
        enum isl_aux_state aux_state =
@@ -1251,7 +1352,7 @@
  
        switch (aux_state) {
        case ISL_AUX_STATE_AUX_INVALID:
-@@ -2002,6 +2041,17 @@
+@@ -2002,6 +2021,17 @@
     }
  
     switch (aux_usage) {
@@ -1269,6 +1370,29 @@
     case ISL_AUX_USAGE_CCS_D:
        /* We only support clear in exactly one state */
        if (layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+@@ -2228,22 +2258,9 @@
+       surface = &image->planes[plane].shadow_surface;
+    }
+ 
+-   /* For texturing from stencil on gfx7, we have to sample from a shadow
+-    * surface because we don't support W-tiling in the sampler.
+-    */
+-   if (anv_surface_is_valid(&image->planes[plane].shadow_surface) &&
+-       aspect == VK_IMAGE_ASPECT_STENCIL_BIT) {
+-      assert(device->info->ver == 7);
+-      assert(view_usage & ISL_SURF_USAGE_TEXTURE_BIT);
+-      surface = &image->planes[plane].shadow_surface;
+-   }
+-
+    if (view_usage == ISL_SURF_USAGE_RENDER_TARGET_BIT)
+       view.swizzle = anv_swizzle_for_render(view.swizzle);
+ 
+-   /* On Ivy Bridge and Bay Trail we do the swizzle in the shader */
+-   if (device->info->verx10 == 70)
+-      view.swizzle = ISL_SWIZZLE_IDENTITY;
+ 
+    /* If this is a HiZ buffer we can sample from with a programmable clear
+     * value (SKL+), define the clear value to the optimal constant.
 --- a/src/intel/blorp/blorp_clear.c
 +++ b/src/intel/blorp/blorp_clear.c
 @@ -29,7 +29,11 @@
@@ -1521,6 +1645,292 @@
                                       (assert(!"should not get here"), 0))
  
  #endif
+--- a/src/intel/compiler/elk/meson.build
++++ b/src/intel/compiler/elk/meson.build
+@@ -7,14 +7,14 @@
+   'elk_cfg.cpp',
+   'elk_cfg.h',
+   'elk_clip.h',
+-  'elk_clip_line.c',
+-  'elk_clip_point.c',
+-  'elk_clip_tri.c',
+-  'elk_clip_unfilled.c',
+-  'elk_clip_util.c',
+-  'elk_compile_clip.c',
+-  'elk_compile_ff_gs.c',
+-  'elk_compile_sf.c',
++  # elk_clip_line.c: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_clip_point.c: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_clip_tri.c: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_clip_unfilled.c: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_clip_util.c: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_compile_clip.c: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_compile_ff_gs.c: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_compile_sf.c: not built (Gen8 only, see elk_gfx8_stages.cpp)
+   'elk_compiler.c',
+   'elk_compiler.h',
+   'elk_dead_control_flow.cpp',
+@@ -87,31 +87,32 @@
+   'elk_shader.h',
+   'elk_simd_selection.cpp',
+   'elk_vec4_builder.h',
+-  'elk_vec4_cmod_propagation.cpp',
+-  'elk_vec4_copy_propagation.cpp',
+-  'elk_vec4.cpp',
+-  'elk_vec4_cse.cpp',
+-  'elk_vec4_dead_code_eliminate.cpp',
+-  'elk_vec4_generator.cpp',
+-  'elk_vec4_gs_visitor.cpp',
++  # elk_vec4_cmod_propagation.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_vec4_copy_propagation.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_vec4.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_vec4_cse.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_vec4_dead_code_eliminate.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_vec4_generator.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_vec4_gs_visitor.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
+   'elk_vec4_gs_visitor.h',
+   'elk_vec4.h',
+-  'elk_vec4_live_variables.cpp',
++  # elk_vec4_live_variables.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
+   'elk_vec4_live_variables.h',
+-  'elk_vec4_nir.cpp',
+-  'elk_vec4_gs_nir.cpp',
+-  'elk_vec4_reg_allocate.cpp',
+-  'elk_vec4_surface_builder.cpp',
++  # elk_vec4_nir.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_vec4_gs_nir.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_vec4_reg_allocate.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_vec4_surface_builder.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
+   'elk_vec4_surface_builder.h',
+-  'elk_vec4_tcs.cpp',
++  # elk_vec4_tcs.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
+   'elk_vec4_tcs.h',
+-  'elk_vec4_tes.cpp',
++  # elk_vec4_tes.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
+   'elk_vec4_tes.h',
+-  'elk_vec4_visitor.cpp',
+-  'elk_vec4_vs_visitor.cpp',
++  # elk_vec4_visitor.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
++  # elk_vec4_vs_visitor.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
+   'elk_vec4_vs.h',
+   'elk_vue_map.c',
+-  'elk_gfx6_gs_visitor.cpp',
++  'elk_gfx8_stages.cpp',
++  # elk_gfx6_gs_visitor.cpp: not built (Gen8 only, see elk_gfx8_stages.cpp)
+   'elk_gfx6_gs_visitor.h',
+ )
+ 
+--- a/src/intel/compiler/elk/elk_schedule_instructions.cpp
++++ b/src/intel/compiler/elk/elk_schedule_instructions.cpp
+@@ -939,6 +939,7 @@
+    return benefit;
+ }
+ 
++#if 0 /* vec4 backend: not built (Gen8 only) */
+ class elk_vec4_instruction_scheduler : public elk_instruction_scheduler
+ {
+ public:
+@@ -949,7 +950,9 @@
+ 
+    void run();
+ };
+-
++#endif
++
++#if 0 /* vec4 backend: not built (Gen8 only) */
+ elk_vec4_instruction_scheduler::elk_vec4_instruction_scheduler(void *mem_ctx, const vec4_visitor *v,
+                                                        int grf_count)
+    : elk_instruction_scheduler(mem_ctx, v, grf_count, /* grf_write_scale */ 1,
+@@ -957,6 +960,7 @@
+      v(v)
+ {
+ }
++#endif
+ 
+ void
+ elk_instruction_scheduler::set_current_block(elk_bblock_t *block)
+@@ -1445,6 +1449,7 @@
+    clear_last_grf_write();
+ }
+ 
++#if 0 /* vec4 backend: not built (Gen8 only) */
+ void
+ elk_vec4_instruction_scheduler::calculate_deps()
+ {
+@@ -1617,6 +1622,7 @@
+       }
+    }
+ }
++#endif
+ 
+ elk_schedule_node *
+ elk_fs_instruction_scheduler::choose_instruction_to_schedule()
+@@ -1748,6 +1754,7 @@
+    return chosen;
+ }
+ 
++#if 0 /* vec4 backend: not built (Gen8 only) */
+ elk_schedule_node *
+ elk_vec4_instruction_scheduler::choose_instruction_to_schedule()
+ {
+@@ -1766,6 +1773,7 @@
+ 
+    return chosen;
+ }
++#endif
+ 
+ int
+ elk_fs_instruction_scheduler::calculate_issue_time(elk_backend_instruction *inst0)
+@@ -1920,6 +1928,7 @@
+    }
+ }
+ 
++#if 0 /* vec4 backend: not built (Gen8 only) */
+ void
+ elk_vec4_instruction_scheduler::run()
+ {
+@@ -1954,6 +1963,7 @@
+       }
+    }
+ }
++#endif
+ 
+ elk_fs_instruction_scheduler *
+ elk_fs_visitor::prepare_scheduler(void *mem_ctx)
+@@ -1994,6 +2004,7 @@
+    invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
+ }
+ 
++#if 0 /* vec4 backend: not built (Gen8 only) */
+ void
+ vec4_visitor::opt_schedule_instructions()
+ {
+@@ -2006,3 +2017,4 @@
+ 
+    invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
+ }
++#endif
+--- a/src/intel/compiler/elk/elk_ir_performance.cpp
++++ b/src/intel/compiler/elk/elk_ir_performance.cpp
+@@ -124,6 +124,7 @@
+             tx = elk_int_type(8, tx == ELK_REGISTER_TYPE_D);
+       }
+ 
++#if 0 /* vec4 backend: not built (Gen8 only) */
+       instruction_info(const struct elk_isa_info *isa,
+                        const vec4_instruction *inst) :
+          isa(isa), devinfo(isa->devinfo), op(inst->opcode),
+@@ -146,6 +147,7 @@
+              type_sz(inst->src[0].type) == type_sz(inst->src[1].type))
+             tx = elk_int_type(8, tx == ELK_REGISTER_TYPE_D);
+       }
++#endif
+ 
+       /** ISA encoding information */
+       const struct elk_isa_info *isa;
+@@ -1281,6 +1283,7 @@
+       }
+    }
+ 
++#if 0 /* vec4 backend: not built (Gen8 only) */
+    /**
+     * Model the performance behavior of a VEC4 back-end instruction.
+     */
+@@ -1376,6 +1379,7 @@
+       if (inst->writes_flag(devinfo))
+          mark_write_dependency(st, perf, EU_DEPENDENCY_ID_FLAG0);
+    }
++#endif
+ 
+    /**
+     * Calculate the maximum possible throughput of the program compatible with
+@@ -1460,11 +1464,13 @@
+    calculate_performance(*this, v, issue_fs_inst, v->dispatch_width);
+ }
+ 
++#if 0 /* vec4 backend: not built (Gen8 only) */
+ elk::performance::performance(const vec4_visitor *v) :
+    block_latency(new unsigned[v->cfg->num_blocks])
+ {
+    calculate_performance(*this, v, issue_vec4_instruction, 8);
+ }
++#endif
+ 
+ elk::performance::~performance()
+ {
+--- a/src/intel/compiler/elk/elk_compiler.c
++++ b/src/intel/compiler/elk/elk_compiler.c
+@@ -24,8 +24,7 @@
+    elk_init_isa_info(&compiler->isa, devinfo);
+ 
+    elk_fs_alloc_reg_sets(compiler);
+-   if (devinfo->ver < 8)
+-      elk_vec4_alloc_reg_set(compiler);
++   /* Gen8 only: no vec4 register set (the vec4 backend is not built). */
+ 
+    compiler->precise_trig = debug_get_bool_option("INTEL_PRECISE_TRIG", false);
+ 
+--- a/src/intel/blorp/blorp_elk.c
++++ b/src/intel/blorp/blorp_elk.c
+@@ -199,9 +199,12 @@
+    const struct elk_fs_prog_data *fs_prog_data = params->fs_prog_data;
+    assert(params->fs_prog_data);
+ 
+-   /* Gfx6+ doesn't need a strips and fans program */
+-   if (compiler->devinfo->ver >= 6)
+-      return true;
++   /* Gfx6+ doesn't need a strips and fans program (Gen8-only build: the
++    * Gen4-5 SF compiler is not built). */
++   assert(compiler->devinfo->ver >= 6);
++   (void)fs_prog_data;
++   return true;
++#if 0
+ 
+    struct blorp_sf_key key;
+    BLORP_KEY_INIT(key, BLORP_SHADER_TYPE_GFX4_SF,
+@@ -249,6 +252,7 @@
+    ralloc_free(mem_ctx);
+ 
+    return result;
++#endif
+ }
+ 
+ #pragma pack(push, 1)
+--- a/src/intel/compiler/elk/elk_shader.cpp
++++ b/src/intel/compiler/elk/elk_shader.cpp
+@@ -1245,7 +1245,8 @@
+    const struct intel_vue_map *input_vue_map = params->input_vue_map;
+    struct elk_tes_prog_data *prog_data = params->prog_data;
+ 
+-   const bool is_scalar = compiler->scalar_stage[MESA_SHADER_TESS_EVAL];
++   assert(compiler->scalar_stage[MESA_SHADER_TESS_EVAL]);   /* Gen8 only: no vec4 backend */
++   const bool is_scalar = true;
+    const bool debug_enabled = elk_should_print_shader(nir, DEBUG_TES);
+    const unsigned *assembly;
+ 
+@@ -1364,21 +1365,7 @@
+ 
+       assembly = g.get_assembly();
+    } else {
+-      elk::vec4_tes_visitor v(compiler, &params->base, key, prog_data,
+-                              nir, debug_enabled);
+-      if (!v.run()) {
+-         params->base.error_str =
+-            ralloc_strdup(params->base.mem_ctx, v.fail_msg);
+-	 return NULL;
+-      }
+-
+-      if (unlikely(debug_enabled))
+-	 v.dump_instructions();
+-
+-      assembly = elk_vec4_generate_assembly(compiler, &params->base, nir,
+-                                            &prog_data->base, v.cfg,
+-                                            v.performance_analysis.require(),
+-                                            debug_enabled);
++      UNREACHABLE("vec4 tessellation evaluation shaders are not built (Gen8 only)");
+    }
+ 
+    return assembly;
 --- a/src/intel/compiler/elk/elk_eu.c
 +++ b/src/intel/compiler/elk/elk_eu.c
 @@ -8,6 +8,14 @@
@@ -6648,6 +7058,469 @@
 +#define ELK_COMPARE_FUNC_BITS 3
 +#endif
 --- /dev/null
++++ b/src/intel/compiler/elk/elk_gfx8_stages.cpp
+@@ -0,0 +1,460 @@
++/*
++ * Copyright 2013-2015 Intel Corporation (code taken from elk_vec4.cpp,
++ * elk_vec4_gs_visitor.cpp and elk_vec4_tcs.cpp)
++ * SPDX-License-Identifier: MIT
++ *
++ * Vertex, geometry and tessellation control shader entry points of ELK for
++ * the Gen8-only Windows build. On Gen8 ELK compiles every stage as a scalar
++ * (SIMD8) program (elk_compiler.c: scalar_stage[] is true for ver >= 8), so
++ * the vec4 backend and its Gen6 geometry shader code are not built; these are
++ * the upstream functions with only their scalar branch. The tessellation
++ * evaluation entry point stays in elk_shader.cpp (its vec4 branch removed by
++ * mesa/apply-compiler-port.py).
++ */
++
++#include "../intel_nir.h"
++#include "compiler/intel_prim.h"
++#include "elk_eu.h"
++#include "elk_fs.h"
++#include "elk_nir.h"
++#include "elk_private.h"
++#include "elk_vec4_gs_visitor.h"   /* struct elk_gs_compile */
++#include "dev/intel_debug.h"
++#include "util/u_math.h"
++
++using namespace elk;
++
++/* Type sizes in vec4 / dvec4 slots, used by the NIR input/output lowering
++ * (elk_nir.c); from elk_vec4_visitor.cpp, which is not built. */
++static int
++elk_type_size_xvec4(const struct glsl_type *type, bool as_vec4, bool bindless)
++{
++   unsigned int i;
++   int size;
++
++   switch (type->base_type) {
++   case GLSL_TYPE_UINT:
++   case GLSL_TYPE_INT:
++   case GLSL_TYPE_FLOAT:
++   case GLSL_TYPE_FLOAT16:
++   case GLSL_TYPE_BFLOAT16:
++   case GLSL_TYPE_FLOAT_E4M3FN:
++   case GLSL_TYPE_FLOAT_E5M2:
++   case GLSL_TYPE_BOOL:
++   case GLSL_TYPE_DOUBLE:
++   case GLSL_TYPE_UINT16:
++   case GLSL_TYPE_INT16:
++   case GLSL_TYPE_UINT8:
++   case GLSL_TYPE_INT8:
++   case GLSL_TYPE_UINT64:
++   case GLSL_TYPE_INT64:
++      if (glsl_type_is_matrix(type)) {
++         const glsl_type *col_type = glsl_get_column_type(type);
++         unsigned col_slots =
++            (as_vec4 && glsl_type_is_dual_slot(col_type)) ? 2 : 1;
++         return type->matrix_columns * col_slots;
++      } else {
++         /* Regardless of size of vector, it gets a vec4. This is bad
++          * packing for things like floats, but otherwise arrays become a
++          * mess.  Hopefully a later pass over the code can pack scalars
++          * down if appropriate.
++          */
++         return (as_vec4 && glsl_type_is_dual_slot(type)) ? 2 : 1;
++      }
++   case GLSL_TYPE_ARRAY:
++      assert(type->length > 0);
++      return elk_type_size_xvec4(type->fields.array, as_vec4, bindless) *
++             type->length;
++   case GLSL_TYPE_STRUCT:
++   case GLSL_TYPE_INTERFACE:
++      size = 0;
++      for (i = 0; i < type->length; i++) {
++	 size += elk_type_size_xvec4(type->fields.structure[i].type, as_vec4,
++                                 bindless);
++      }
++      return size;
++   case GLSL_TYPE_SUBROUTINE:
++      return 1;
++
++   case GLSL_TYPE_SAMPLER:
++   case GLSL_TYPE_TEXTURE:
++      /* Samplers and textures take up no register space, since they're baked
++       * in at link time.
++       */
++      return bindless ? 1 : 0;
++   case GLSL_TYPE_ATOMIC_UINT:
++      return 0;
++   case GLSL_TYPE_IMAGE:
++      return bindless ? 1 : DIV_ROUND_UP(ISL_IMAGE_PARAM_SIZE, 4);
++   case GLSL_TYPE_VOID:
++   case GLSL_TYPE_ERROR:
++   case GLSL_TYPE_COOPERATIVE_MATRIX:
++      UNREACHABLE("not reached");
++   }
++
++   return 0;
++}
++
++/**
++ * Returns the minimum number of vec4 elements needed to pack a type.
++ *
++ * For simple types, it will return 1 (a single vec4); for matrices, the
++ * number of columns; for array and struct, the sum of the vec4_size of
++ * each of its elements; and for sampler and atomic, zero.
++ *
++ * This method is useful to calculate how much register space is needed to
++ * store a particular type.
++ */
++extern "C" unsigned
++elk_type_size_vec4(const struct glsl_type *type, bool bindless)
++{
++   return elk_type_size_xvec4(type, true, bindless);
++}
++
++/**
++ * Returns the minimum number of dvec4 elements needed to pack a type.
++ *
++ * For simple types, it will return 1 (a single dvec4); for matrices, the
++ * number of columns; for array and struct, the sum of the dvec4_size of
++ * each of its elements; and for sampler and atomic, zero.
++ *
++ * This method is useful to calculate how much register space is needed to
++ * store a particular type.
++ *
++ * Measuring double-precision vertex inputs as dvec4 is required because
++ * ARB_vertex_attrib_64bit states that these uses the same number of locations
++ * than the single-precision version. That is, two consecutives dvec4 would be
++ * located in location "x" and location "x+1", not "x+2".
++ *
++ * In order to map vec4/dvec4 vertex inputs in the proper ATTRs,
++ * remap_vs_attrs() will take in account both the location and also if the
++ * type fits in one or two vec4 slots.
++ */
++extern "C" unsigned   /* as declared in elk_nir.h */
++elk_type_size_dvec4(const struct glsl_type *type, bool bindless)
++{
++   return elk_type_size_xvec4(type, false, bindless);
++}
++
++static const GLuint gl_prim_to_hw_prim[MESA_PRIM_TRIANGLE_STRIP_ADJACENCY + 1] = {
++   [MESA_PRIM_POINTS] = _3DPRIM_POINTLIST,
++   [MESA_PRIM_LINES] = _3DPRIM_LINELIST,
++   [MESA_PRIM_LINE_LOOP] = _3DPRIM_LINELOOP,
++   [MESA_PRIM_LINE_STRIP] = _3DPRIM_LINESTRIP,
++   [MESA_PRIM_TRIANGLES] = _3DPRIM_TRILIST,
++   [MESA_PRIM_TRIANGLE_STRIP] = _3DPRIM_TRISTRIP,
++   [MESA_PRIM_TRIANGLE_FAN] = _3DPRIM_TRIFAN,
++   [MESA_PRIM_QUADS] = _3DPRIM_QUADLIST,
++   [MESA_PRIM_QUAD_STRIP] = _3DPRIM_QUADSTRIP,
++   [MESA_PRIM_POLYGON] = _3DPRIM_POLYGON,
++   [MESA_PRIM_LINES_ADJACENCY] = _3DPRIM_LINELIST_ADJ,
++   [MESA_PRIM_LINE_STRIP_ADJACENCY] = _3DPRIM_LINESTRIP_ADJ,
++   [MESA_PRIM_TRIANGLES_ADJACENCY] = _3DPRIM_TRILIST_ADJ,
++   [MESA_PRIM_TRIANGLE_STRIP_ADJACENCY] = _3DPRIM_TRISTRIP_ADJ,
++};
++
++/* Patches to accumulate before a MULTI_PATCH thread is launched (see the
++ * 3DSTATE_HS::Patch Count Threshold documentation; 0 = wait for 8). */
++static int
++get_patch_count_threshold(int input_control_points)
++{
++   if (input_control_points <= 4)
++      return 0;
++   else if (input_control_points <= 6)
++      return 5;
++   else if (input_control_points <= 8)
++      return 4;
++   else if (input_control_points <= 10)
++      return 3;
++   else if (input_control_points <= 14)
++      return 2;
++   return 1;   /* PATCHLIST_15 - PATCHLIST_32 */
++}
++
++extern "C" const unsigned *
++elk_compile_vs(const struct elk_compiler *compiler,
++               struct elk_compile_vs_params *params)
++{
++   struct nir_shader *nir = params->base.nir;
++   const struct elk_vs_prog_key *key = params->key;
++   struct elk_vs_prog_data *prog_data = params->prog_data;
++   const bool debug_enabled =
++      elk_should_print_shader(nir, params->base.debug_flag ?
++                                   params->base.debug_flag : DEBUG_VS);
++
++   assert(compiler->scalar_stage[MESA_SHADER_VERTEX]);
++   prog_data->base.base.stage = MESA_SHADER_VERTEX;
++   prog_data->base.base.total_scratch = 0;
++
++   elk_nir_apply_key(nir, compiler, &key->base, 8);
++
++   prog_data->inputs_read = nir->info.inputs_read;
++   prog_data->double_inputs_read = nir->info.vs.double_inputs;
++
++   elk_nir_lower_vs_inputs(nir, params->edgeflag_is_last, key->gl_attrib_wa_flags);
++   elk_nir_lower_vue_outputs(nir);
++   elk_postprocess_nir(nir, compiler, debug_enabled, key->base.robust_flags);
++
++   prog_data->base.clip_distance_mask = ((1 << nir->info.clip_distance_array_size) - 1);
++   prog_data->base.cull_distance_mask =
++      ((1 << nir->info.cull_distance_array_size) - 1) << nir->info.clip_distance_array_size;
++
++   unsigned nr_attribute_slots = util_bitcount64(prog_data->inputs_read);
++
++   /* gl_VertexID and gl_InstanceID are system values, but arrive via an
++    * incoming vertex attribute. So, add an extra slot. */
++   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_FIRST_VERTEX) ||
++       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_BASE_INSTANCE) ||
++       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_VERTEX_ID_ZERO_BASE) ||
++       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_INSTANCE_ID))
++      nr_attribute_slots++;
++
++   /* gl_DrawID and IsIndexedDraw share their very own vec4 */
++   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_DRAW_ID) ||
++       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_IS_INDEXED_DRAW))
++      nr_attribute_slots++;
++
++   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_IS_INDEXED_DRAW))
++      prog_data->uses_is_indexed_draw = true;
++   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_FIRST_VERTEX))
++      prog_data->uses_firstvertex = true;
++   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_BASE_INSTANCE))
++      prog_data->uses_baseinstance = true;
++   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_VERTEX_ID_ZERO_BASE))
++      prog_data->uses_vertexid = true;
++   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_INSTANCE_ID))
++      prog_data->uses_instanceid = true;
++   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_DRAW_ID))
++      prog_data->uses_drawid = true;
++
++   /* "Vertex URB Entry Read Length" may be 0 in SIMD8 mode. */
++   prog_data->base.urb_read_length = DIV_ROUND_UP(nr_attribute_slots, 2);
++   prog_data->nr_attribute_slots = nr_attribute_slots;
++
++   /* Vertex shaders reuse the same VUE entry for inputs and outputs
++    * (overwriting the original contents): size it for the larger of the two. */
++   const unsigned vue_entries = MAX2(nr_attribute_slots, (unsigned)prog_data->base.vue_map.num_slots);
++   prog_data->base.urb_entry_size = DIV_ROUND_UP(vue_entries, 4);
++
++   if (unlikely(debug_enabled)) {
++      fprintf(stderr, "VS Output ");
++      elk_print_vue_map(stderr, &prog_data->base.vue_map, MESA_SHADER_VERTEX);
++   }
++
++   const unsigned dispatch_width = 8;
++   prog_data->base.dispatch_mode = INTEL_DISPATCH_MODE_SIMD8;
++
++   elk_fs_visitor v(compiler, &params->base, &key->base, &prog_data->base.base, nir, dispatch_width,
++                    params->base.stats != NULL, debug_enabled);
++   if (!v.run_vs()) {
++      params->base.error_str = ralloc_strdup(params->base.mem_ctx, v.fail_msg);
++      return NULL;
++   }
++
++   assert(v.payload().num_regs % reg_unit(compiler->devinfo) == 0);
++   prog_data->base.base.dispatch_grf_start_reg = v.payload().num_regs / reg_unit(compiler->devinfo);
++
++   elk_fs_generator g(compiler, &params->base, &prog_data->base.base, v.runtime_check_aads_emit,
++                      MESA_SHADER_VERTEX);
++   if (unlikely(debug_enabled)) {
++      const char *debug_name = ralloc_asprintf(params->base.mem_ctx, "%s vertex shader %s",
++                                               nir->info.label ? nir->info.label : "unnamed", nir->info.name);
++      g.enable_debug(debug_name);
++   }
++   g.generate_code(v.cfg, dispatch_width, v.shader_stats, v.performance_analysis.require(), params->base.stats);
++   g.add_const_data(nir->constant_data, nir->constant_data_size);
++   return g.get_assembly();
++}
++
++extern "C" const unsigned *
++elk_compile_gs(const struct elk_compiler *compiler,
++               struct elk_compile_gs_params *params)
++{
++   nir_shader *nir = params->base.nir;
++   const struct elk_gs_prog_key *key = params->key;
++   struct elk_gs_prog_data *prog_data = params->prog_data;
++
++   struct elk_gs_compile c;
++   memset(&c, 0, sizeof(c));
++   c.key = *key;
++
++   assert(compiler->scalar_stage[MESA_SHADER_GEOMETRY]);
++   const bool debug_enabled = elk_should_print_shader(nir, DEBUG_GS);
++
++   prog_data->base.base.stage = MESA_SHADER_GEOMETRY;
++   prog_data->base.base.total_scratch = 0;
++
++   /* For SSO pipelines a fixed VUE map layout based on variable locations is
++    * used, so rendezvous-by-location works. */
++   GLbitfield64 inputs_read = nir->info.inputs_read;
++   elk_compute_vue_map(compiler->devinfo, &c.input_vue_map, inputs_read,
++                       nir->info.separate_shader ? INTEL_VUE_LAYOUT_SEPARATE : INTEL_VUE_LAYOUT_FIXED, 1);
++
++   elk_nir_apply_key(nir, compiler, &key->base, 8);
++   elk_nir_lower_vue_inputs(nir, &c.input_vue_map);
++   elk_nir_lower_vue_outputs(nir);
++   elk_postprocess_nir(nir, compiler, debug_enabled, key->base.robust_flags);
++
++   prog_data->base.clip_distance_mask = ((1 << nir->info.clip_distance_array_size) - 1);
++   prog_data->base.cull_distance_mask =
++      ((1 << nir->info.cull_distance_array_size) - 1) << nir->info.clip_distance_array_size;
++
++   prog_data->include_primitive_id = BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_PRIMITIVE_ID);
++   prog_data->invocations = nir->info.gs.invocations;
++
++   nir_gs_count_vertices_and_primitives(nir, &prog_data->static_vertex_count, nullptr, nullptr, 1u);
++
++   if (nir->info.gs.output_primitive == MESA_PRIM_POINTS) {
++      /* Points: data may go to multiple streams and EndPrimitive() has no
++       * effect, so the control data is the stream ID (only needed with
++       * non-zero streams). */
++      prog_data->control_data_format = GFX7_GS_CONTROL_DATA_FORMAT_GSCTL_SID;
++      c.control_data_bits_per_vertex = nir->info.gs.active_stream_mask != (1 << 0) ? 2 : 0;
++   } else {
++      /* Strips: EndPrimitive() terminates the strip (cut bits), one stream. */
++      prog_data->control_data_format = GFX7_GS_CONTROL_DATA_FORMAT_GSCTL_CUT;
++      c.control_data_bits_per_vertex = nir->info.gs.uses_end_primitive ? 1 : 0;
++   }
++   c.control_data_header_size_bits = nir->info.gs.vertices_out * c.control_data_bits_per_vertex;
++
++   /* 1 HWORD = 32 bytes = 256 bits */
++   prog_data->control_data_header_size_hwords = align(c.control_data_header_size_bits, 256) / 256;
++
++   /* Output vertex size: a multiple of 32 bytes (2 vec4's), at most 62*16
++    * bytes (3DSTATE_GS::Output Vertex Size); see elk_vec4_gs_visitor.cpp
++    * upstream for the budget. */
++   unsigned output_vertex_size_bytes = prog_data->base.vue_map.num_slots * 16;
++   assert(output_vertex_size_bytes <= GFX7_MAX_GS_OUTPUT_VERTEX_SIZE_BYTES);
++   prog_data->output_vertex_size_hwords = align(output_vertex_size_bytes, 32) / 32;
++
++   /* One URB entry holds all the output: the control data header, the
++    * vertices, and on Broadwell the "Vertex Count" (a full 8-DWord output
++    * before the control header). The maximum entry size is 32k. */
++   unsigned output_size_bytes = prog_data->output_vertex_size_hwords * 32 * nir->info.gs.vertices_out;
++   output_size_bytes += 32 * prog_data->control_data_header_size_hwords;
++   output_size_bytes += 32;
++   if (output_size_bytes == 0)
++      output_size_bytes = 1;   /* max_vertices = 0 */
++   if (output_size_bytes > GFX7_MAX_GS_URB_ENTRY_SIZE_BYTES)
++      return NULL;
++
++   /* URB entry sizes are stored as a multiple of 64 bytes. */
++   prog_data->base.urb_entry_size = align(output_size_bytes, 64) / 64;
++
++   assert(nir->info.gs.output_primitive < ARRAY_SIZE(gl_prim_to_hw_prim));
++   prog_data->output_topology = gl_prim_to_hw_prim[nir->info.gs.output_primitive];
++   prog_data->vertices_in = nir->info.gs.vertices_in;
++
++   /* GS inputs are read from the VUE 256 bits (2 vec4's) at a time. */
++   prog_data->base.urb_read_length = (c.input_vue_map.num_slots + 1) / 2;
++
++   if (unlikely(debug_enabled)) {
++      fprintf(stderr, "GS Input ");
++      elk_print_vue_map(stderr, &c.input_vue_map, MESA_SHADER_GEOMETRY);
++      fprintf(stderr, "GS Output ");
++      elk_print_vue_map(stderr, &prog_data->base.vue_map, MESA_SHADER_GEOMETRY);
++   }
++
++   elk_fs_visitor v(compiler, &params->base, &c, prog_data, nir, params->base.stats != NULL, debug_enabled);
++   if (!v.run_gs()) {
++      params->base.error_str = ralloc_strdup(params->base.mem_ctx, v.fail_msg);
++      return NULL;
++   }
++   prog_data->base.dispatch_mode = INTEL_DISPATCH_MODE_SIMD8;
++
++   assert(v.payload().num_regs % reg_unit(compiler->devinfo) == 0);
++   prog_data->base.base.dispatch_grf_start_reg = v.payload().num_regs / reg_unit(compiler->devinfo);
++
++   elk_fs_generator g(compiler, &params->base, &prog_data->base.base, false, MESA_SHADER_GEOMETRY);
++   if (unlikely(debug_enabled)) {
++      const char *label = nir->info.label ? nir->info.label : "unnamed";
++      g.enable_debug(ralloc_asprintf(params->base.mem_ctx, "%s geometry shader %s", label, nir->info.name));
++   }
++   g.generate_code(v.cfg, v.dispatch_width, v.shader_stats, v.performance_analysis.require(), params->base.stats);
++   g.add_const_data(nir->constant_data, nir->constant_data_size);
++   return g.get_assembly();
++}
++
++extern "C" const unsigned *
++elk_compile_tcs(const struct elk_compiler *compiler,
++                struct elk_compile_tcs_params *params)
++{
++   const struct intel_device_info *devinfo = compiler->devinfo;
++   nir_shader *nir = params->base.nir;
++   const struct elk_tcs_prog_key *key = params->key;
++   struct elk_tcs_prog_data *prog_data = params->prog_data;
++   struct elk_vue_prog_data *vue_prog_data = &prog_data->base;
++
++   assert(compiler->scalar_stage[MESA_SHADER_TESS_CTRL]);
++   const bool debug_enabled = elk_should_print_shader(nir, DEBUG_TCS);
++
++   vue_prog_data->base.stage = MESA_SHADER_TESS_CTRL;
++   prog_data->base.base.total_scratch = 0;
++
++   nir->info.outputs_written = key->outputs_written;
++   nir->info.patch_outputs_written = key->patch_outputs_written;
++
++   struct intel_vue_map input_vue_map;
++   elk_compute_vue_map(devinfo, &input_vue_map, nir->info.inputs_read,
++                       nir->info.separate_shader ? INTEL_VUE_LAYOUT_SEPARATE : INTEL_VUE_LAYOUT_FIXED, 1);
++   elk_compute_tess_vue_map(&vue_prog_data->vue_map, nir->info.outputs_written, nir->info.patch_outputs_written);
++
++   elk_nir_apply_key(nir, compiler, &key->base, 8);
++   elk_nir_lower_vue_inputs(nir, &input_vue_map);
++   elk_nir_lower_tcs_outputs(nir, &vue_prog_data->vue_map, key->_tes_primitive_mode);
++   if (key->quads_workaround)
++      intel_nir_apply_tcs_quads_workaround(nir);
++   intel_nir_lower_patch_vertices_in(nir, key->input_vertices);
++
++   elk_postprocess_nir(nir, compiler, debug_enabled, key->base.robust_flags);
++
++   prog_data->patch_count_threshold = get_patch_count_threshold(key->input_vertices);
++
++   const unsigned verts_per_thread = 8;
++   vue_prog_data->dispatch_mode = INTEL_DISPATCH_MODE_TCS_SINGLE_PATCH;
++   prog_data->instances = DIV_ROUND_UP(nir->info.tess.tcs_vertices_out, verts_per_thread);
++
++   /* URB entry: the patch header (counted in num_per_patch_slots), per-patch
++    * and per-vertex varyings; at most 32k. */
++   const int num_per_patch_slots = vue_prog_data->vue_map.num_per_patch_slots;
++   const int num_per_vertex_slots = vue_prog_data->vue_map.num_per_vertex_slots;
++   unsigned output_size_bytes = num_per_patch_slots * 16;
++   output_size_bytes += nir->info.tess.tcs_vertices_out * num_per_vertex_slots * 16;
++
++   assert(output_size_bytes >= 1);
++   if (output_size_bytes > GFX7_MAX_HS_URB_ENTRY_SIZE_BYTES)
++      return NULL;
++
++   /* URB entry sizes are stored as a multiple of 64 bytes. */
++   vue_prog_data->urb_entry_size = align(output_size_bytes, 64) / 64;
++
++   /* HS does not use the usual payload pushing from URB to GRFs. */
++   vue_prog_data->urb_read_length = 0;
++
++   if (unlikely(debug_enabled)) {
++      fprintf(stderr, "TCS Input ");
++      elk_print_vue_map(stderr, &input_vue_map, MESA_SHADER_TESS_CTRL);
++      fprintf(stderr, "TCS Output ");
++      elk_print_vue_map(stderr, &vue_prog_data->vue_map, MESA_SHADER_TESS_CTRL);
++   }
++
++   const unsigned dispatch_width = 8;
++   elk_fs_visitor v(compiler, &params->base, &key->base, &prog_data->base.base, nir, dispatch_width,
++                    params->base.stats != NULL, debug_enabled);
++   if (!v.run_tcs()) {
++      params->base.error_str = ralloc_strdup(params->base.mem_ctx, v.fail_msg);
++      return NULL;
++   }
++
++   assert(v.payload().num_regs % reg_unit(devinfo) == 0);
++   prog_data->base.base.dispatch_grf_start_reg = v.payload().num_regs / reg_unit(devinfo);
++
++   elk_fs_generator g(compiler, &params->base, &prog_data->base.base, false, MESA_SHADER_TESS_CTRL);
++   if (unlikely(debug_enabled)) {
++      g.enable_debug(ralloc_asprintf(params->base.mem_ctx, "%s tessellation control shader %s",
++                                     nir->info.label ? nir->info.label : "unnamed", nir->info.name));
++   }
++   g.generate_code(v.cfg, dispatch_width, v.shader_stats, v.performance_analysis.require(), params->base.stats);
++   g.add_const_data(nir->constant_data, nir->constant_data_size);
++   return g.get_assembly();
++}
+--- /dev/null
 +++ b/src/intel/blorp/blorp_bounds_nir.h
 @@ -0,0 +1,13 @@
 +/* Equivalent NIR builder for blorp_shaders.cl::blorp_check_in_bounds.
@@ -6910,7 +7783,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_format_table.c
-@@ -0,0 +1,1646 @@
+@@ -0,0 +1,1640 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -8016,12 +8889,6 @@
 +       !(image_usage & VK_IMAGE_USAGE_STORAGE_BIT) &&
 +       isl_format_supports_multisampling(devinfo, format->planes[0].isl_format)) {
 +      sampleCounts = isl_device_get_sample_counts(&physical_device->isl_dev);
-+      /* Gfx7 doesn't support 8xMSAA with depth/stencil images when their width
-+       * is greater than 8192 pixels. */
-+      if (devinfo->ver == 7 &&
-+         (format_feature_flags & VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT)) {
-+         maxExtent.width = 8192;
-+      }
 +   }
 +
 +   if (view_usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) {
@@ -10302,7 +11169,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_query.c
-@@ -0,0 +1,1543 @@
+@@ -0,0 +1,1502 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -10384,12 +11251,10 @@
 +       pCreateInfo->queryType != VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT &&
 +       pCreateInfo->queryType != VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT)
 +      return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
-+#if GFX_VER >= 8
 +   const VkQueryPoolPerformanceCreateInfoKHR *perf_query_info = NULL;
 +   struct intel_perf_counter_pass *counter_pass;
 +   struct intel_perf_query_info **pass_query;
 +   uint32_t n_passes = 0;
-+#endif
 +   uint32_t data_offset = 0;
 +   VK_MULTIALLOC(ma);
 +   VkResult result;
@@ -10449,7 +11314,6 @@
 +      uint64s_per_slot += 2 * DIV_ROUND_UP(layout->size, sizeof(uint64_t));
 +      break;
 +   }
-+#if GFX_VER >= 8
 +   case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR: {
 +      const struct intel_perf_query_field_layout *layout =
 +         &pdevice->perf->query_layout;
@@ -10475,7 +11339,6 @@
 +      uint64s_per_slot *= n_passes;
 +      break;
 +   }
-+#endif
 +   case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
 +      /* Query has two values: begin and end. */
 +      uint64s_per_slot = 1 + 2;
@@ -10497,7 +11360,6 @@
 +      pool->data_offset = data_offset;
 +      pool->snapshot_size = (pool->stride - data_offset) / 2;
 +   }
-+#if GFX_VER >= 8
 +   else if (pool->type == VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR) {
 +      pool->pass_size = pool->stride / n_passes;
 +      pool->data_offset = data_offset;
@@ -10515,7 +11377,6 @@
 +                              perf_query_info->counterIndexCount,
 +                              pool->pass_query);
 +   }
-+#endif
 +
 +   uint64_t size = pool->slots * (uint64_t)pool->stride;
 +   result = anv_device_alloc_bo(device, "query-pool", size,
@@ -10526,7 +11387,6 @@
 +   if (result != VK_SUCCESS)
 +      goto fail;
 +
-+#if GFX_VER >= 8
 +   if (pool->type == VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR) {
 +      for (uint32_t p = 0; p < pool->n_passes; p++) {
 +         struct mi_builder b;
@@ -10542,7 +11402,6 @@
 +         anv_batch_emit(&batch, GENX(MI_BATCH_BUFFER_END), bbe);
 +      }
 +   }
-+#endif
 +
 +   *pQueryPool = anv_query_pool_to_handle(pool);
 +
@@ -10569,7 +11428,6 @@
 +   vk_object_free(&device->vk, pAllocator, pool);
 +}
 +
-+#if GFX_VER >= 8
 +/**
 + * VK_KHR_performance_query layout  :
 + *
@@ -10667,7 +11525,6 @@
 +
 +   return true;
 +}
-+#endif
 +
 +/**
 + * VK_INTEL_performance_query layout :
@@ -10719,7 +11576,6 @@
 +static bool
 +query_is_available(struct anv_query_pool *pool, uint32_t query)
 +{
-+#if GFX_VER >= 8
 +   if (pool->type == VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR) {
 +      for (uint32_t p = 0; p < pool->n_passes; p++) {
 +         volatile uint64_t *slot =
@@ -10729,7 +11585,6 @@
 +      }
 +      return true;
 +   }
-+#endif
 +
 +   return *(volatile uint64_t *)query_slot(pool, query);
 +}
@@ -10870,7 +11725,6 @@
 +         break;
 +      }
 +
-+#if GFX_VER >= 8
 +      case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR: {
 +         const struct anv_physical_device *pdevice = device->physical;
 +         assert((flags & (VK_QUERY_RESULT_WITH_AVAILABILITY_BIT |
@@ -10887,7 +11741,6 @@
 +         }
 +         break;
 +      }
-+#endif
 +
 +      case VK_QUERY_TYPE_PERFORMANCE_QUERY_INTEL: {
 +         if (!write_results)
@@ -11006,7 +11859,6 @@
 +      }
 +      break;
 +
-+#if GFX_VER >= 8
 +   case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR: {
 +      for (uint32_t i = 0; i < num_queries; i++) {
 +         for (uint32_t p = 0; p < pool->n_passes; p++) {
@@ -11019,7 +11871,6 @@
 +      }
 +      break;
 +   }
-+#endif
 +
 +   case VK_QUERY_TYPE_PERFORMANCE_QUERY_INTEL:
 +      for (uint32_t i = 0; i < num_queries; i++) {
@@ -11081,7 +11932,6 @@
 +      break;
 +   }
 +
-+#if GFX_VER >= 8
 +   case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR: {
 +      struct mi_builder b;
 +      mi_builder_init(&b, cmd_buffer->device->info, &cmd_buffer->batch);
@@ -11096,7 +11946,6 @@
 +      }
 +      break;
 +   }
-+#endif
 +
 +   case VK_QUERY_TYPE_PERFORMANCE_QUERY_INTEL: {
 +      struct mi_builder b;
@@ -11122,13 +11971,11 @@
 +
 +   for (uint32_t i = 0; i < queryCount; i++) {
 +      if (pool->type == VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR) {
-+#if GFX_VER >= 8
 +         for (uint32_t p = 0; p < pool->n_passes; p++) {
 +            uint64_t *pass_slot = pool->bo->map +
 +               khr_perf_query_availability_offset(pool, firstQuery + i, p);
 +            *pass_slot = 0;
 +         }
-+#endif
 +      } else {
 +         uint64_t *slot = query_slot(pool, firstQuery + i);
 +         *slot = 0;
@@ -11280,7 +12127,6 @@
 +      emit_xfb_query(&b, index, anv_address_add(query_addr, 8));
 +      break;
 +
-+#if GFX_VER >= 8
 +   case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR: {
 +      if (!khr_perf_query_ensure_relocs(cmd_buffer))
 +         return;
@@ -11395,7 +12241,6 @@
 +      }
 +      break;
 +   }
-+#endif
 +
 +   case VK_QUERY_TYPE_PERFORMANCE_QUERY_INTEL: {
 +      anv_batch_emit(&cmd_buffer->batch, GENX(PIPE_CONTROL), pc) {
@@ -11481,7 +12326,6 @@
 +      emit_query_mi_availability(&b, query_addr, true);
 +      break;
 +
-+#if GFX_VER >= 8
 +   case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR: {
 +      anv_batch_emit(&cmd_buffer->batch, GENX(PIPE_CONTROL), pc) {
 +         pc.CommandStreamerStallEnable = true;
@@ -11559,7 +12403,6 @@
 +      assert(cmd_buffer->perf_reloc_idx == pdevice->n_perf_query_commands);
 +      break;
 +   }
-+#endif
 +
 +   case VK_QUERY_TYPE_PERFORMANCE_QUERY_INTEL: {
 +      anv_batch_emit(&cmd_buffer->batch, GENX(PIPE_CONTROL), pc) {
@@ -11648,7 +12491,6 @@
 +   }
 +}
 +
-+#if GFX_VERx10 >= 75
 +
 +#define MI_PREDICATE_SRC0    0x2400
 +#define MI_PREDICATE_SRC1    0x2408
@@ -11813,11 +12655,9 @@
 +         gpu_write_query_result(&b, dest_addr, flags, idx++, result);
 +         break;
 +
-+#if GFX_VER >= 8
 +      case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR:
 +         UNREACHABLE("Copy KHR performance query results not implemented");
 +         break;
-+#endif
 +
 +      default:
 +         UNREACHABLE("unhandled query type");
@@ -11832,20 +12672,6 @@
 +   }
 +}
 +
-+#else
-+void genX(CmdCopyQueryPoolResults)(
-+    VkCommandBuffer                             commandBuffer,
-+    VkQueryPool                                 queryPool,
-+    uint32_t                                    firstQuery,
-+    uint32_t                                    queryCount,
-+    VkBuffer                                    destBuffer,
-+    VkDeviceSize                                destOffset,
-+    VkDeviceSize                                destStride,
-+    VkQueryResultFlags                          flags)
-+{
-+   anv_finishme("Queries not yet supported on Ivy Bridge");
-+}
-+#endif
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_capabilities.c
 @@ -0,0 +1,1138 @@
@@ -12989,7 +13815,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_memcpy.c
-@@ -0,0 +1,301 @@
+@@ -0,0 +1,273 @@
 +/*
 + * Copyright © 2016 Intel Corporation
 + *
@@ -13047,13 +13873,11 @@
 +emit_common_so_memcpy(struct anv_batch *batch, struct anv_device *device,
 +                      const struct intel_l3_config *l3_config)
 +{
-+#if GFX_VER >= 8
 +   anv_batch_emit(batch, GENX(3DSTATE_VF_INSTANCING), vfi) {
 +      vfi.InstancingEnable = false;
 +      vfi.VertexElementIndex = 0;
 +   }
 +   anv_batch_emit(batch, GENX(3DSTATE_VF_SGVS), sgvs);
-+#endif
 +
 +   /* Disable all shader stages */
 +   anv_batch_emit(batch, GENX(3DSTATE_VS), vs);
@@ -13067,10 +13891,8 @@
 +      sbe.VertexURBEntryReadOffset = 1;
 +      sbe.NumberofSFOutputAttributes = 1;
 +      sbe.VertexURBEntryReadLength = 1;
-+#if GFX_VER >= 8
 +      sbe.ForceVertexURBEntryReadLength = true;
 +      sbe.ForceVertexURBEntryReadOffset = true;
-+#endif
 +   }
 +
 +   /* Emit URB setup.  We tell it that the VS is active because we want it to
@@ -13082,11 +13904,9 @@
 +   genX(emit_urb_setup)(device, batch, l3_config,
 +                        VK_SHADER_STAGE_VERTEX_BIT, entry_size);
 +
-+#if GFX_VER >= 8
 +   anv_batch_emit(batch, GENX(3DSTATE_VF_TOPOLOGY), topo) {
 +      topo.PrimitiveTopologyType = _3DPRIM_POINTLIST;
 +   }
-+#endif
 +
 +   anv_batch_emit(batch, GENX(3DSTATE_VF_STATISTICS), vf) {
 +      vf.StatisticsEnable = false;
@@ -13120,11 +13940,7 @@
 +         .BufferStartingAddress = src,
 +         .BufferPitch = bs,
 +         .MOCS = anv_mocs(device, src.bo, 0),
-+#if (GFX_VER >= 8)
 +         .BufferSize = size,
-+#else
-+         .EndAddress = anv_address_add(src, size - 1),
-+#endif
 +      });
 +
 +   dw = anv_batch_emitn(batch, 3, GENX(3DSTATE_VERTEX_ELEMENTS));
@@ -13146,15 +13962,9 @@
 +      sob.MOCS = anv_mocs(device, dst.bo, ISL_SURF_USAGE_STREAM_OUT_BIT),
 +      sob.SurfaceBaseAddress = dst;
 +
-+#if GFX_VER >= 8
 +      sob.SOBufferEnable = true;
 +      sob.SurfaceSize = size / 4 - 1;
-+#else
-+      sob.SurfacePitch = bs;
-+      sob.SurfaceEndAddress = anv_address_add(dst, size);
-+#endif
 +
-+#if GFX_VER >= 8
 +      /* As SOL writes out data, it updates the SO_WRITE_OFFSET registers with
 +       * the end position of the stream.  We need to reset this value to 0 at
 +       * the beginning of the run or else SOL will start at the offset from
@@ -13162,16 +13972,8 @@
 +       */
 +      sob.StreamOffsetWriteEnable = true;
 +      sob.StreamOffset = 0;
-+#endif
 +   }
 +
-+#if GFX_VER <= 7
-+   /* The hardware can do this for us on BDW+ (see above) */
-+   anv_batch_emit(batch, GENX(MI_LOAD_REGISTER_IMM), load) {
-+      load.RegisterOffset = GENX(SO_WRITE_OFFSET0_num);
-+      load.DataDWord = 0;
-+   }
-+#endif
 +
 +   dw = anv_batch_emitn(batch, 5, GENX(3DSTATE_SO_DECL_LIST),
 +                        .StreamtoBufferSelects0 = (1 << 0),
@@ -13190,11 +13992,7 @@
 +      so.RenderingDisable = true;
 +      so.Stream0VertexReadOffset = 0;
 +      so.Stream0VertexReadLength = DIV_ROUND_UP(32, 64);
-+#if GFX_VER >= 8
 +      so.Buffer0SurfacePitch = bs;
-+#else
-+      so.SOBufferEnable0 = true;
-+#endif
 +   }
 +
 +   anv_batch_emit(batch, GENX(3DPRIMITIVE), prim) {
@@ -14162,7 +14960,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_gen8.c
-@@ -0,0 +1,5946 @@
+@@ -0,0 +1,5611 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -14302,7 +15100,6 @@
 +      sba.InstructionMOCS = mocs;
 +      sba.InstructionBaseAddressModifyEnable = true;
 +
-+#  if (GFX_VER >= 8)
 +      /* Broadwell requires that we specify a buffer size for a bunch of
 +       * these fields.  However, since we will be growing the BO's live, we
 +       * just set them all to the maximum.
@@ -14323,24 +15120,6 @@
 +      sba.IndirectObjectBufferSizeModifyEnable  = true;
 +      sba.DynamicStateBufferSizeModifyEnable    = true;
 +      sba.InstructionBuffersizeModifyEnable     = true;
-+#  else
-+      /* On gfx7, we have upper bounds instead.  According to the docs,
-+       * setting an upper bound of zero means that no bounds checking is
-+       * performed so, in theory, we should be able to leave them zero.
-+       * However, border color is broken and the GPU bounds-checks anyway.
-+       * To avoid this and other potential problems, we may as well set it
-+       * for everything.
-+       */
-+      sba.GeneralStateAccessUpperBound =
-+         (struct anv_address) { .bo = NULL, .offset = 0xfffff000 };
-+      sba.GeneralStateAccessUpperBoundModifyEnable = true;
-+      sba.DynamicStateAccessUpperBound =
-+         (struct anv_address) { .bo = NULL, .offset = 0xfffff000 };
-+      sba.DynamicStateAccessUpperBoundModifyEnable = true;
-+      sba.InstructionAccessUpperBound =
-+         (struct anv_address) { .bo = NULL, .offset = 0xfffff000 };
-+      sba.InstructionAccessUpperBoundModifyEnable = true;
-+#  endif
 +   }
 +
 +   /* After re-setting the surface state base address, we have to do some
@@ -14679,16 +15458,6 @@
 +   }
 +}
 +
-+#if GFX_VER == 7
-+static inline bool
-+vk_image_layout_stencil_write_optimal(VkImageLayout layout)
-+{
-+   return layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ||
-+          layout == VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL ||
-+          layout == VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL ||
-+          layout == VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
-+}
-+#endif
 +
 +/* Transitions a HiZ-enabled depth buffer from one layout to another. Unless
 + * the initial layout is undefined, the HiZ buffer and depth buffer will
@@ -14703,36 +15472,6 @@
 +                          VkImageLayout final_layout,
 +                          bool will_full_fast_clear)
 +{
-+#if GFX_VER == 7
-+   const uint32_t plane =
-+      anv_image_aspect_to_plane(image, VK_IMAGE_ASPECT_STENCIL_BIT);
-+
-+   /* On gfx7, we have to store a texturable version of the stencil buffer in
-+    * a shadow whenever VK_IMAGE_USAGE_SAMPLED_BIT is set and copy back and
-+    * forth at strategic points. Stencil writes are only allowed in following
-+    * layouts:
-+    *
-+    *  - VK_IMAGE_LAYOUT_GENERAL
-+    *  - VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
-+    *  - VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-+    *  - VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL
-+    *  - VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL
-+    *  - VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL
-+    *
-+    * For general, we have no nice opportunity to transition so we do the copy
-+    * to the shadow unconditionally at the end of the subpass. For transfer
-+    * destinations, we can update it as part of the transfer op. For the other
-+    * layouts, we delay the copy until a transition into some other layout.
-+    */
-+   if (anv_surface_is_valid(&image->planes[plane].shadow_surface) &&
-+       vk_image_layout_stencil_write_optimal(initial_layout) &&
-+       !vk_image_layout_stencil_write_optimal(final_layout)) {
-+      anv_image_copy_to_shadow(cmd_buffer, image,
-+                               VK_IMAGE_ASPECT_STENCIL_BIT,
-+                               base_level, level_count,
-+                               base_layer, layer_count);
-+   }
-+#endif
 +}
 +
 +#define MI_PREDICATE_SRC0    0x2400
@@ -14755,7 +15494,6 @@
 +/* This is only really practical on haswell and above because it requires
 + * MI math in order to get it correct.
 + */
-+#if GFX_VERx10 >= 75
 +static void
 +anv_cmd_compute_resolve_predicate(struct anv_cmd_buffer *cmd_buffer,
 +                                  const struct anv_image *image,
@@ -14810,7 +15548,6 @@
 +      mip.CompareOperation = COMPARE_SRCS_EQUAL;
 +   }
 +}
-+#endif /* GFX_VERx10 >= 75 */
 +
 +static void
 +anv_cmd_simple_resolve_predicate(struct anv_cmd_buffer *cmd_buffer,
@@ -14893,16 +15630,12 @@
 +   assert(aspect == VK_IMAGE_ASPECT_COLOR_BIT);
 +   assert(resolve_op == ISL_AUX_OP_PARTIAL_RESOLVE);
 +
-+#if GFX_VERx10 >= 75
 +   anv_cmd_compute_resolve_predicate(cmd_buffer, image,
 +                                     aspect, 0, array_layer,
 +                                     resolve_op, fast_clear_supported);
 +
 +   anv_image_mcs_op(cmd_buffer, image, format, swizzle, aspect,
 +                    array_layer, 1, resolve_op, NULL, true);
-+#else
-+   UNREACHABLE("MCS resolves are unsupported on Ivybridge and Bay Trail");
-+#endif
 +}
 +
 +void
@@ -14992,29 +15725,6 @@
 +      anv_image_get_clear_color_addr(cmd_buffer->device, image, aspect);
 +   unsigned copy_size = cmd_buffer->device->isl_dev.ss.clear_value_size;
 +
-+#if GFX_VER == 7
-+   /* On gfx7, the combination of commands used here(MI_LOAD_REGISTER_MEM
-+    * and MI_STORE_REGISTER_MEM) can cause GPU hangs if any rendering is
-+    * in-flight when they are issued even if the memory touched is not
-+    * currently active for rendering.  The weird bit is that it is not the
-+    * MI_LOAD/STORE_REGISTER_MEM commands which hang but rather the in-flight
-+    * rendering hangs such that the next stalling command after the
-+    * MI_LOAD/STORE_REGISTER_MEM commands will catch the hang.
-+    *
-+    * It is unclear exactly why this hang occurs.  Both MI commands come with
-+    * warnings about the 3D pipeline but that doesn't seem to fully explain
-+    * it.  My (Faith's) best theory is that it has something to do with the
-+    * fact that we're using a GPU state register as our temporary and that
-+    * something with reading/writing it is causing problems.
-+    *
-+    * In order to work around this issue, we emit a PIPE_CONTROL with the
-+    * command streamer stall bit set.
-+    */
-+   anv_add_pending_pipe_bits(cmd_buffer,
-+                             ANV_PIPE_CS_STALL_BIT,
-+                             "after copy_fast_clear_dwords. Avoid potential hang");
-+   genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
-+#endif
 +
 +   struct mi_builder b;
 +   mi_builder_init(&b, cmd_buffer->device->info, &cmd_buffer->batch);
@@ -15575,7 +16285,6 @@
 +      }
 +   }
 +
-+#if GFX_VER >= 8
 +   /* Emit the sample pattern at the beginning of the batch because the
 +    * default locations emitted at the device initialization might have been
 +    * changed by a previous command buffer.
@@ -15585,9 +16294,7 @@
 +   if (cmd_buffer->device->vk.enabled_extensions.EXT_sample_locations &&
 +       !(cmd_buffer->usage_flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT))
 +      genX(emit_sample_pattern)(&cmd_buffer->batch, NULL);
-+#endif
 +
-+#if GFX_VERx10 >= 75
 +   if (cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_SECONDARY) {
 +      const VkCommandBufferInheritanceConditionalRenderingInfoEXT *conditional_rendering_info =
 +         vk_find_struct_const(pBeginInfo->pInheritanceInfo->pNext, COMMAND_BUFFER_INHERITANCE_CONDITIONAL_RENDERING_INFO_EXT);
@@ -15598,7 +16305,6 @@
 +      cmd_buffer->state.conditional_render_enabled =
 +         conditional_rendering_info && conditional_rendering_info->conditionalRenderingEnable;
 +   }
-+#endif
 +
 +   return VK_SUCCESS;
 +}
@@ -15710,7 +16416,6 @@
 +      assert(secondary->vk.level == VK_COMMAND_BUFFER_LEVEL_SECONDARY);
 +      assert(!anv_batch_has_error(&secondary->batch));
 +
-+#if GFX_VERx10 >= 75
 +      if (secondary->state.conditional_render_enabled) {
 +         if (!primary->state.conditional_render_enabled) {
 +            /* Secondary buffer is constructed as if it will be executed
@@ -15723,7 +16428,6 @@
 +                         mi_imm(UINT64_MAX));
 +         }
 +      }
-+#endif
 +
 +      if (secondary->usage_flags &
 +          VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT) {
@@ -15920,7 +16624,6 @@
 +            bits & ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT;
 +
 +         pipe.CommandStreamerStallEnable = bits & ANV_PIPE_CS_STALL_BIT;
-+#if GFX_VER == 8
 +         /* From Broadwell PRM, volume 2a:
 +          *    PIPE_CONTROL: Command Streamer Stall Enable:
 +          *
@@ -15936,7 +16639,6 @@
 +          *    if we got here, we need a stall.
 +          */
 +         pipe.CommandStreamerStallEnable |= current_pipeline == GPGPU;
-+#endif
 +
 +         pipe.StallAtPixelScoreboard = bits & ANV_PIPE_STALL_AT_SCOREBOARD_BIT;
 +
@@ -16909,15 +17611,11 @@
 +       *
 +       * Let's not bother and assume it's all internal.
 +       */
-+#if GFX_VER != 8
-+      c.ConstantBody.MOCS = mocs;
-+#endif
 +
 +      if (anv_pipeline_has_stage(pipeline, stage)) {
 +         const struct anv_pipeline_bind_map *bind_map =
 +            &pipeline->shaders[stage]->bind_map;
 +
-+#if GFX_VERx10 >= 75
 +         /* The Skylake PRM contains the following restriction:
 +          *
 +          *    "The driver must ensure The following case does not occur
@@ -16946,24 +17644,6 @@
 +            c.ConstantBody.Buffer[i + shift] =
 +               anv_address_add(buffers[i], range->start * 32);
 +         }
-+#else
-+         /* For Ivy Bridge, push constants are relative to dynamic state
-+          * base address and we only ever push actual push constants.
-+          */
-+         if (bind_map->push_ranges[0].length > 0) {
-+            assert(buffer_count == 1);
-+            assert(bind_map->push_ranges[0].set ==
-+                   ANV_DESCRIPTOR_SET_PUSH_CONSTANTS);
-+            assert(buffers[0].bo ==
-+                   cmd_buffer->device->dynamic_state_pool.block_pool.bo);
-+            c.ConstantBody.ReadLength[0] = bind_map->push_ranges[0].length;
-+            c.ConstantBody.Buffer[0].bo = NULL;
-+            c.ConstantBody.Buffer[0].offset = buffers[0].offset;
-+         }
-+         assert(bind_map->push_ranges[1].length == 0);
-+         assert(bind_map->push_ranges[2].length == 0);
-+         assert(bind_map->push_ranges[3].length == 0);
-+#endif
 +      }
 +   }
 +}
@@ -17066,10 +17746,6 @@
 +
 +   if (!(cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_PIPELINE) &&
 +       !BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY) &&
-+#if GFX_VER <= 7
-+       !BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_RS_CULL_MODE) &&
-+       !BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_RS_FRONT_FACE) &&
-+#endif
 +       !BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_VIEWPORT_COUNT))
 +      return;
 +
@@ -17083,10 +17759,6 @@
 +
 +   struct GENX(3DSTATE_CLIP) clip = {
 +      GENX(3DSTATE_CLIP_header),
-+#if GFX_VER <= 7
-+      .FrontWinding = genX(vk_to_intel_front_face)[dyn->rs.front_face],
-+      .CullMode     = genX(vk_to_intel_cullmode)[dyn->rs.cull_mode],
-+#endif
 +      .ViewportXYClipTestEnable = xy_clip_test_enable,
 +   };
 +   uint32_t dwords[GENX(3DSTATE_CLIP_length)];
@@ -17140,12 +17812,10 @@
 +         .XMaxClipGuardband = 1.0f,
 +         .YMinClipGuardband = -1.0f,
 +         .YMaxClipGuardband = 1.0f,
-+#if GFX_VER >= 8
 +         .XMinViewPort = vp->x,
 +         .XMaxViewPort = vp->x + vp->width - 1,
 +         .YMinViewPort = MIN2(vp->y, vp->y + vp->height),
 +         .YMaxViewPort = MAX2(vp->y, vp->y + vp->height) - 1,
-+#endif
 +      };
 +
 +      /* Fix depth test misrenderings by lowering translated depth range */
@@ -17343,11 +18013,7 @@
 +      &cmd_buffer->vk.dynamic_graphics_state;
 +   struct anv_graphics_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
 +
-+#if GFX_VER == 7
-+#  define streamout_state_dw pipeline->gfx7.streamout_state
-+#else
 +#  define streamout_state_dw pipeline->gfx8.streamout_state
-+#endif
 +
 +   uint32_t dwords[GENX(3DSTATE_STREAMOUT_length)];
 +
@@ -17399,36 +18065,18 @@
 +            uint32_t stride = dyn->vi_binding_strides[vb];
 +            UNUSED uint32_t size = cmd_buffer->state.vertex_bindings[vb].size;
 +
-+#if GFX_VER <= 7
-+            bool per_instance = pipeline->vb[vb].instanced;
-+            uint32_t divisor = pipeline->vb[vb].instance_divisor *
-+                               pipeline->instance_multiplier;
-+#endif
 +
 +            state = (struct GENX(VERTEX_BUFFER_STATE)) {
 +               .VertexBufferIndex = vb,
 +
 +               .MOCS = anv_mocs(cmd_buffer->device, buffer->address.bo,
 +                                ISL_SURF_USAGE_VERTEX_BUFFER_BIT),
-+#if GFX_VER <= 7
-+               .BufferAccessType = per_instance ? INSTANCEDATA : VERTEXDATA,
-+               .InstanceDataStepRate = per_instance ? divisor : 1,
-+#endif
 +               .AddressModifyEnable = true,
 +               .BufferPitch = stride,
 +               .BufferStartingAddress = anv_address_add(buffer->address, offset),
 +               .NullVertexBuffer = offset >= buffer->vk.size,
 +
-+#if GFX_VER >= 8
 +               .BufferSize = size,
-+#else
-+               /* XXX: to handle dynamic offset for older gens we might want
-+                * to modify Endaddress, but there are issues when doing so:
-+                *
-+                * https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/7439
-+                */
-+               .EndAddress = anv_address_add(buffer->address, buffer->vk.size - 1),
-+#endif
 +            };
 +         } else {
 +            state = (struct GENX(VERTEX_BUFFER_STATE)) {
@@ -17439,11 +18087,9 @@
 +            };
 +         }
 +
-+#if GFX_VER == 8
 +         genX(cmd_buffer_set_binding_for_gfx8_vb_flush)(cmd_buffer, vb,
 +                                                        state.BufferStartingAddress,
 +                                                        state.BufferSize);
-+#endif
 +
 +         GENX(VERTEX_BUFFER_STATE_pack)(&cmd_buffer->batch, &p[1 + i * 4], &state);
 +         i++;
@@ -17488,20 +18134,10 @@
 +                                   ISL_SURF_USAGE_STREAM_OUT_BIT);
 +               sob.SurfaceBaseAddress = anv_address_add(xfb->buffer->address,
 +                                                        xfb->offset);
-+#if GFX_VER >= 8
 +               sob.SOBufferEnable = true;
 +               sob.StreamOffsetWriteEnable = false;
 +               /* Size is in DWords - 1 */
 +               sob.SurfaceSize = DIV_ROUND_UP(xfb->size, 4) - 1;
-+#else
-+               /* We don't have SOBufferEnable in 3DSTATE_SO_BUFFER on Gfx7 so
-+                * we trust in SurfaceEndAddress = SurfaceBaseAddress = 0 (the
-+                * default for an empty SO_BUFFER packet) to disable them.
-+                */
-+               sob.SurfacePitch = pipeline->gfx7.xfb_bo_pitch[idx];
-+               sob.SurfaceEndAddress = anv_address_add(xfb->buffer->address,
-+                                                       xfb->offset + xfb->size);
-+#endif
 +            } else {
 +               sob.MOCS = anv_mocs(cmd_buffer->device, NULL, 0);
 +            }
@@ -17518,27 +18154,6 @@
 +      cmd_buffer_alloc_push_constants(cmd_buffer);
 +   }
 +
-+#if GFX_VER <= 7
-+   if (cmd_buffer->state.descriptors_dirty & VK_SHADER_STAGE_VERTEX_BIT ||
-+       cmd_buffer->state.push_constants_dirty & VK_SHADER_STAGE_VERTEX_BIT) {
-+      /* From the IVB PRM Vol. 2, Part 1, Section 3.2.1:
-+       *
-+       *    "A PIPE_CONTROL with Post-Sync Operation set to 1h and a depth
-+       *    stall needs to be sent just prior to any 3DSTATE_VS,
-+       *    3DSTATE_URB_VS, 3DSTATE_CONSTANT_VS,
-+       *    3DSTATE_BINDING_TABLE_POINTER_VS,
-+       *    3DSTATE_SAMPLER_STATE_POINTER_VS command.  Only one
-+       *    PIPE_CONTROL needs to be sent before any combination of VS
-+       *    associated 3DSTATE."
-+       */
-+      anv_batch_emit(&cmd_buffer->batch, GENX(PIPE_CONTROL), pc) {
-+         pc.DepthStallEnable  = true;
-+         pc.PostSyncOperation = WriteImmediateData;
-+         pc.Address           = cmd_buffer->device->workaround_address;
-+         anv_debug_dump_pc(pc);
-+      }
-+   }
-+#endif
 +
 +   /* Render targets live in the same binding table as fragment descriptors */
 +   if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_RENDER_TARGETS)
@@ -17602,11 +18217,9 @@
 +
 +      cmd_buffer->state.gfx.primitive_topology = topology;
 +
-+#if (GFX_VER >= 8)
 +      anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_VF_TOPOLOGY), vft) {
 +         vft.PrimitiveTopologyType = topology;
 +      }
-+#endif
 +   }
 +
 +   genX(cmd_buffer_flush_dynamic_state)(cmd_buffer);
@@ -17628,13 +18241,8 @@
 +         .MOCS = anv_mocs(cmd_buffer->device, addr.bo,
 +                          ISL_SURF_USAGE_VERTEX_BUFFER_BIT),
 +         .NullVertexBuffer = size == 0,
-+#if (GFX_VER >= 8)
 +         .BufferStartingAddress = addr,
 +         .BufferSize = size
-+#else
-+         .BufferStartingAddress = addr,
-+         .EndAddress = anv_address_add(addr, size),
-+#endif
 +      });
 +
 +   genX(cmd_buffer_set_binding_for_gfx8_vb_flush)(cmd_buffer,
@@ -18006,7 +18614,6 @@
 +    uint32_t                                    counterOffset,
 +    uint32_t                                    vertexStride)
 +{
-+#if GFX_VERx10 >= 75
 +   ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
 +   ANV_FROM_HANDLE(anv_buffer, counter_buffer, counterBuffer);
 +   struct anv_graphics_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
@@ -18064,7 +18671,6 @@
 +   update_dirty_vbs_for_gfx8_vb_flush(cmd_buffer, SEQUENTIAL);
 +
 +   (void)0;
-+#endif /* GFX_VERx10 >= 75 */
 +}
 +
 +static void
@@ -18082,13 +18688,8 @@
 +
 +   struct mi_value instance_count = mi_mem32(anv_address_add(addr, 4));
 +   if (pipeline->instance_multiplier > 1) {
-+#if GFX_VERx10 >= 75
 +      instance_count = mi_imul_imm(&b, instance_count,
 +                                   pipeline->instance_multiplier);
-+#else
-+      anv_finishme("Multiview + indirect draw requires MI_MATH; "
-+                   "MI_MATH is not supported on Ivy Bridge");
-+#endif
 +   }
 +   mi_store(&b, mi_reg32(GFX7_3DPRIM_INSTANCE_COUNT), instance_count);
 +
@@ -18224,10 +18825,8 @@
 +   struct mi_value ret = mi_imm(0);
 +
 +   if (cmd_buffer->state.conditional_render_enabled) {
-+#if GFX_VERx10 >= 75
 +      ret = mi_new_gpr(b);
 +      mi_store(b, mi_value_ref(b, ret), mi_mem32(count_address));
-+#endif
 +   } else {
 +      /* Upload the current draw count from the draw parameters buffer to
 +       * MI_PREDICATE_SRC0.
@@ -18269,7 +18868,6 @@
 +   }
 +}
 +
-+#if GFX_VERx10 >= 75
 +static void
 +emit_draw_count_predicate_with_conditional_render(
 +                          struct anv_cmd_buffer *cmd_buffer,
@@ -18280,24 +18878,8 @@
 +   struct mi_value pred = mi_ult(b, mi_imm(draw_index), max);
 +   pred = mi_iand(b, pred, mi_reg64(ANV_PREDICATE_RESULT_REG));
 +
-+#if GFX_VER >= 8
 +   mi_store(b, mi_reg32(MI_PREDICATE_RESULT), pred);
-+#else
-+   /* MI_PREDICATE_RESULT is not whitelisted in i915 command parser
-+    * so we emit MI_PREDICATE to set it.
-+    */
-+
-+   mi_store(b, mi_reg64(MI_PREDICATE_SRC0), pred);
-+   mi_store(b, mi_reg64(MI_PREDICATE_SRC1), mi_imm(0));
-+
-+   anv_batch_emit(&cmd_buffer->batch, GENX(MI_PREDICATE), mip) {
-+      mip.LoadOperation    = LOAD_LOADINV;
-+      mip.CombineOperation = COMBINE_SET;
-+      mip.CompareOperation = COMPARE_SRCS_EQUAL;
-+   }
-+#endif
 +}
-+#endif
 +
 +static void
 +emit_draw_count_predicate_cond(struct anv_cmd_buffer *cmd_buffer,
@@ -18305,16 +18887,12 @@
 +                               uint32_t draw_index,
 +                               struct mi_value max)
 +{
-+#if GFX_VERx10 >= 75
 +   if (cmd_buffer->state.conditional_render_enabled) {
 +      emit_draw_count_predicate_with_conditional_render(
 +            cmd_buffer, b, draw_index, mi_value_ref(b, max));
 +   } else {
 +      emit_draw_count_predicate(cmd_buffer, b, draw_index);
 +   }
-+#else
-+   emit_draw_count_predicate(cmd_buffer, b, draw_index);
-+#endif
 +}
 +
 +void genX(CmdDrawIndirectCount)(
@@ -18645,23 +19223,6 @@
 +   genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
 +}
 +
-+#if GFX_VER == 7
-+
-+static VkResult
-+verify_cmd_parser(const struct anv_device *device,
-+                  int required_version,
-+                  const char *function)
-+{
-+   if (device->physical->cmd_parser_version < required_version) {
-+      return vk_errorf(device->physical, VK_ERROR_FEATURE_NOT_PRESENT,
-+                       "cmd parser version %d is required for %s",
-+                       required_version, function);
-+   } else {
-+      return VK_SUCCESS;
-+   }
-+}
-+
-+#endif
 +
 +static void
 +anv_cmd_buffer_push_base_group_id(struct anv_cmd_buffer *cmd_buffer,
@@ -18791,14 +19352,6 @@
 +
 +   anv_cmd_buffer_push_base_group_id(cmd_buffer, 0, 0, 0);
 +
-+#if GFX_VER == 7
-+   /* Linux 4.4 added command parser version 5 which allows the GPGPU
-+    * indirect dispatch registers to be written.
-+    */
-+   if (verify_cmd_parser(cmd_buffer->device, 5,
-+                         "vkCmdDispatchIndirect") != VK_SUCCESS)
-+      return;
-+#endif
 +
 +   (void)0;
 +   (void)0;
@@ -18823,56 +19376,8 @@
 +   mi_store(&b, mi_reg32(GENX(GPGPU_DISPATCHDIMY_num)), size_y);
 +   mi_store(&b, mi_reg32(GENX(GPGPU_DISPATCHDIMZ_num)), size_z);
 +
-+#if GFX_VER <= 7
-+   /* predicate = (compute_dispatch_indirect_x_size == 0); */
-+   mi_store(&b, mi_reg64(MI_PREDICATE_SRC0), size_x);
-+   mi_store(&b, mi_reg64(MI_PREDICATE_SRC1), mi_imm(0));
-+   anv_batch_emit(batch, GENX(MI_PREDICATE), mip) {
-+      mip.LoadOperation    = LOAD_LOAD;
-+      mip.CombineOperation = COMBINE_SET;
-+      mip.CompareOperation = COMPARE_SRCS_EQUAL;
-+   }
-+
-+   /* predicate |= (compute_dispatch_indirect_y_size == 0); */
-+   mi_store(&b, mi_reg32(MI_PREDICATE_SRC0), size_y);
-+   anv_batch_emit(batch, GENX(MI_PREDICATE), mip) {
-+      mip.LoadOperation    = LOAD_LOAD;
-+      mip.CombineOperation = COMBINE_OR;
-+      mip.CompareOperation = COMPARE_SRCS_EQUAL;
-+   }
-+
-+   /* predicate |= (compute_dispatch_indirect_z_size == 0); */
-+   mi_store(&b, mi_reg32(MI_PREDICATE_SRC0), size_z);
-+   anv_batch_emit(batch, GENX(MI_PREDICATE), mip) {
-+      mip.LoadOperation    = LOAD_LOAD;
-+      mip.CombineOperation = COMBINE_OR;
-+      mip.CompareOperation = COMPARE_SRCS_EQUAL;
-+   }
-+
-+   /* predicate = !predicate; */
-+   anv_batch_emit(batch, GENX(MI_PREDICATE), mip) {
-+      mip.LoadOperation    = LOAD_LOADINV;
-+      mip.CombineOperation = COMBINE_OR;
-+      mip.CompareOperation = COMPARE_FALSE;
-+   }
-+
-+#if GFX_VERx10 == 75
-+   if (cmd_buffer->state.conditional_render_enabled) {
-+      /* predicate &= !(conditional_rendering_predicate == 0); */
-+      mi_store(&b, mi_reg32(MI_PREDICATE_SRC0),
-+                   mi_reg32(ANV_PREDICATE_RESULT_REG));
-+      anv_batch_emit(batch, GENX(MI_PREDICATE), mip) {
-+         mip.LoadOperation    = LOAD_LOADINV;
-+         mip.CombineOperation = COMBINE_AND;
-+         mip.CompareOperation = COMPARE_SRCS_EQUAL;
-+      }
-+   }
-+#endif
-+
-+#else /* GFX_VER > 7 */
 +   if (cmd_buffer->state.conditional_render_enabled)
 +      genX(cmd_emit_conditional_render_predicate)(cmd_buffer);
-+#endif
 +
 +   emit_cs_walker(cmd_buffer, pipeline, true, prog_data, 0, 0, 0);
 +   (void)0;
@@ -18887,7 +19392,6 @@
 +   if (cmd_buffer->state.current_pipeline == pipeline)
 +      return;
 +
-+#if GFX_VER >= 8
 +   /* From the Broadwell PRM, Volume 2a: Instructions, PIPELINE_SELECT:
 +    *
 +    *   Software must clear the COLOR_CALC_STATE Valid field in
@@ -18899,7 +19403,6 @@
 +    */
 +   if (pipeline == GPGPU)
 +      anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_CC_STATE_POINTERS), t);
-+#endif
 +
 +   /* From "BXML » GT » MI » vol1a GPU Overview » [Instruction]
 +    * PIPELINE_SELECT [DevBWR+]":
@@ -19800,42 +20303,6 @@
 +                                  VK_IMAGE_ASPECT_STENCIL_BIT);
 +   }
 +
-+#if GFX_VER == 7
-+   /* On gfx7, we have to store a texturable version of the stencil buffer in
-+    * a shadow whenever VK_IMAGE_USAGE_SAMPLED_BIT is set and copy back and
-+    * forth at strategic points. Stencil writes are only allowed in following
-+    * layouts:
-+    *
-+    *  - VK_IMAGE_LAYOUT_GENERAL
-+    *  - VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
-+    *  - VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-+    *  - VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL
-+    *  - VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL
-+    *  - VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL
-+    *  - VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT
-+    *
-+    * For general, we have no nice opportunity to transition so we do the copy
-+    * to the shadow unconditionally at the end of the subpass. For transfer
-+    * destinations, we can update it as part of the transfer op. For the other
-+    * layouts, we delay the copy until a transition into some other layout.
-+    */
-+   if (gfx->stencil_att.iview != NULL) {
-+      const struct anv_image_view *iview = gfx->stencil_att.iview;
-+      const struct anv_image *image = iview->image;
-+      const uint32_t plane =
-+         anv_image_aspect_to_plane(image, VK_IMAGE_ASPECT_STENCIL_BIT);
-+
-+      if (anv_surface_is_valid(&image->planes[plane].shadow_surface) &&
-+          (gfx->stencil_att.layout == VK_IMAGE_LAYOUT_GENERAL ||
-+           gfx->stencil_att.layout == VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT)) {
-+         anv_image_copy_to_shadow(cmd_buffer, image,
-+                                  VK_IMAGE_ASPECT_STENCIL_BIT,
-+                                  iview->planes[plane].isl.base_level, 1,
-+                                  iview->planes[plane].isl.base_array_layer,
-+                                  layers);
-+      }
-+   }
-+#endif
 +
 +   anv_cmd_buffer_reset_rendering(cmd_buffer);
 +}
@@ -19843,7 +20310,6 @@
 +void
 +genX(cmd_emit_conditional_render_predicate)(struct anv_cmd_buffer *cmd_buffer)
 +{
-+#if GFX_VERx10 >= 75
 +   struct mi_builder b;
 +   mi_builder_init(&b, cmd_buffer->device->info, &cmd_buffer->batch);
 +
@@ -19856,10 +20322,8 @@
 +      mip.CombineOperation = COMBINE_SET;
 +      mip.CompareOperation = COMPARE_SRCS_EQUAL;
 +   }
-+#endif
 +}
 +
-+#if GFX_VERx10 >= 75
 +void genX(CmdBeginConditionalRenderingEXT)(
 +   VkCommandBuffer                             commandBuffer,
 +   const VkConditionalRenderingBeginInfoEXT*   pConditionalRenderingBegin)
@@ -19910,7 +20374,6 @@
 +
 +   cmd_state->conditional_render_enabled = false;
 +}
-+#endif
 +
 +/* Set of stage bits for which are pipelined, i.e. they get queued
 + * by the command streamer for later execution.
@@ -20111,7 +20574,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_state.c
-@@ -0,0 +1,572 @@
+@@ -0,0 +1,465 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -20179,7 +20642,6 @@
 +      rect.DrawingRectangleOriginX = 0;
 +   }
 +
-+#if GFX_VER >= 8
 +   anv_batch_emit(&batch, GENX(3DSTATE_WM_CHROMAKEY), ck);
 +
 +   genX(emit_sample_pattern)(&batch, NULL);
@@ -20193,7 +20655,6 @@
 +    * number of GPU hangs on ICL.
 +    */
 +   anv_batch_emit(&batch, GENX(3DSTATE_WM_HZ_OP), hzp);
-+#endif
 +
 +   /* Set the "CONSTANT_BUFFER Address Offset Disable" bit, so
 +    * 3DSTATE_CONSTANT_XS buffer 0 is an absolute address.
@@ -20201,12 +20662,10 @@
 +    * This is only safe on kernels with context isolation support.
 +    */
 +   if (GFX_VER >= 8 && device->physical->info.has_context_isolation) {
-+#if GFX_VER == 8
 +      anv_batch_write_reg(&batch, GENX(INSTPM), instpm) {
 +         instpm.CONSTANT_BUFFERAddressOffsetDisable = true;
 +         instpm.CONSTANT_BUFFERAddressOffsetDisableMask = true;
 +      }
-+#endif
 +   }
 +
 +   anv_batch_emit(&batch, GENX(MI_BATCH_BUFFER_END), bbe);
@@ -20248,7 +20707,6 @@
 +{
 +   UNUSED const struct intel_device_info *devinfo = device->info;
 +
-+#if GFX_VER >= 8
 +
 +#define L3_ALLOCATION_REG GENX(L3CNTLREG)
 +#define L3_ALLOCATION_REG_num GENX(L3CNTLREG_num)
@@ -20268,80 +20726,6 @@
 +      }
 +   }
 +
-+#else /* GFX_VER < 8 */
-+
-+   const bool has_dc = cfg->n[INTEL_L3P_DC] || cfg->n[INTEL_L3P_ALL];
-+   const bool has_is = cfg->n[INTEL_L3P_IS] || cfg->n[INTEL_L3P_RO] ||
-+                       cfg->n[INTEL_L3P_ALL];
-+   const bool has_c = cfg->n[INTEL_L3P_C] || cfg->n[INTEL_L3P_RO] ||
-+                      cfg->n[INTEL_L3P_ALL];
-+   const bool has_t = cfg->n[INTEL_L3P_T] || cfg->n[INTEL_L3P_RO] ||
-+                      cfg->n[INTEL_L3P_ALL];
-+
-+   assert(!cfg->n[INTEL_L3P_ALL]);
-+
-+   /* When enabled SLM only uses a portion of the L3 on half of the banks,
-+    * the matching space on the remaining banks has to be allocated to a
-+    * client (URB for all validated configurations) set to the
-+    * lower-bandwidth 2-bank address hashing mode.
-+    */
-+   const bool urb_low_bw = cfg->n[INTEL_L3P_SLM] && devinfo->platform != INTEL_PLATFORM_BYT;
-+   assert(!urb_low_bw || cfg->n[INTEL_L3P_URB] == cfg->n[INTEL_L3P_SLM]);
-+
-+   /* Minimum number of ways that can be allocated to the URB. */
-+   const unsigned n0_urb = devinfo->platform == INTEL_PLATFORM_BYT ? 32 : 0;
-+   assert(cfg->n[INTEL_L3P_URB] >= n0_urb);
-+
-+   anv_batch_write_reg(batch, GENX(L3SQCREG1), l3sqc) {
-+      l3sqc.ConvertDC_UC = !has_dc;
-+      l3sqc.ConvertIS_UC = !has_is;
-+      l3sqc.ConvertC_UC = !has_c;
-+      l3sqc.ConvertT_UC = !has_t;
-+#if GFX_VERx10 == 75
-+      l3sqc.L3SQGeneralPriorityCreditInitialization = SQGPCI_DEFAULT;
-+#else
-+      l3sqc.L3SQGeneralPriorityCreditInitialization =
-+         devinfo->platform == INTEL_PLATFORM_BYT ? BYT_SQGPCI_DEFAULT : SQGPCI_DEFAULT;
-+#endif
-+      l3sqc.L3SQHighPriorityCreditInitialization = SQHPCI_DEFAULT;
-+   }
-+
-+   anv_batch_write_reg(batch, GENX(L3CNTLREG2), l3cr2) {
-+      l3cr2.SLMEnable = cfg->n[INTEL_L3P_SLM];
-+      l3cr2.URBLowBandwidth = urb_low_bw;
-+      l3cr2.URBAllocation = cfg->n[INTEL_L3P_URB] - n0_urb;
-+#if !GFX_VERx10 == 75
-+      l3cr2.ALLAllocation = cfg->n[INTEL_L3P_ALL];
-+#endif
-+      l3cr2.ROAllocation = cfg->n[INTEL_L3P_RO];
-+      l3cr2.DCAllocation = cfg->n[INTEL_L3P_DC];
-+   }
-+
-+   anv_batch_write_reg(batch, GENX(L3CNTLREG3), l3cr3) {
-+      l3cr3.ISAllocation = cfg->n[INTEL_L3P_IS];
-+      l3cr3.ISLowBandwidth = 0;
-+      l3cr3.CAllocation = cfg->n[INTEL_L3P_C];
-+      l3cr3.CLowBandwidth = 0;
-+      l3cr3.TAllocation = cfg->n[INTEL_L3P_T];
-+      l3cr3.TLowBandwidth = 0;
-+   }
-+
-+#if GFX_VERx10 == 75
-+   if (device->physical->cmd_parser_version >= 4) {
-+      /* Enable L3 atomics on HSW if we have a DC partition, otherwise keep
-+       * them disabled to avoid crashing the system hard.
-+       */
-+      anv_batch_write_reg(batch, GENX(SCRATCH1), s1) {
-+         s1.L3AtomicDisable = !has_dc;
-+      }
-+      anv_batch_write_reg(batch, GENX(CHICKEN3), c3) {
-+         c3.L3AtomicDisableMask = true;
-+         c3.L3AtomicDisable = !has_dc;
-+      }
-+   }
-+#endif /* GFX_VERx10 == 75 */
-+
-+#endif /* GFX_VER < 8 */
 +}
 +
 +void
@@ -20360,24 +20744,6 @@
 +      ms.NumberofMultisamples       = __builtin_ffs(samples) - 1;
 +
 +      ms.PixelLocation              = CENTER;
-+#if GFX_VER < 8
-+      switch (samples) {
-+      case 1:
-+         INTEL_SAMPLE_POS_1X_ARRAY(ms.Sample, sl->locations);
-+         break;
-+      case 2:
-+         INTEL_SAMPLE_POS_2X_ARRAY(ms.Sample, sl->locations);
-+         break;
-+      case 4:
-+         INTEL_SAMPLE_POS_4X_ARRAY(ms.Sample, sl->locations);
-+         break;
-+      case 8:
-+         INTEL_SAMPLE_POS_8X_ARRAY(ms.Sample, sl->locations);
-+         break;
-+      default:
-+            break;
-+      }
-+#endif
 +   }
 +}
 +
@@ -20395,7 +20761,6 @@
 +   }
 +}
 +
-+#if GFX_VER >= 8
 +void
 +genX(emit_sample_pattern)(struct anv_batch *batch,
 +                          const struct vk_sample_locations_state *sl)
@@ -20430,7 +20795,6 @@
 +      INTEL_SAMPLE_POS_8X_ARRAY(sp._8xSample, sample_locations(sl, 8));
 +   }
 +}
-+#endif
 +
 +static uint32_t
 +vk_to_intel_tex_filter(VkFilter filter, bool anisotropyEnable)
@@ -20627,15 +20991,9 @@
 +         .SamplerDisable = false,
 +         .TextureBorderColorMode = DX10OGL,
 +
-+#if GFX_VER >= 8
 +         .LODPreClampMode = CLAMP_MODE_OGL,
-+#else
-+         .LODPreClampEnable = CLAMP_ENABLE_OGL,
-+#endif
 +
-+#if GFX_VER == 8
 +         .BaseMipLevel = 0.0,
-+#endif
 +         .MipModeFilter = mip_filter_mode,
 +         .MagModeFilter = vk_to_intel_tex_filter(mag_filter, pCreateInfo->anisotropyEnable),
 +         .MinModeFilter = vk_to_intel_tex_filter(min_filter, pCreateInfo->anisotropyEnable),
@@ -20654,9 +21012,7 @@
 +
 +         .BorderColorPointer = border_color_offset,
 +
-+#if GFX_VER >= 8
 +         .LODClampMagnificationMode = MIPNONE,
-+#endif
 +
 +         .MaximumAnisotropy = vk_to_intel_max_anisotropy(pCreateInfo->maxAnisotropy),
 +         .RAddressMinFilterRoundingEnable = enable_min_filter_addr_rounding,
@@ -22689,7 +23045,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_blorp_exec.c
-@@ -0,0 +1,358 @@
+@@ -0,0 +1,346 @@
 +/*
 + * Copyright © 2016 Intel Corporation
 + *
@@ -23018,18 +23374,6 @@
 +      genX(cmd_buffer_config_l3)(cmd_buffer, cfg);
 +   }
 +
-+#if GFX_VER == 7
-+   /* The MI_LOAD/STORE_REGISTER_MEM commands which BLORP uses to implement
-+    * indirect fast-clear colors can cause GPU hangs if we don't stall first.
-+    * See genX(cmd_buffer_mi_memcpy) for more details.
-+    */
-+   if (params->src.clear_color_addr.buffer ||
-+       params->dst.clear_color_addr.buffer) {
-+      anv_add_pending_pipe_bits(cmd_buffer,
-+                                ANV_PIPE_CS_STALL_BIT,
-+                                "before blorp prep fast clear");
-+   }
-+#endif
 +
 +   if (batch->flags & BLORP_BATCH_USE_COMPUTE)
 +      blorp_exec_on_compute(batch, params);
@@ -23509,7 +23853,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_pipeline.c
-@@ -0,0 +1,1958 @@
+@@ -0,0 +1,1696 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -23692,7 +24036,6 @@
 +      };
 +      GENX(VERTEX_ELEMENT_STATE_pack)(NULL, &p[1 + slot * 2], &element);
 +
-+#if GFX_VER >= 8
 +      /* On Broadwell and later, we have a separate VF_INSTANCING packet
 +       * that controls instancing.  On Haswell and prior, that's part of
 +       * VERTEX_BUFFER_STATE which we emit later.
@@ -23706,7 +24049,6 @@
 +         vfi.VertexElementIndex = slot;
 +         vfi.InstanceDataStepRate = per_instance ? divisor : 1;
 +      }
-+#endif
 +   }
 +
 +   const uint32_t id_slot = elem_count;
@@ -23730,24 +24072,16 @@
 +         .SourceElementFormat = ISL_FORMAT_R32G32_UINT,
 +         .Component0Control = base_ctrl,
 +         .Component1Control = base_ctrl,
-+#if GFX_VER >= 8
 +         .Component2Control = VFCOMP_STORE_0,
 +         .Component3Control = VFCOMP_STORE_0,
-+#else
-+         .Component2Control = VFCOMP_STORE_VID,
-+         .Component3Control = VFCOMP_STORE_IID,
-+#endif
 +      };
 +      GENX(VERTEX_ELEMENT_STATE_pack)(NULL, &p[1 + id_slot * 2], &element);
 +
-+#if GFX_VER >= 8
 +      anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_VF_INSTANCING), vfi) {
 +         vfi.VertexElementIndex = id_slot;
 +      }
-+#endif
 +   }
 +
-+#if GFX_VER >= 8
 +   anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_VF_SGVS), sgvs) {
 +      sgvs.VertexIDEnable              = vs_prog_data->uses_vertexid;
 +      sgvs.VertexIDComponentNumber     = 2;
@@ -23756,7 +24090,6 @@
 +      sgvs.InstanceIDComponentNumber   = 3;
 +      sgvs.InstanceIDElementOffset     = id_slot;
 +   }
-+#endif
 +
 +   const uint32_t drawid_slot = elem_count + needs_svgs_elem;
 +   if (vs_prog_data->uses_drawid) {
@@ -23773,11 +24106,9 @@
 +                                      &p[1 + drawid_slot * 2],
 +                                      &element);
 +
-+#if GFX_VER >= 8
 +      anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_VF_INSTANCING), vfi) {
 +         vfi.VertexElementIndex = drawid_slot;
 +      }
-+#endif
 +   }
 +}
 +
@@ -23799,21 +24130,6 @@
 +                        active_stages & VK_SHADER_STAGE_GEOMETRY_BIT,
 +                        &urb_cfg, &constrained);
 +
-+#if GFX_VERx10 == 70
-+   /* From the IVB PRM Vol. 2, Part 1, Section 3.2.1:
-+    *
-+    *    "A PIPE_CONTROL with Post-Sync Operation set to 1h and a depth stall
-+    *    needs to be sent just prior to any 3DSTATE_VS, 3DSTATE_URB_VS,
-+    *    3DSTATE_CONSTANT_VS, 3DSTATE_BINDING_TABLE_POINTER_VS,
-+    *    3DSTATE_SAMPLER_STATE_POINTER_VS command.  Only one PIPE_CONTROL
-+    *    needs to be sent before any combination of VS associated 3DSTATE."
-+    */
-+   anv_batch_emit(batch, GFX7_PIPE_CONTROL, pc) {
-+      pc.DepthStallEnable  = true;
-+      pc.PostSyncOperation = WriteImmediateData;
-+      pc.Address           = device->workaround_address;
-+   }
-+#endif
 +
 +   for (int i = 0; i <= MESA_SHADER_GEOMETRY; i++) {
 +      anv_batch_emit(batch, GENX(3DSTATE_URB_VS), urb) {
@@ -23849,9 +24165,7 @@
 +
 +   if (!anv_pipeline_has_stage(pipeline, MESA_SHADER_FRAGMENT)) {
 +      anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_SBE), sbe);
-+#if GFX_VER >= 8
 +      anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_SBE_SWIZ), sbe);
-+#endif
 +      return;
 +   }
 +
@@ -23863,14 +24177,10 @@
 +      .ConstantInterpolationEnable = fs_prog_data->flat_inputs,
 +   };
 +
-+#if GFX_VER >= 8
 +   /* On Broadwell, they broke 3DSTATE_SBE into two packets */
 +   struct GENX(3DSTATE_SBE_SWIZ) swiz = {
 +      GENX(3DSTATE_SBE_SWIZ_header),
 +   };
-+#else
-+#  define swiz sbe
-+#endif
 +
 +   const struct intel_vue_map *fs_input_map =
 +      &anv_pipeline_get_last_vue_prog_data(pipeline)->vue_map;
@@ -23936,10 +24246,8 @@
 +
 +   sbe.VertexURBEntryReadOffset = urb_entry_read_offset;
 +   sbe.VertexURBEntryReadLength = DIV_ROUND_UP(max_source_attr + 1, 2);
-+#if GFX_VER >= 8
 +   sbe.ForceVertexURBEntryReadOffset = true;
 +   sbe.ForceVertexURBEntryReadLength = true;
-+#endif
 +
 +   uint32_t *dw = anv_batch_emit_dwords(&pipeline->base.batch,
 +                                        GENX(3DSTATE_SBE_length));
@@ -23947,12 +24255,10 @@
 +      return;
 +   GENX(3DSTATE_SBE_pack)(&pipeline->base.batch, dw, &sbe);
 +
-+#if GFX_VER >= 8
 +   dw = anv_batch_emit_dwords(&pipeline->base.batch, GENX(3DSTATE_SBE_SWIZ_length));
 +   if (!dw)
 +      return;
 +   GENX(3DSTATE_SBE_SWIZ_pack)(&pipeline->base.batch, dw, &swiz);
-+#endif
 +}
 +
 +/** Returns the final polygon mode for rasterization
@@ -24025,26 +24331,7 @@
 +genX(ms_rasterization_mode)(struct anv_graphics_pipeline *pipeline,
 +                            VkPolygonMode raster_mode)
 +{
-+#if GFX_VER <= 7
-+   if (raster_mode == VK_POLYGON_MODE_LINE) {
-+      switch (pipeline->line_mode) {
-+      case VK_LINE_RASTERIZATION_MODE_RECTANGULAR_EXT:
-+         return MSRASTMODE_ON_PATTERN;
-+
-+      case VK_LINE_RASTERIZATION_MODE_BRESENHAM_EXT:
-+      case VK_LINE_RASTERIZATION_MODE_RECTANGULAR_SMOOTH_EXT:
-+         return MSRASTMODE_OFF_PIXEL;
-+
-+      default:
-+         UNREACHABLE("Unsupported line rasterization mode");
-+      }
-+   } else {
-+      return pipeline->rasterization_samples > 1 ?
-+         MSRASTMODE_ON_PATTERN : MSRASTMODE_OFF_PIXEL;
-+   }
-+#else
 +   UNREACHABLE("Only on gen7");
-+#endif
 +}
 +
 +const uint32_t genX(vk_to_intel_cullmode)[] = {
@@ -24072,7 +24359,6 @@
 +                         uint32_t *api_mode,
 +                         bool *msaa_rasterization_enable)
 +{
-+#if GFX_VER >= 8
 +   if (raster_mode == VK_POLYGON_MODE_LINE) {
 +      /* Unfortunately, configuring our line rasterization hardware on gfx8
 +       * and later is rather painful.  Instead of giving us bits to tell the
@@ -24109,9 +24395,6 @@
 +      *api_mode = DX100;
 +      *msaa_rasterization_enable = true;
 +   }
-+#else
-+   UNREACHABLE("Invalid call");
-+#endif
 +}
 +
 +static void
@@ -24147,9 +24430,6 @@
 +      UNREACHABLE("Invalid provoking vertex mode");
 +   }
 +
-+#if GFX_VERx10 == 75
-+   sf.LineStippleEnable = rs->line.stipple.enable;
-+#endif
 +
 +   bool point_from_shader;
 +   const struct elk_vue_prog_data *last_vue_prog_data =
@@ -24163,70 +24443,39 @@
 +      sf.PointWidth = 1.0;
 +   }
 +
-+#if GFX_VER >= 8
 +   struct GENX(3DSTATE_RASTER) raster = {
 +      GENX(3DSTATE_RASTER_header),
 +   };
-+#else
-+#  define raster sf
-+#endif
 +
 +   /* For details on 3DSTATE_RASTER multisample state, see the BSpec table
 +    * "Multisample Modes State".
 +    */
-+#if GFX_VER >= 8
 +   /* NOTE: 3DSTATE_RASTER::ForcedSampleCount affects the BDW and SKL PMA fix
 +    * computations.  If we ever set this bit to a different value, they will
 +    * need to be updated accordingly.
 +    */
 +   raster.ForcedSampleCount = FSC_NUMRASTSAMPLES_0;
 +   raster.ForceMultisampling = false;
-+#endif
 +
 +   raster.FrontFaceFillMode = genX(vk_to_intel_fillmode)[rs->polygon_mode];
 +   raster.BackFaceFillMode = genX(vk_to_intel_fillmode)[rs->polygon_mode];
 +   raster.ScissorRectangleEnable = true;
 +
-+#if GFX_VER >= 8
 +   raster.ViewportZClipTestEnable = pipeline->depth_clip_enable;
-+#endif
 +
-+#if GFX_VER == 7
-+   /* Gfx7 requires that we provide the depth format in 3DSTATE_SF so that it
-+    * can get the depth offsets correct.
-+    */
-+   if (rp != NULL &&
-+       rp->depth_attachment_format != VK_FORMAT_UNDEFINED) {
-+      assert(vk_format_has_depth(rp->depth_attachment_format));
-+      enum isl_format isl_format =
-+         anv_get_isl_format(pipeline->base.device->info,
-+                            rp->depth_attachment_format,
-+                            VK_IMAGE_ASPECT_DEPTH_BIT,
-+                            VK_IMAGE_TILING_OPTIMAL);
-+      sf.DepthBufferSurfaceFormat =
-+         isl_format_get_depth_format(isl_format, false);
-+   }
-+#endif
 +
-+#if GFX_VER >= 8
 +   GENX(3DSTATE_SF_pack)(NULL, pipeline->gfx8.sf, &sf);
 +   GENX(3DSTATE_RASTER_pack)(NULL, pipeline->gfx8.raster, &raster);
-+#else
-+#  undef raster
-+   GENX(3DSTATE_SF_pack)(NULL, &pipeline->gfx7.sf, &sf);
-+#endif
 +}
 +
 +static void
 +emit_ms_state(struct anv_graphics_pipeline *pipeline,
 +              const struct vk_multisample_state *ms)
 +{
-+#if GFX_VER >= 8
 +   /* On Gfx8+ 3DSTATE_MULTISAMPLE only holds the number of samples. */
 +   genX(emit_multisample)(&pipeline->base.batch,
 +                          pipeline->rasterization_samples,
 +                          NULL);
-+#endif
 +
 +   /* From the Vulkan 1.0 spec:
 +    *    If pSampleMask is NULL, it is treated as if the mask has all bits
@@ -24234,11 +24483,7 @@
 +    *
 +    * 3DSTATE_SAMPLE_MASK.SampleMask is 16 bits.
 +    */
-+#if GFX_VER >= 8
 +   uint32_t sample_mask = 0xffff;
-+#else
-+   uint32_t sample_mask = 0xff;
-+#endif
 +
 +   if (ms != NULL)
 +      sample_mask &= ms->sample_mask;
@@ -24364,10 +24609,8 @@
 +   const struct elk_fs_prog_data *fs_prog_data = get_fs_prog_data(pipeline);
 +
 +   struct GENX(BLEND_STATE) blend_state = {
-+#if GFX_VER >= 8
 +      .AlphaToCoverageEnable = ms && ms->alpha_to_coverage_enable,
 +      .AlphaToOneEnable = ms && ms->alpha_to_one_enable,
-+#endif
 +   };
 +
 +   uint32_t surface_count = 0;
@@ -24383,9 +24626,7 @@
 +   uint32_t *state_pos = blend_state_start;
 +
 +   state_pos += GENX(BLEND_STATE_length);
-+#if GFX_VER >= 8
 +   struct GENX(BLEND_STATE_ENTRY) bs0 = { 0 };
-+#endif
 +   for (unsigned i = 0; i < surface_count; i++) {
 +      struct anv_pipeline_binding *binding = &map->surface_to_descriptor[i];
 +
@@ -24409,10 +24650,6 @@
 +         vk_format_is_float(att_format) || vk_format_is_srgb(att_format);
 +
 +      struct GENX(BLEND_STATE_ENTRY) entry = {
-+#if GFX_VER < 8
-+         .AlphaToCoverageEnable = ms && ms->alpha_to_coverage_enable,
-+         .AlphaToOneEnable = ms && ms->alpha_to_one_enable,
-+#endif
 +         .LogicOpEnable = cb->logic_op_enable && !ignore_logic_op,
 +
 +         /* Vulkan specification 1.2.168, VkLogicOp:
@@ -24445,11 +24682,7 @@
 +      if (a->src_color_blend_factor != a->src_alpha_blend_factor ||
 +          a->dst_color_blend_factor != a->dst_alpha_blend_factor ||
 +          a->color_blend_op != a->alpha_blend_op) {
-+#if GFX_VER >= 8
 +         blend_state.IndependentAlphaBlendEnable = true;
-+#else
-+         entry.IndependentAlphaBlendEnable = true;
-+#endif
 +      }
 +
 +      /* The Dual Source Blending documentation says:
@@ -24492,13 +24725,10 @@
 +      }
 +      GENX(BLEND_STATE_ENTRY_pack)(NULL, state_pos, &entry);
 +      state_pos += GENX(BLEND_STATE_ENTRY_length);
-+#if GFX_VER >= 8
 +      if (i == 0)
 +         bs0 = entry;
-+#endif
 +   }
 +
-+#if GFX_VER >= 8
 +   struct GENX(3DSTATE_PS_BLEND) blend = {
 +      GENX(3DSTATE_PS_BLEND_header),
 +   };
@@ -24512,7 +24742,6 @@
 +   blend.IndependentAlphaBlendEnable   = blend_state.IndependentAlphaBlendEnable;
 +
 +   GENX(3DSTATE_PS_BLEND_pack)(NULL, pipeline->gfx8.ps_blend, &blend);
-+#endif
 +
 +   GENX(BLEND_STATE_pack)(NULL, blend_state_start, &blend_state);
 +}
@@ -24536,9 +24765,7 @@
 +   clip.APIMode                  = pipeline->negative_one_to_one ? APIMODE_OGL : APIMODE_D3D;
 +   clip.GuardbandClipTestEnable  = true;
 +
-+#if GFX_VER >= 8
 +   clip.VertexSubPixelPrecisionSelect = _8Bit;
-+#endif
 +   clip.ClipMode = CLIPMODE_NORMAL;
 +
 +   switch (rs->provoking_vertex) {
@@ -24586,13 +24813,6 @@
 +   clip.ForceZeroRTAIndexEnable =
 +      !(last->vue_map.slots_valid & VARYING_BIT_LAYER);
 +
-+#if GFX_VER == 7
-+   clip.UserClipDistanceClipTestEnableBitmask = last->clip_distance_mask;
-+   clip.UserClipDistanceCullTestEnableBitmask = last->cull_distance_mask;
-+   clip.FrontWinding            = genX(vk_to_intel_front_face)[rs->front_face];
-+   clip.CullMode                = genX(vk_to_intel_cullmode)[rs->cull_mode];
-+   clip.ViewportZClipTestEnable = pipeline->depth_clip_enable;
-+#endif
 +
 +   clip.NonPerspectiveBarycentricEnable = fs_prog_data ?
 +      fs_prog_data->uses_nonperspective_interp_modes : 0;
@@ -24728,11 +24948,7 @@
 +      }
 +   }
 +
-+#if GFX_VER == 7
-+#  define streamout_state_dw pipeline->gfx7.streamout_state
-+#else
 +#  define streamout_state_dw pipeline->gfx8.streamout_state
-+#endif
 +
 +   struct GENX(3DSTATE_STREAMOUT) so = {
 +      GENX(3DSTATE_STREAMOUT_header),
@@ -24757,28 +24973,10 @@
 +
 +      so.RenderStreamSelect = rs->rasterization_stream;
 +
-+#if GFX_VER >= 8
 +      so.Buffer0SurfacePitch = xfb_info->buffers[0].stride;
 +      so.Buffer1SurfacePitch = xfb_info->buffers[1].stride;
 +      so.Buffer2SurfacePitch = xfb_info->buffers[2].stride;
 +      so.Buffer3SurfacePitch = xfb_info->buffers[3].stride;
-+#else
-+      pipeline->gfx7.xfb_bo_pitch[0] = xfb_info->buffers[0].stride;
-+      pipeline->gfx7.xfb_bo_pitch[1] = xfb_info->buffers[1].stride;
-+      pipeline->gfx7.xfb_bo_pitch[2] = xfb_info->buffers[2].stride;
-+      pipeline->gfx7.xfb_bo_pitch[3] = xfb_info->buffers[3].stride;
-+
-+      /* On Gfx7, the SO buffer enables live in 3DSTATE_STREAMOUT which
-+       * is a bit inconvenient because we don't know what buffers will
-+       * actually be enabled until draw time.  We do our best here by
-+       * setting them based on buffers_written and we disable them
-+       * as-needed at draw time by setting EndAddress = BaseAddress.
-+       */
-+      so.SOBufferEnable0 = xfb_info->buffers_written & (1 << 0);
-+      so.SOBufferEnable1 = xfb_info->buffers_written & (1 << 1);
-+      so.SOBufferEnable2 = xfb_info->buffers_written & (1 << 2);
-+      so.SOBufferEnable3 = xfb_info->buffers_written & (1 << 3);
-+#endif
 +
 +      int urb_entry_read_offset = 0;
 +      int urb_entry_read_length =
@@ -24846,10 +25044,8 @@
 +      vs.Enable               = true;
 +      vs.StatisticsEnable     = true;
 +      vs.KernelStartPointer   = vs_bin->kernel.offset;
-+#if GFX_VER >= 8
 +      vs.SIMD8DispatchEnable  =
 +         vs_prog_data->base.dispatch_mode == DISPATCH_MODE_SIMD8;
-+#endif
 +
 +      assert(!vs_prog_data->base.base.use_alt_mode);
 +      vs.SingleVertexDispatch       = false;
@@ -24866,12 +25062,10 @@
 +      vs.DispatchGRFStartRegisterForURBData =
 +         vs_prog_data->base.base.dispatch_grf_start_reg;
 +
-+#if GFX_VER >= 8
 +      vs.UserClipDistanceClipTestEnableBitmask =
 +         vs_prog_data->base.clip_distance_mask;
 +      vs.UserClipDistanceCullTestEnableBitmask =
 +         vs_prog_data->base.cull_distance_mask;
-+#endif
 +
 +      vs.PerThreadScratchSpace   = get_scratch_space(vs_bin);
 +      vs.ScratchSpaceBasePointer =
@@ -24958,7 +25152,6 @@
 +      ds.DispatchGRFStartRegisterForURBData =
 +         tes_prog_data->base.base.dispatch_grf_start_reg;
 +
-+#if GFX_VER >= 8
 +      ds.DispatchMode =
 +         tes_prog_data->base.dispatch_mode == DISPATCH_MODE_SIMD8 ?
 +         DISPATCH_MODE_SIMD8_SINGLE_PATCH :
@@ -24968,7 +25161,6 @@
 +         tes_prog_data->base.clip_distance_mask;
 +      ds.UserClipDistanceCullTestEnableBitmask =
 +         tes_prog_data->base.cull_distance_mask;
-+#endif
 +
 +      ds.PerThreadScratchSpace = get_scratch_space(tes_bin);
 +      ds.ScratchSpaceBasePointer =
@@ -25030,24 +25222,20 @@
 +         UNREACHABLE("Invalid provoking vertex mode");
 +      }
 +
-+#if GFX_VER >= 8
 +      gs.ExpectedVertexCount     = gs_prog_data->vertices_in;
 +      gs.StaticOutput            = gs_prog_data->static_vertex_count >= 0;
 +      gs.StaticOutputVertexCount = gs_prog_data->static_vertex_count >= 0 ?
 +                                   gs_prog_data->static_vertex_count : 0;
-+#endif
 +
 +      gs.VertexURBEntryReadOffset = 0;
 +      gs.VertexURBEntryReadLength = gs_prog_data->base.urb_read_length;
 +      gs.DispatchGRFStartRegisterForURBData =
 +         gs_prog_data->base.base.dispatch_grf_start_reg;
 +
-+#if GFX_VER >= 8
 +      gs.UserClipDistanceClipTestEnableBitmask =
 +         gs_prog_data->base.clip_distance_mask;
 +      gs.UserClipDistanceCullTestEnableBitmask =
 +         gs_prog_data->base.cull_distance_mask;
-+#endif
 +
 +      gs.PerThreadScratchSpace   = get_scratch_space(gs_bin);
 +      gs.ScratchSpaceBasePointer =
@@ -25089,7 +25277,6 @@
 +         wm.EarlyDepthStencilControl         = EDSC_NORMAL;
 +      }
 +
-+#if GFX_VER >= 8
 +      /* Gen8 hardware tries to compute ThreadDispatchEnable for us but
 +       * doesn't take into account KillPixels when no depth or stencil
 +       * writes are enabled.  In order for occlusion queries to work
@@ -25109,43 +25296,10 @@
 +      pipeline->force_fragment_thread_dispatch =
 +         fs_prog_data->has_side_effects ||
 +         fs_prog_data->uses_kill;
-+#endif
 +
 +      wm.BarycentricInterpolationMode =
 +         elk_fs_prog_data_barycentric_modes(fs_prog_data, 0);
 +
-+#if GFX_VER < 8
-+      wm.PixelShaderComputedDepthMode  = fs_prog_data->computed_depth_mode;
-+      wm.PixelShaderUsesSourceDepth    = fs_prog_data->uses_src_depth;
-+      wm.PixelShaderUsesSourceW        = fs_prog_data->uses_src_w;
-+      wm.PixelShaderUsesInputCoverageMask = fs_prog_data->uses_sample_mask;
-+
-+      /* If the subpass has a depth or stencil self-dependency, then we
-+       * need to force the hardware to do the depth/stencil write *after*
-+       * fragment shader execution.  Otherwise, the writes may hit memory
-+       * before we get around to fetching from the input attachment and we
-+       * may get the depth or stencil value from the current draw rather
-+       * than the previous one.
-+       */
-+      wm.PixelShaderKillsPixel         = state_has_ds_self_dep(state) ||
-+                                         fs_prog_data->uses_kill ||
-+                                         fs_prog_data->uses_omask;
-+
-+      pipeline->force_fragment_thread_dispatch =
-+         wm.PixelShaderComputedDepthMode != PSCDEPTH_OFF ||
-+         fs_prog_data->has_side_effects ||
-+         wm.PixelShaderKillsPixel;
-+
-+      if (ms != NULL && ms->rasterization_samples > 1) {
-+         if (elk_fs_prog_data_is_persample(fs_prog_data, 0)) {
-+            wm.MultisampleDispatchMode = MSDISPMODE_PERSAMPLE;
-+         } else {
-+            wm.MultisampleDispatchMode = MSDISPMODE_PERPIXEL;
-+         }
-+      } else {
-+         wm.MultisampleDispatchMode = MSDISPMODE_PERSAMPLE;
-+      }
-+#endif
 +
 +      wm.LineStippleEnable = rs->line.stipple.enable;
 +   }
@@ -25167,39 +25321,12 @@
 +
 +   if (!anv_pipeline_has_stage(pipeline, MESA_SHADER_FRAGMENT)) {
 +      anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_PS), ps) {
-+#if GFX_VER == 7
-+         /* Even if no fragments are ever dispatched, gfx7 hardware hangs if
-+          * we don't at least set the maximum number of threads.
-+          */
-+         ps.MaximumNumberofThreads = devinfo->max_wm_threads - 1;
-+#endif
 +      }
 +      return;
 +   }
 +
 +   const struct elk_fs_prog_data *fs_prog_data = get_fs_prog_data(pipeline);
 +
-+#if GFX_VER < 8
-+   /* The hardware wedges if you have this bit set but don't turn on any dual
-+    * source blend factors.
-+    */
-+   bool dual_src_blend = false;
-+   if (fs_prog_data->dual_src_blend && cb) {
-+      for (uint32_t i = 0; i < cb->attachment_count; i++) {
-+         const struct vk_color_blend_attachment_state *a =
-+            &cb->attachments[i];
-+
-+         if (a->blend_enable &&
-+             (is_dual_src_blend_factor(a->src_color_blend_factor) ||
-+              is_dual_src_blend_factor(a->dst_color_blend_factor) ||
-+              is_dual_src_blend_factor(a->src_alpha_blend_factor) ||
-+              is_dual_src_blend_factor(a->dst_alpha_blend_factor))) {
-+            dual_src_blend = true;
-+            break;
-+         }
-+      }
-+   }
-+#endif
 +
 +   anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_PS), ps) {
 +      intel_set_ps_dispatch_state(&ps, devinfo, fs_prog_data,
@@ -25222,25 +25349,10 @@
 +                                      fs_prog_data->base.ubo_ranges[0].length;
 +      ps.PositionXYOffsetSelect     = fs_prog_data->uses_pos_offset ?
 +                                      POSOFFSET_SAMPLE: POSOFFSET_NONE;
-+#if GFX_VER < 8
-+      ps.AttributeEnable            = fs_prog_data->num_varying_inputs > 0;
-+      ps.oMaskPresenttoRenderTarget = fs_prog_data->uses_omask;
-+      ps.DualSourceBlendEnable      = dual_src_blend;
-+#endif
 +
-+#if GFX_VERx10 == 75
-+      /* Haswell requires the sample mask to be set in this packet as well
-+       * as in 3DSTATE_SAMPLE_MASK; the values should match.
-+       */
-+      ps.SampleMask                 = 0xff;
-+#endif
 +
-+#if GFX_VER >= 8
 +      ps.MaximumNumberofThreadsPerPSD =
 +         devinfo->max_threads_per_psd - (GFX_VER == 8 ? 2 : 1);
-+#else
-+      ps.MaximumNumberofThreads        = devinfo->max_wm_threads - 1;
-+#endif
 +
 +      ps.DispatchGRFStartRegisterForConstantSetupData0 =
 +         elk_fs_prog_data_dispatch_grf_start_reg(fs_prog_data, ps, 0);
@@ -25255,7 +25367,6 @@
 +   }
 +}
 +
-+#if GFX_VER >= 8
 +static void
 +emit_3dstate_ps_extra(struct anv_graphics_pipeline *pipeline,
 +                      const struct vk_rasterization_state *rs,
@@ -25290,7 +25401,6 @@
 +      ps.PixelShaderUsesInputCoverageMask = fs_prog_data->uses_sample_mask;
 +   }
 +}
-+#endif
 +
 +static void
 +emit_3dstate_vf_statistics(struct anv_graphics_pipeline *pipeline)
@@ -25347,24 +25457,6 @@
 +
 +   emit_3dstate_clip(pipeline, state->ia, state->vp, state->rs);
 +
-+#if 0
-+   /* From gfx7_vs_state.c */
-+
-+   /**
-+    * From Graphics BSpec: 3D-Media-GPGPU Engine > 3D Pipeline Stages >
-+    * Geometry > Geometry Shader > State:
-+    *
-+    *     "Note: Because of corruption in IVB:GT2, software needs to flush the
-+    *     whole fixed function pipeline when the GS enable changes value in
-+    *     the 3DSTATE_GS."
-+    *
-+    * The hardware architects have clarified that in this context "flush the
-+    * whole fixed function pipeline" means to emit a PIPE_CONTROL with the "CS
-+    * Stall" bit set.
-+    */
-+   if (device->info->platform == INTEL_PLATFORM_IVB)
-+      gfx7_emit_vs_workaround_flush(elk);
-+#endif
 +
 +   emit_vertex_input(pipeline, state->vi);
 +
@@ -25380,9 +25472,7 @@
 +   emit_3dstate_wm(pipeline, state->ia, state->rs,
 +                   state->ms, state->cb, state);
 +   emit_3dstate_ps(pipeline, state->ms, state->cb);
-+#if GFX_VER >= 8
 +   emit_3dstate_ps_extra(pipeline, state->rs, state);
-+#endif
 +}
 +
 +void
@@ -25403,11 +25493,7 @@
 +   const struct anv_shader_bin *cs_bin = pipeline->cs;
 +
 +   anv_batch_emit(&pipeline->base.batch, GENX(MEDIA_VFE_STATE), vfe) {
-+#if GFX_VER > 7
 +      vfe.StackSize              = 0;
-+#else
-+      vfe.GPGPUMode              = true;
-+#endif
 +      vfe.MaximumNumberofThreads =
 +         devinfo->max_cs_threads * devinfo->subslice_total - 1;
 +      vfe.NumberofURBEntries     = GFX_VER <= 7 ? 0 : 2;
@@ -25453,14 +25539,10 @@
 +      .BarrierEnable          = cs_prog_data->uses_barrier,
 +      .SharedLocalMemorySize  = intel_compute_slm_encode_size(GFX_VER, cs_prog_data->base.total_shared),
 +
-+#if GFX_VERx10 != 75
 +      .ConstantURBEntryReadOffset = 0,
-+#endif
 +      .ConstantURBEntryReadLength = cs_prog_data->push.per_thread.regs,
-+#if GFX_VERx10 >= 75
 +      .CrossThreadConstantDataReadLength =
 +         cs_prog_data->push.cross_thread.regs,
-+#endif
 +
 +      .NumberofThreadsinGPGPUThreadGroup = dispatch.threads,
 +   };
