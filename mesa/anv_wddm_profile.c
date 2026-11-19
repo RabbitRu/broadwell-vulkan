@@ -29,8 +29,8 @@
    VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT | VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT | \
    VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT | VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT)
 
-enum kind { KIND_PASS = 1, KIND_DISPATCH, KIND_COPY, KIND_BLIT, KIND_CLEAR, KIND_RESOLVE, KIND_FILL, KIND_DRAW };
-static const char *const kind_names[] = {"", "pass", "dispatch", "copy", "blit", "clear", "resolve", "fill/update", "draw"};
+enum kind { KIND_PASS = 1, KIND_DISPATCH, KIND_COPY, KIND_BLIT, KIND_CLEAR, KIND_RESOLVE, KIND_FILL, KIND_DRAW, KIND_CMDBUF };
+static const char *const kind_names[] = {"", "pass", "dispatch", "copy", "blit", "clear", "resolve", "fill/update", "draw", "cmd buffer"};
 
 struct meta {
    uint32_t kind, width, height, draws;
@@ -65,6 +65,10 @@ static struct {
    struct bucket buckets[BUCKETS];
    uint32_t bucket_count;
    uint64_t frames, window_start_ms, skipped;
+   /* slow frames (present to present over 40 ms) and the CPU time the
+    * application spent creating pipelines within them */
+   uint64_t last_present_ns, pipeline_ns, pipelines_created, total_frames;
+   uint64_t alloc_ns, allocs, alloc_bytes, submit_ns, submits, wait_ns, waits, acquire_ns, last_present_call_ns, present_total_ns, present_max_ns, present_count, present_over_10ms;
 } g;
 
 /* anv_add_pending_pipe_bits requests, by reason (a string literal, so its
@@ -298,13 +302,17 @@ static VKAPI_ATTR void VKAPI_CALL wrap_CmdDrawIndexed(VkCommandBuffer c, uint32_
   uint32_t s = draw_begin(c, (uint64_t)a * b); g.orig.CmdDrawIndexed(c, a, b, d, e, f); draw_end(c, s); }
 static VKAPI_ATTR VkResult VKAPI_CALL wrap_EndCommandBuffer(VkCommandBuffer c)
 {
-   anv_wddm_capture_end_command_buffer(anv_cmd_buffer_from_handle(c));
+   struct anv_cmd_buffer *ended = anv_cmd_buffer_from_handle(c);
+   anv_wddm_capture_end_command_buffer(ended);
+   if (ended->wddm && ended->wddm->profile_cmd_slot) { end(ended, ended->wddm->profile_cmd_slot); ended->wddm->profile_cmd_slot = 0; }
    return g.orig.EndCommandBuffer(c);
 }
 static VKAPI_ATTR VkResult VKAPI_CALL wrap_CreateGraphicsPipelines(VkDevice d, VkPipelineCache cache, uint32_t n,
    const VkGraphicsPipelineCreateInfo *infos, const VkAllocationCallbacks *alloc, VkPipeline *pipelines)
 {
+   const uint64_t start = os_time_get_nano();
    const VkResult r = g.orig.CreateGraphicsPipelines(d, cache, n, infos, alloc, pipelines);
+   p_atomic_add(&g.pipeline_ns, os_time_get_nano() - start); p_atomic_add(&g.pipelines_created, n);
    anv_wddm_capture_pipelines(infos, n, pipelines);
    return r;
 }
@@ -351,7 +359,14 @@ static VKAPI_ATTR VkResult VKAPI_CALL wrap_BeginCommandBuffer(VkCommandBuffer c,
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd, c);
    const VkResult result = g.orig.BeginCommandBuffer(c, info);
-   if (cmd->wddm) { cmd->wddm->profile_slot = 0; cmd->wddm->profile_draws = 0; cmd->wddm->profile_kill = 0; cmd->wddm->profile_kill_switches = 0; }
+   if (cmd->wddm) { cmd->wddm->profile_slot = 0; cmd->wddm->profile_draws = 0; cmd->wddm->profile_kill = 0; cmd->wddm->profile_kill_switches = 0;
+                    cmd->wddm->profile_cmd_slot = 0; }
+   /* Primary command buffers timed whole (GPU busy time including barriers and
+    * everything between passes), reported apart from the passes. */
+   if (result == VK_SUCCESS && cmd->wddm && cmd->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
+      const struct meta meta = {KIND_CMDBUF, 0, 0, 0, 0, 0};
+      cmd->wddm->profile_cmd_slot = begin(cmd, &meta);
+   }
    return result;
 }
 static VKAPI_ATTR void VKAPI_CALL wrap_CmdExecuteCommands(VkCommandBuffer c, uint32_t count, const VkCommandBuffer *secondaries)
@@ -409,10 +424,71 @@ static VKAPI_ATTR void VKAPI_CALL wrap_CmdFillBuffer(VkCommandBuffer c, VkBuffer
 static VKAPI_ATTR void VKAPI_CALL wrap_CmdUpdateBuffer(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, VkDeviceSize size, const void *d)
 { uint32_t s = outside(c, KIND_FILL, 1, 0); g.orig.CmdUpdateBuffer(c, b, o, size, d); outside_end(c, s); }
 
+static VKAPI_ATTR VkResult VKAPI_CALL wrap_CreateComputePipelines(VkDevice d, VkPipelineCache cache, uint32_t n,
+   const VkComputePipelineCreateInfo *infos, const VkAllocationCallbacks *alloc, VkPipeline *pipelines)
+{
+   const uint64_t start = os_time_get_nano();
+   const VkResult r = g.orig.CreateComputePipelines(d, cache, n, infos, alloc, pipelines);
+   p_atomic_add(&g.pipeline_ns, os_time_get_nano() - start); p_atomic_add(&g.pipelines_created, n);
+   return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL wrap_AllocateMemory(VkDevice d, const VkMemoryAllocateInfo *info, const VkAllocationCallbacks *a, VkDeviceMemory *m)
+{
+   const uint64_t start = os_time_get_nano();
+   const VkResult r = g.orig.AllocateMemory(d, info, a, m);
+   p_atomic_add(&g.alloc_ns, os_time_get_nano() - start); p_atomic_inc(&g.allocs); p_atomic_add(&g.alloc_bytes, info->allocationSize);
+   return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL wrap_QueueSubmit(VkQueue q, uint32_t n, const VkSubmitInfo *s, VkFence f)
+{
+   const uint64_t start = os_time_get_nano();
+   const VkResult r = g.orig.QueueSubmit(q, n, s, f);
+   p_atomic_add(&g.submit_ns, os_time_get_nano() - start); p_atomic_inc(&g.submits);
+   return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL wrap_WaitForFences(VkDevice d, uint32_t n, const VkFence *f, VkBool32 all, uint64_t timeout)
+{
+   const uint64_t start = os_time_get_nano();
+   const VkResult r = g.orig.WaitForFences(d, n, f, all, timeout);
+   p_atomic_add(&g.wait_ns, os_time_get_nano() - start); p_atomic_inc(&g.waits);
+   return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL wrap_AcquireNextImageKHR(VkDevice d, VkSwapchainKHR s, uint64_t t, VkSemaphore sem, VkFence f, uint32_t *i)
+{
+   const uint64_t start = os_time_get_nano();
+   const VkResult r = g.orig.AcquireNextImageKHR(d, s, t, sem, f, i);
+   p_atomic_add(&g.acquire_ns, os_time_get_nano() - start);
+   return r;
+}
 static VKAPI_ATTR VkResult VKAPI_CALL wrap_QueuePresentKHR(VkQueue q, const VkPresentInfoKHR *info)
 {
    p_atomic_inc(&g.frames);
-   return g.orig.QueuePresentKHR(q, info);
+   {
+      const uint64_t now = os_time_get_nano(), last = p_atomic_xchg(&g.last_present_ns, now);
+      const uint64_t pipeline_ns = p_atomic_xchg(&g.pipeline_ns, 0), created = p_atomic_xchg(&g.pipelines_created, 0);
+      const uint64_t frame = p_atomic_inc_return(&g.total_frames);
+      const uint64_t alloc_ns = p_atomic_xchg(&g.alloc_ns, 0), allocs = p_atomic_xchg(&g.allocs, 0), alloc_bytes = p_atomic_xchg(&g.alloc_bytes, 0);
+      const uint64_t submit_ns = p_atomic_xchg(&g.submit_ns, 0), submits = p_atomic_xchg(&g.submits, 0);
+      const uint64_t wait_ns = p_atomic_xchg(&g.wait_ns, 0), waits = p_atomic_xchg(&g.waits, 0);
+      const uint64_t acquire_ns = p_atomic_xchg(&g.acquire_ns, 0), present_ns = g.last_present_call_ns;
+      if (last && now - last > 40000000ull)
+         fprintf(stderr, "HasVK/WDDM profile: slow frame %llu: %.1f ms present to present; %.1f ms in %llu pipeline creations, "
+                 "%.1f ms in %llu allocations (%.1f MiB), %.1f ms in %llu submits, %.1f ms in %llu fence waits, %.1f ms acquire, %.1f ms previous present\n",
+                 (unsigned long long)frame, (now - last) / 1e6, pipeline_ns / 1e6, (unsigned long long)created,
+                 alloc_ns / 1e6, (unsigned long long)allocs, alloc_bytes / 1048576.0, submit_ns / 1e6, (unsigned long long)submits,
+                 wait_ns / 1e6, (unsigned long long)waits, acquire_ns / 1e6, present_ns / 1e6);
+   }
+   {  /* queue submit mode, once */
+      static int logged; VK_FROM_HANDLE(vk_queue, vq, q);
+      if (!logged++) fprintf(stderr, "HasVK/WDDM profile: queue submit mode %d at the first present (0 immediate, 1 deferred, 2 threaded, 3 on demand)\n", (int)vq->submit.mode);
+   }
+   const uint64_t present_start = os_time_get_nano();
+   const VkResult present_result = g.orig.QueuePresentKHR(q, info);
+   g.last_present_call_ns = os_time_get_nano() - present_start;
+   p_atomic_add(&g.present_total_ns, g.last_present_call_ns); p_atomic_inc(&g.present_count);
+   if (g.last_present_call_ns > g.present_max_ns) g.present_max_ns = g.last_present_call_ns;
+   if (g.last_present_call_ns > 10000000ull) p_atomic_inc(&g.present_over_10ms);
+   return present_result;
 }
 
 void
@@ -428,7 +504,8 @@ anv_wddm_profile_install(struct vk_device_dispatch_table *d)
 #define WRAP(name) if (d->name) d->name = wrap_##name
    WRAP(CmdBeginRenderPass); WRAP(CmdBeginRenderPass2); WRAP(CmdEndRenderPass); WRAP(CmdEndRenderPass2);
    WRAP(CmdDraw); WRAP(CmdDrawIndexed); WRAP(CmdDrawIndirect); WRAP(CmdDrawIndexedIndirect);
-   WRAP(BeginCommandBuffer); WRAP(CmdExecuteCommands); WRAP(CmdBindPipeline); WRAP(CreateGraphicsPipelines); WRAP(EndCommandBuffer);
+   WRAP(BeginCommandBuffer); WRAP(CmdExecuteCommands); WRAP(CmdBindPipeline); WRAP(CreateGraphicsPipelines); WRAP(CreateComputePipelines); WRAP(EndCommandBuffer);
+   WRAP(AllocateMemory); WRAP(QueueSubmit); WRAP(WaitForFences); WRAP(AcquireNextImageKHR);
    WRAP(CmdDispatch); WRAP(CmdDispatchIndirect); WRAP(CmdCopyBuffer); WRAP(CmdCopyImage);
    WRAP(CmdCopyBufferToImage); WRAP(CmdCopyImageToBuffer); WRAP(CmdBlitImage); WRAP(CmdResolveImage);
    WRAP(CmdClearColorImage); WRAP(CmdClearDepthStencilImage); WRAP(CmdFillBuffer); WRAP(CmdUpdateBuffer);
@@ -511,13 +588,24 @@ anv_wddm_profile_report(struct anv_device *device)
    if (!g.window_start_ms) g.window_start_ms = now;
    if (now - g.window_start_ms >= 5000) {
       const uint64_t frames = p_atomic_xchg(&g.frames, 0);
+      {
+         const uint64_t count = p_atomic_xchg(&g.present_count, 0), total_ns = p_atomic_xchg(&g.present_total_ns, 0);
+         const uint64_t max_ns = p_atomic_xchg(&g.present_max_ns, 0), over = p_atomic_xchg(&g.present_over_10ms, 0);
+         if (count)
+            fprintf(stderr, "HasVK/WDDM profile: vkQueuePresentKHR CPU time avg %.2f ms, max %.1f ms, %llu of %llu calls over 10 ms\n",
+                    total_ns / 1e6 / count, max_ns / 1e6, (unsigned long long)over, (unsigned long long)count);
+      }
       const double ms_per_tick = 1000.0 / device->physical->info.timestamp_frequency;
       const double divisor = frames ? (double)frames : 1.0;
       qsort(g.buckets, g.bucket_count, sizeof(g.buckets[0]), compare_buckets);
       double total = 0;
-      for (uint32_t i = 0; i < g.bucket_count; ++i) total += g.buckets[i].ticks * ms_per_tick;
-      fprintf(stderr, "HasVK/WDDM profile: %llu frames in %.1f s, profiled GPU time %.2f ms/frame (%llu skipped)\n",
-              (unsigned long long)frames, (now - g.window_start_ms) / 1000.0, total / divisor, (unsigned long long)g.skipped);
+      double cmdbuf = 0;
+      for (uint32_t i = 0; i < g.bucket_count; ++i) {
+         if (g.buckets[i].key.kind == KIND_CMDBUF) cmdbuf += g.buckets[i].ticks * ms_per_tick;
+         else total += g.buckets[i].ticks * ms_per_tick;
+      }
+      fprintf(stderr, "HasVK/WDDM profile: %llu frames in %.1f s, profiled GPU time %.2f ms/frame, primary command buffers %.2f ms/frame (%llu skipped)\n",
+              (unsigned long long)frames, (now - g.window_start_ms) / 1000.0, total / divisor, cmdbuf / divisor, (unsigned long long)g.skipped);
       for (uint32_t i = 0; i < g.bucket_count && i < 25; ++i) {
          const struct bucket *b = &g.buckets[i];
          fprintf(stderr, "  %6.2f ms/frame %5.1f/frame avg %6.3f ms draws %5.0f kill switches %4.0f | %s\n", b->ticks * ms_per_tick / divisor,

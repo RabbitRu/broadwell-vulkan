@@ -6,14 +6,27 @@
 #include "compiler/elk/elk_eu.h"
 #include "util/cnd_monotonic.h"
 #include "util/os_time.h"
+#include "util/stack_array.h"
 #undef NSEC_PER_SEC
 #include "util/timespec.h"
 #include "vk_sync_timeline.h"
 #include <stdarg.h>
 
+/* pending: serial of a submission that will signal this sync and has gone to
+ * the kernel but not completed yet. A submission waiting on such a sync does
+ * not wait on the CPU: there is one in-order queue, and every primary command
+ * buffer ends with a CS stall and render/depth/data cache flushes
+ * (anv_cmd_buffer_end_batch_buffer), so the GPU itself orders it after the
+ * signalling work. Without this, vkQueuePresentKHR blocked the application
+ * until its frame had finished on the GPU, and the GPU then idled while the
+ * next frame was recorded (Talos: ~9 ms of every ~25 ms frame).
+ * dropped: such a signal whose sync was reset in the meantime (the runtime
+ * resets binary semaphores after the submission that waits on them); it is
+ * ignored when it completes, so no stale "signaled" state appears. */
 struct anv_wddm_sync {
    struct vk_sync vk;
    bool signaled;
+   uint64_t pending, dropped;
 };
 static struct anv_wddm_device_state *state(struct vk_device *device)
 {
@@ -21,7 +34,10 @@ static struct anv_wddm_device_state *state(struct vk_device *device)
 }
 static VkResult sync_init(struct vk_device *d, struct vk_sync *s, uint64_t initial)
 {
-   (void)d; ((struct anv_wddm_sync *)s)->signaled = initial != 0; return VK_SUCCESS;
+   (void)d;
+   struct anv_wddm_sync *sync = (struct anv_wddm_sync *)s;
+   sync->signaled = initial != 0; sync->pending = sync->dropped = 0;
+   return VK_SUCCESS;
 }
 static void sync_finish(struct vk_device *d, struct vk_sync *s) { (void)d; (void)s; }
 static VkResult sync_signal(struct vk_device *d, struct vk_sync *s, uint64_t value)
@@ -35,15 +51,20 @@ static VkResult sync_signal(struct vk_device *d, struct vk_sync *s, uint64_t val
 static VkResult sync_reset(struct vk_device *d, struct vk_sync *s)
 {
    struct anv_wddm_device_state *w = state(d);
-   mtx_lock(&w->mutex); ((struct anv_wddm_sync *)s)->signaled = false; mtx_unlock(&w->mutex);
+   struct anv_wddm_sync *sync = (struct anv_wddm_sync *)s;
+   mtx_lock(&w->mutex);
+   sync->signaled = false;
+   if (sync->pending) { sync->dropped = sync->pending; sync->pending = 0; }
+   mtx_unlock(&w->mutex);
    return VK_SUCCESS;
 }
 static VkResult sync_move(struct vk_device *d, struct vk_sync *dst, struct vk_sync *src)
 {
    struct anv_wddm_device_state *w = state(d);
+   struct anv_wddm_sync *to = (struct anv_wddm_sync *)dst, *from = (struct anv_wddm_sync *)src;
    mtx_lock(&w->mutex);
-   ((struct anv_wddm_sync *)dst)->signaled = ((struct anv_wddm_sync *)src)->signaled;
-   ((struct anv_wddm_sync *)src)->signaled = false;
+   to->signaled = from->signaled; to->pending = from->pending; to->dropped = from->dropped;
+   from->signaled = false; from->pending = from->dropped = 0;
    u_cnd_monotonic_broadcast(&w->condition); mtx_unlock(&w->mutex);
    return VK_SUCCESS;
 }
@@ -55,8 +76,15 @@ static VkResult sync_wait_many(struct vk_device *d, uint32_t count, const struct
    mtx_lock(&w->mutex);
    for (;;) {
       if (vk_device_is_lost_no_report(d)) { mtx_unlock(&w->mutex); return VK_ERROR_DEVICE_LOST; }
+      /* VK_SYNC_WAIT_PENDING: the signal operation has been submitted (the
+       * runtime asks this, with a zero timeout, before every submission; a
+       * "no" switches the queue to a submit thread for good). */
       uint32_t ready = 0;
-      for (uint32_t i = 0; i < count; ++i) ready += ((struct anv_wddm_sync *)waits[i].sync)->signaled;
+      const bool pending_ok = (flags & VK_SYNC_WAIT_PENDING) != 0;
+      for (uint32_t i = 0; i < count; ++i) {
+         const struct anv_wddm_sync *sync = (const struct anv_wddm_sync *)waits[i].sync;
+         ready += sync->signaled || (pending_ok && sync->pending);
+      }
       if ((flags & VK_SYNC_WAIT_ANY) ? ready != 0 : ready == count) { mtx_unlock(&w->mutex); return VK_SUCCESS; }
       if (timeout != UINT64_MAX && os_time_get_nano() >= timeout) { mtx_unlock(&w->mutex); return VK_TIMEOUT; }
       int result;
@@ -570,7 +598,39 @@ static VkResult submit(struct vk_queue *queue, struct vk_queue_submit *work)
    struct anv_device *device = container_of(queue->base.device, struct anv_device, vk);
    struct anv_wddm_device_state *w = device->wddm;
    if (vk_queue_submit_has_bind(work)) return VK_ERROR_FEATURE_NOT_PRESENT;
-   VkResult result = vk_sync_wait_many(&device->vk, work->wait_count, work->waits, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
+   /* Waits on syncs whose signal is already submitted to this queue are left
+    * to the GPU's submission order (see struct anv_wddm_sync); the others
+    * (signalled by the host, or not yet submitted) are waited for here.
+    * HASVK_WDDM_CPU_SEMAPHORE_WAITS=1 waits for all of them as before. */
+   static int cpu_waits = -1;
+   if (cpu_waits < 0) cpu_waits = getenv("HASVK_WDDM_CPU_SEMAPHORE_WAITS") != NULL;
+   STACK_ARRAY(struct vk_sync_wait, waits, work->wait_count);
+   uint32_t wait_count = 0;
+   mtx_lock(&w->mutex);
+   for (uint32_t i = 0; i < work->wait_count; ++i) {
+      const struct vk_sync_wait *wait = &work->waits[i];
+      if (!cpu_waits && wait->sync->type == &wddm_sync_type) {
+         const struct anv_wddm_sync *sync = (const struct anv_wddm_sync *)wait->sync;
+         if (sync->signaled || sync->pending) continue;
+      }
+      waits[wait_count++] = *wait;
+   }
+   mtx_unlock(&w->mutex);
+   static uint64_t diag_ns, diag_waited, diag_skipped, diag_last_ms; static int diag = -1;
+   if (diag < 0) diag = getenv("HASVK_WDDM_PROFILE_PASSES") != NULL;
+   const uint64_t wait_start = diag ? os_time_get_nano() : 0;
+   VkResult result = vk_sync_wait_many(&device->vk, wait_count, waits, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
+   if (diag) {   /* where submitting threads wait on the CPU (HASVK_WDDM_PROFILE_PASSES) */
+      diag_ns += os_time_get_nano() - wait_start; diag_waited += wait_count; diag_skipped += work->wait_count - wait_count;
+      const uint64_t now_ms = os_time_get_nano() / 1000000;
+      if (!diag_last_ms) diag_last_ms = now_ms;
+      if (now_ms - diag_last_ms >= 5000) {
+         fprintf(stderr, "HasVK/WDDM submit: %.1f ms CPU-waiting for %llu semaphores, %llu left to GPU order (5 s)\n", diag_ns / 1e6,
+                 (unsigned long long)diag_waited, (unsigned long long)diag_skipped);
+         diag_ns = diag_waited = diag_skipped = 0; diag_last_ms = now_ms;
+      }
+   }
+   STACK_ARRAY_FINISH(waits);
    if (result != VK_SUCCESS) return result;
    /* The command buffers and a completion write of the next serial go to the
     * kernel as one submission (unless event waits or a repeated command
@@ -593,8 +653,25 @@ static VkResult submit(struct vk_queue *queue, struct vk_queue_submit *work)
       if (pending->commands[i]->wddm->present_token) present_token = pending->commands[i]->wddm->present_token;
    mtx_lock(&w->submit_mutex);
    pending->serial = ++w->next_serial;
+   const uint64_t kernel_start = os_time_get_nano();
    const int failed = anv_wddm_execute_commands(device, work->command_buffers, work->command_buffer_count,
                                                 pending->serial, present_token, true, &pending->seq);
+   {  /* HASVK_WDDM_PROFILE_PASSES: kernel submission time, presents apart, every 5 s */
+      static int kdiag = -1; static uint64_t k_ns[2], k_count[2], k_max[2], k_last_ms;
+      if (kdiag < 0) kdiag = getenv("HASVK_WDDM_PROFILE_PASSES") != NULL;
+      if (kdiag) {
+         const uint64_t ns = os_time_get_nano() - kernel_start; const int is_present = present_token != 0;
+         k_ns[is_present] += ns; ++k_count[is_present]; if (ns > k_max[is_present]) k_max[is_present] = ns;
+         const uint64_t now_ms = os_time_get_nano() / 1000000;
+         if (!k_last_ms) k_last_ms = now_ms;
+         if (now_ms - k_last_ms >= 5000) {
+            fprintf(stderr, "HasVK/WDDM submit: kernel submission %.2f ms avg (max %.1f) for %llu presents, %.2f ms avg (max %.1f) for %llu others\n",
+                    k_count[1] ? k_ns[1] / 1e6 / k_count[1] : 0.0, k_max[1] / 1e6, (unsigned long long)k_count[1],
+                    k_count[0] ? k_ns[0] / 1e6 / k_count[0] : 0.0, k_max[0] / 1e6, (unsigned long long)k_count[0]);
+            k_ns[0] = k_ns[1] = k_count[0] = k_count[1] = k_max[0] = k_max[1] = 0; k_last_ms = now_ms;
+         }
+      }
+   }
    const uint64_t seq = pending->seq;   /* the completion thread frees pending */
    static int stats = -1;
    if (stats < 0) stats = getenv("HASVK_WDDM_STATS") != NULL;
@@ -615,6 +692,11 @@ static VkResult submit(struct vk_queue *queue, struct vk_queue_submit *work)
 #endif
    if (!failed) {
       mtx_lock(&w->mutex);
+      for (uint32_t i = 0; i < pending->signal_count; ++i)
+         if (pending->signals[i].sync->type == &wddm_sync_type) {
+            struct anv_wddm_sync *sync = (struct anv_wddm_sync *)pending->signals[i].sync;
+            sync->pending = pending->serial; sync->dropped = 0;
+         }
       list_addtail(&pending->link, &w->pending);
       u_cnd_monotonic_broadcast(&w->condition);
       mtx_unlock(&w->mutex);
@@ -659,7 +741,12 @@ static int completion_main(void *data)
       if (!error && foreign && vk_sync_signal_many(&device->vk, p->signal_count, p->signals) != VK_SUCCESS)
          vk_device_set_lost(&device->vk, "HasVK/WDDM: signalling completion failed");
       mtx_lock(&w->mutex);
-      for (uint32_t i = 0; !error && !foreign && i < p->signal_count; ++i) ((struct anv_wddm_sync *)p->signals[i].sync)->signaled = true;
+      for (uint32_t i = 0; !error && !foreign && i < p->signal_count; ++i) {
+         struct anv_wddm_sync *sync = (struct anv_wddm_sync *)p->signals[i].sync;
+         if (sync->dropped == p->serial) { sync->dropped = 0; continue; }   /* reset since: ignored */
+         sync->signaled = true;
+         if (sync->pending == p->serial) sync->pending = 0;
+      }
       list_del(&p->link);
       w->verified_seq = p->seq; ++w->completed;
       u_cnd_monotonic_broadcast(&w->condition);

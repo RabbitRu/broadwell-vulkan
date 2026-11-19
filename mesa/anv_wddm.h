@@ -125,7 +125,7 @@ struct anv_wddm_cmd_state {
    /* HASVK_WDDM_PROFILE_PASSES (anv_wddm_profile.c): timestamp slot + 1 of
     * the open render pass; since vkBeginCommandBuffer: draws, the bound
     * graphics pipeline's kill_pixel (1 no, 2 yes) and how often it changed. */
-   uint32_t profile_slot, profile_draws, profile_kill, profile_kill_switches;
+   uint32_t profile_slot, profile_draws, profile_kill, profile_kill_switches, profile_cmd_slot;
    /* The open render pass (HASVK_WDDM_DUMP_DIR shadow map dumps). */
    uint64_t profile_framebuffer, profile_render_pass;
    uint32_t profile_width, profile_height;

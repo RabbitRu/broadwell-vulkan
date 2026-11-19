@@ -411,6 +411,57 @@ edit('src/vulkan/wsi/wsi_common.c', [
       if (wsi->sw) {
 #endif
          wsi->WaitForFences'''),
+    ('''         MESA_TRACE_SCOPE("throttle");
+         results[i] = wsi->WaitForFences(vk_device_to_handle(dev),
+                                         1, &swapchain->fences[image_index],
+                                         true, ~0ull);''',
+     '''         MESA_TRACE_SCOPE("throttle");
+#ifdef HASVK_WDDM_GDI
+         /* HASVK_WDDM_PROFILE_PASSES: time spent here, every 5 s. */
+         static int throttle_diag = -1;
+         static uint64_t throttle_ns, throttle_count, throttle_last_ms;
+         if (throttle_diag < 0) throttle_diag = getenv("HASVK_WDDM_PROFILE_PASSES") != NULL;
+         const uint64_t throttle_start = throttle_diag ? os_time_get_nano() : 0;
+#endif
+         results[i] = wsi->WaitForFences(vk_device_to_handle(dev),
+                                         1, &swapchain->fences[image_index],
+                                         true, ~0ull);
+#ifdef HASVK_WDDM_GDI
+         if (throttle_diag) {
+            throttle_ns += os_time_get_nano() - throttle_start; ++throttle_count;
+            const uint64_t now_ms = os_time_get_nano() / 1000000;
+            if (!throttle_last_ms) throttle_last_ms = now_ms;
+            if (now_ms - throttle_last_ms >= 5000) {
+               fprintf(stderr, "HasVK/WDDM WSI: throttle waits %.1f ms in %llu presents (image %u of %u)\\n", throttle_ns / 1e6,
+                       (unsigned long long)throttle_count, image_index, swapchain->image_count);
+               throttle_ns = throttle_count = 0; throttle_last_ms = now_ms;
+            }
+         }
+#endif'''),
+    ('''      results[i] = swapchain->queue_present(swapchain, image_index,
+                                            image_signal_infos[i].present_id,
+                                            region);''',
+     '''#ifdef HASVK_WDDM_GDI
+      static int present_diag = -1;
+      static uint64_t present_ns, present_count, present_last_ms;
+      if (present_diag < 0) present_diag = getenv("HASVK_WDDM_PROFILE_PASSES") != NULL;
+      const uint64_t present_start = present_diag ? os_time_get_nano() : 0;
+#endif
+      results[i] = swapchain->queue_present(swapchain, image_index,
+                                            image_signal_infos[i].present_id,
+                                            region);
+#ifdef HASVK_WDDM_GDI
+      if (present_diag) {   /* the backend's present (FIFO pacing included), every 5 s */
+         present_ns += os_time_get_nano() - present_start; ++present_count;
+         const uint64_t now_ms = os_time_get_nano() / 1000000;
+         if (!present_last_ms) present_last_ms = now_ms;
+         if (now_ms - present_last_ms >= 5000) {
+            fprintf(stderr, "HasVK/WDDM WSI: backend present %.1f ms in %llu presents, present mode %d\\n", present_ns / 1e6,
+                    (unsigned long long)present_count, (int)swapchain->present_mode);
+            present_ns = present_count = 0; present_last_ms = now_ms;
+         }
+      }
+#endif'''),
 ])
 edit('src/vulkan/wsi/meson.build', [
     ('libvulkan_wsi = static_library(',
