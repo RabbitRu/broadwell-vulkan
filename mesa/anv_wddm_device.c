@@ -10,7 +10,33 @@
 #undef NSEC_PER_SEC
 #include "util/timespec.h"
 #include "vk_sync_timeline.h"
+#include "vk_common_entrypoints.h"
 #include <stdarg.h>
+
+/* pipelineCacheUUID: identifies the build whose compiled shaders a cache
+ * holds. Pipeline cache keys hash the shaders and their compile options, not
+ * the compiler, so a constant UUID let an application's cache (and the
+ * driver's cache files) hand a new build the binaries of an old one. As Mesa
+ * does where there is no ELF build-id (disk_cache_get_function_timestamp), the
+ * UUID carries the driver DLL's last-write time and size; copies of one build
+ * (build\icd, Program Files) keep both. "HVK3": revision of the scheme. */
+static void
+anv_wddm_pipeline_cache_uuid(uint8_t *uuid)
+{
+   memcpy(uuid, "HASVK-WDDM-00003", VK_UUID_SIZE);   /* if the DLL cannot be found */
+   HMODULE module = NULL;
+   wchar_t path[MAX_PATH * 2];
+   WIN32_FILE_ATTRIBUTE_DATA data;
+   if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCWSTR)(void *)anv_wddm_pipeline_cache_uuid, &module))
+      return;
+   const DWORD length = GetModuleFileNameW(module, path, ARRAY_SIZE(path));
+   if (!length || length >= ARRAY_SIZE(path) || !GetFileAttributesExW(path, GetFileExInfoStandard, &data))
+      return;
+   memcpy(uuid, "HVK3", 4);
+   memcpy(uuid + 4, &data.ftLastWriteTime, 8);
+   memcpy(uuid + 12, &data.nFileSizeLow, 4);
+}
 
 /* pending: serial of a submission that will signal this sync and has gone to
  * the kernel but not completed yet. A submission waiting on such a sync does
@@ -366,8 +392,7 @@ static VkResult enumerate(struct vk_instance *base)
    memcpy(p->deviceLUID, &adapter.luid_low, 4); memcpy(p->deviceLUID + 4, &adapter.luid_high, 4);
    p->deviceLUIDValid = true; p->deviceNodeMask = 1;
    snprintf(p->deviceName, sizeof(p->deviceName), "Intel Iris 6100 (HasVK/WDDM)");
-   /* Bump when shader/descriptor ABI changes (00002: A64 buffer access). */
-   memcpy(p->pipelineCacheUUID, "HASVK-WDDM-00002", VK_UUID_SIZE);
+   anv_wddm_pipeline_cache_uuid(p->pipelineCacheUUID);
    p->maxMemoryAllocationCount = 4096;
    p->maxStorageBufferRange = 128u << 20;
    p->minMemoryMapAlignment = 4096; p->nonCoherentAtomSize = 64; p->bufferImageGranularity = 4096;
@@ -787,6 +812,95 @@ VkResult anv_queue_submit_simple_batch(struct anv_queue *queue, struct anv_batch
    return VK_SUCCESS;
 }
 #endif
+#ifdef HASVK_WDDM_GRAPHICS
+/* Compiled shaders persist across processes. Mesa's disk cache is not built
+ * for Windows, so every process compiled again, on first use and in the
+ * middle of a frame (frame-time spikes, roadmap stage 7 item 2):
+ *  - internal-cache.bin: the driver's own shaders (BLORP copies, clears,
+ *    blits), device->internal_cache;
+ *  - default-cache.bin: pipelines an application creates without a
+ *    VkPipelineCache, device->default_pipeline_cache (what Mesa's disk cache
+ *    holds on Linux; pipelines in the application's own cache stay there).
+ * Both live in %LOCALAPPDATA%\HasVK-WDDM. The Vulkan cache header (vendor,
+ * device, pipelineCacheUUID of this build) makes the runtime ignore a file
+ * written by another build. A file is rewritten at device destruction when
+ * its cache grew, through a per-process temporary file and an atomic rename,
+ * so concurrent processes (parallel CTS) never see a partial file.
+ * HASVK_WDDM_INTERNAL_CACHE=0 disables both. */
+#define ANV_WDDM_CACHE_FILE_MAX (64u << 20)
+static bool cache_file_path(const wchar_t *name, wchar_t *path, size_t count, bool create_directory)
+{
+   const char *setting = getenv("HASVK_WDDM_INTERNAL_CACHE");
+   if (setting && !strcmp(setting, "0")) return false;
+   wchar_t base[MAX_PATH];
+   const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
+   if (!length || length >= MAX_PATH) return false;
+   if (_snwprintf(path, count, L"%ls\\HasVK-WDDM", base) < 0) return false;
+   if (create_directory) CreateDirectoryW(path, NULL);   /* already there: fine */
+   const int written = _snwprintf(path, count, L"%ls\\HasVK-WDDM\\%ls", base, name);
+   return written > 0 && (size_t)written < count;
+}
+static void *cache_file_read(const wchar_t *name, size_t *size)
+{
+   wchar_t path[MAX_PATH + 64];
+   *size = 0;
+   if (!cache_file_path(name, path, ARRAY_SIZE(path), false)) return NULL;
+   HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+   if (file == INVALID_HANDLE_VALUE) return NULL;
+   LARGE_INTEGER length;
+   void *data = NULL;
+   DWORD read = 0;
+   if (GetFileSizeEx(file, &length) && length.QuadPart > 0 && length.QuadPart <= ANV_WDDM_CACHE_FILE_MAX &&
+       (data = malloc((size_t)length.QuadPart)) && ReadFile(file, data, (DWORD)length.QuadPart, &read, NULL) &&
+       read == (DWORD)length.QuadPart) {
+      *size = read;
+   } else {
+      free(data);
+      data = NULL;
+   }
+   CloseHandle(file);
+   return data;
+}
+static void cache_file_write(struct anv_device *device, const wchar_t *name, struct vk_pipeline_cache *source, size_t loaded)
+{
+   wchar_t path[MAX_PATH + 64], temporary[MAX_PATH + 96];
+   if (!source || !cache_file_path(name, path, ARRAY_SIZE(path), true)) return;
+   const VkDevice handle = anv_device_to_handle(device);
+   const VkPipelineCache cache = vk_pipeline_cache_to_handle(source);
+   size_t size = 0;
+   /* The cache only grows: the same size as loaded means nothing new. */
+   if (vk_common_GetPipelineCacheData(handle, cache, &size, NULL) != VK_SUCCESS || !size ||
+       size == loaded || size > ANV_WDDM_CACHE_FILE_MAX)
+      return;
+   void *data = malloc(size);
+   if (!data) return;
+   if (vk_common_GetPipelineCacheData(handle, cache, &size, data) == VK_SUCCESS &&
+       _snwprintf(temporary, ARRAY_SIZE(temporary), L"%ls.%lu.tmp", path, GetCurrentProcessId()) > 0) {
+      HANDLE file = CreateFileW(temporary, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, NULL);
+      if (file != INVALID_HANDLE_VALUE) {
+         DWORD written = 0;
+         const BOOL complete = WriteFile(file, data, (DWORD)size, &written, NULL) && written == (DWORD)size;
+         CloseHandle(file);
+         if (!complete || !MoveFileExW(temporary, path, MOVEFILE_REPLACE_EXISTING)) DeleteFileW(temporary);
+      }
+   }
+   free(data);
+}
+/* A pipeline cache created with the data of a cache file, if there is one. */
+static struct vk_pipeline_cache *cache_file_create(struct anv_device *device, const wchar_t *name, bool force_enable, size_t *loaded)
+{
+   size_t initial_size = 0;
+   void *initial = cache_file_read(name, &initial_size);
+   const VkPipelineCacheCreateInfo initial_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO, .initialDataSize = initial_size, .pInitialData = initial,
+   };
+   const struct vk_pipeline_cache_create_info info = {.pCreateInfo = initial ? &initial_info : NULL, .force_enable = force_enable};
+   struct vk_pipeline_cache *cache = vk_pipeline_cache_create(&device->vk, &info, NULL);
+   free(initial);
+   *loaded = initial_size;
+   return cache;
+}
+#endif
 static void state_finish(struct anv_wddm_device_state *w)
 {
    if (!w) return;
@@ -864,12 +978,16 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle
    if (result != VK_SUCCESS) goto fail_state;
    device->workaround_address = (struct anv_address){device->workaround_bo, 0};
    anv_scratch_pool_init(device, &device->scratch_pool);
+#ifdef HASVK_WDDM_GRAPHICS
+   /* Shaders compiled by earlier processes (cache_file_*). */
+   device->default_pipeline_cache = cache_file_create(device, L"default-cache.bin", false, &w->default_cache_loaded);
+#else
    struct vk_pipeline_cache_create_info cache_info = {0};
    device->default_pipeline_cache = vk_pipeline_cache_create(&device->vk, &cache_info, NULL);
+#endif
    if (!device->default_pipeline_cache) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_state; }
 #ifdef HASVK_WDDM_GRAPHICS
-   cache_info.force_enable = true;
-   device->internal_cache = vk_pipeline_cache_create(&device->vk, &cache_info, NULL);
+   device->internal_cache = cache_file_create(device, L"internal-cache.bin", true, &w->internal_cache_loaded);
    if (!device->internal_cache) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_state; }
    anv_device_init_blorp(device);
    anv_wddm_init_border_colors(device);
@@ -917,8 +1035,12 @@ VKAPI_ATTR void VKAPI_CALL anv_DestroyDevice(VkDevice handle, const VkAllocation
    if (!device) return;
    vk_queue_finish(&device->queues[0].vk); vk_free(&device->vk.alloc, device->queues);
    completion_finish(device);   /* drains every non-blocking submission */
+#ifdef HASVK_WDDM_GRAPHICS
+   cache_file_write(device, L"default-cache.bin", device->default_pipeline_cache, device->wddm->default_cache_loaded);
+#endif
    vk_pipeline_cache_destroy(device->default_pipeline_cache, NULL);
 #ifdef HASVK_WDDM_GRAPHICS
+   cache_file_write(device, L"internal-cache.bin", device->internal_cache, device->wddm->internal_cache_loaded);
    anv_device_finish_blorp(device); vk_pipeline_cache_destroy(device->internal_cache, NULL);
 #endif
    anv_scratch_pool_finish(device, &device->scratch_pool);

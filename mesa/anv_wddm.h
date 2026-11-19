@@ -54,6 +54,9 @@ struct anv_wddm_device_state {
     * record and submit work. */
    uint64_t allocated_bytes, user_bytes;
    uint32_t allocation_count;
+   /* Sizes of the internal and default pipeline cache data loaded from disk
+    * (anv_wddm_device.c, cache_file_*). */
+   size_t internal_cache_loaded, default_cache_loaded;
    /* BO ids index the per-batch dependency bitsets, so they are recycled
     * rather than growing with every allocation the device ever made. */
    BITSET_WORD *bo_ids;
