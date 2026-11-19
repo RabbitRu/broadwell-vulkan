@@ -542,6 +542,35 @@ for function in ['anv_graphics_pipeline_init', 'anv_graphics_pipeline_create', '
     end = pipeline_original.index('\n}\n', match.end()) + 3
     body = pipeline_original[match.start() + 1:end]
     pipeline_replacements.append((body, '#if !defined(_WIN32) || defined(HASVK_WDDM_GRAPHICS)\n' + body + '\n#endif'))
+# After the wrapping above, which matches the upstream function bodies.
+pipeline_replacements += [
+    # MEASUREMENT ONLY (stage 7, docs/roadmap.md): HASVK_WDDM_SHADOW_NO_DISCARD=1
+    # drops the fragment shader of pipelines without colour attachments
+    # (depth-only passes such as shadow maps), and with it any alpha-test
+    # discard. This changes what the application asked for; it exists to
+    # measure what the alpha test of The Talos Principle's shadow casters
+    # costs and changes. Off by default.
+    ('''   if (pipeline->active_stages & VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)
+      pipeline->active_stages |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+''', '''   if (pipeline->active_stages & VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)
+      pipeline->active_stages |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+#ifdef _WIN32
+   {
+      static int no_discard = -1;
+      if (no_discard < 0) no_discard = getenv("HASVK_WDDM_SHADOW_NO_DISCARD") != NULL;
+      if (no_discard && state->rp && state->rp->color_attachment_count == 0)
+         pipeline->active_stages &= ~VK_SHADER_STAGE_FRAGMENT_BIT;
+   }
+#endif
+'''),
+    ('''      mesa_shader_stage stage = vk_to_mesa_shader_stage(info->pStages[i].stage);
+      stages[stage].stage = stage;''', '''      mesa_shader_stage stage = vk_to_mesa_shader_stage(info->pStages[i].stage);
+#ifdef _WIN32
+      if (!(pipeline->active_stages & mesa_to_vk_shader_stage(stage)))
+         continue;   /* dropped above (HASVK_WDDM_SHADOW_NO_DISCARD) */
+#endif
+      stages[stage].stage = stage;'''),
+]
 edit(pipeline_name, pipeline_replacements)
 # Upstream HasVK images almost always get HALIGN_16 because they may own an
 # auxiliary surface. This port disables aux for every image, which selects

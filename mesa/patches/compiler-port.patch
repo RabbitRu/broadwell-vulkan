@@ -903,7 +903,18 @@
  
        /* Copy it to a ralloc'd thing */
        disasm = ralloc_size(pipeline->mem_ctx, stream_size + 1);
-@@ -1638,6 +1643,16 @@
+@@ -1225,6 +1230,10 @@
+    struct anv_pipeline_stage stages[ANV_GRAPHICS_SHADER_STAGE_COUNT] = {};
+    for (uint32_t i = 0; i < info->stageCount; i++) {
+       mesa_shader_stage stage = vk_to_mesa_shader_stage(info->pStages[i].stage);
++#ifdef _WIN32
++      if (!(pipeline->active_stages & mesa_to_vk_shader_stage(stage)))
++         continue;   /* dropped above (HASVK_WDDM_SHADOW_NO_DISCARD) */
++#endif
+       stages[stage].stage = stage;
+       stages[stage].pipeline_flags = pipeline_flags;
+       stages[stage].info = &info->pStages[i];
+@@ -1638,6 +1647,16 @@
        return result;
     }
  
@@ -920,7 +931,7 @@
     anv_genX(device->info, compute_pipeline_emit)(pipeline);
  
     *pPipeline = anv_pipeline_to_handle(&pipeline->base);
-@@ -1707,6 +1722,7 @@
+@@ -1707,6 +1726,7 @@
     pipeline->l3_config = intel_get_l3_config(devinfo, w);
  }
  
@@ -928,7 +939,22 @@
  static VkResult
  anv_graphics_pipeline_init(struct anv_graphics_pipeline *pipeline,
                             struct anv_device *device,
-@@ -1798,6 +1814,8 @@
+@@ -1732,6 +1752,14 @@
+ 
+    if (pipeline->active_stages & VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)
+       pipeline->active_stages |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
++#ifdef _WIN32
++   {
++      static int no_discard = -1;
++      if (no_discard < 0) no_discard = getenv("HASVK_WDDM_SHADOW_NO_DISCARD") != NULL;
++      if (no_discard && state->rp && state->rp->color_attachment_count == 0)
++         pipeline->active_stages &= ~VK_SHADER_STAGE_FRAGMENT_BIT;
++   }
++#endif
+ 
+    pipeline->dynamic_state.ms.sample_locations = &pipeline->sample_locations;
+    vk_dynamic_graphics_state_fill(&pipeline->dynamic_state, state);
+@@ -1798,6 +1826,8 @@
     return VK_SUCCESS;
  }
  
@@ -937,7 +963,7 @@
  static VkResult
  anv_graphics_pipeline_create(struct anv_device *device,
                               struct vk_pipeline_cache *cache,
-@@ -1841,6 +1859,8 @@
+@@ -1841,6 +1871,8 @@
     return pipeline->base.batch.status;
  }
  
@@ -946,7 +972,7 @@
  VkResult anv_CreateGraphicsPipelines(
      VkDevice                                    _device,
      VkPipelineCache                             pipelineCache,
-@@ -1886,6 +1906,7 @@
+@@ -1886,6 +1918,7 @@
     return result;
  }
  
