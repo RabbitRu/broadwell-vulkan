@@ -52,7 +52,7 @@ New-Item -ItemType Directory -Path $taskCache -Force | Out-Null
 Get-PinnedFile $taskDependencies.zlib (Join-Path $taskCache 'zlib-1.3.1.tar.gz')
 Get-PinnedFile $taskDependencies.zlibMeson (Join-Path $taskCache 'zlib_1.3.1-1_patch.zip')
 # Official LLVM release archive (clang-cl, lld-link, llvm-lib, compiler-rt incl.
-# the profile runtime, lldb, llvm-symbolizer, llvm-profdata): no installer, no admin.
+# the profile runtime, llvm-symbolizer, llvm-profdata; no lldb): no installer, no admin.
 # The .tar.xz, not the smaller .tar.zst: the zstd archive needs a long decoder
 # window that the Windows tar.exe (bsdtar) refuses.
 $taskLlvm = Join-Path $taskTools ('llvm-'+$taskDependencies.llvm.version)

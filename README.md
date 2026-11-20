@@ -67,8 +67,11 @@ Bootstrap устанавливает MSVC/SDK и Python, получает Mesa 2
 с закреплёнными SHA-256. Драйвер (Mesa) собирается clang-cl из LLVM 23.1.6:
 официальный архив выпуска `clang+llvm-23.1.6-x86_64-pc-windows-msvc.tar.xz`
 (SHA-256 в `tools/dependencies.json`) распаковывается в `.tools\llvm-23.1.6`
-без установщика и прав администратора; оттуда же lld-link, lldb,
-llvm-symbolizer и llvm-profdata. Mesa собирается с `-march=broadwell`
+без установщика и прав администратора; оттуда же lld-link,
+llvm-symbolizer и llvm-profdata. В архиве нет lldb: `tools/debug-icd.ps1`
+берёт lldb 19.1.5, оставшийся в `.tools\llvm` от прежней установки LLVM
+(остальное оттуда удалено), с Python 3.10 из `.tools\python310-debug`;
+bootstrap их не ставит. Mesa собирается с `-march=broadwell`
 (AVX2, BMI2, FMA): драйвер работает только рядом с GPU Broadwell, значит
 и процессор всегда Broadwell. Сборка оптимизируется по профилю (PGO):
 `tools/pgo/hasvk.profdata` снят `tools/pgo-profile.ps1` на стенде записи

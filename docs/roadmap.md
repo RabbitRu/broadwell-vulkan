@@ -357,7 +357,11 @@ WDDM-контексте (непривилегированный PPGTT-батч),
 - Аппаратные пробы (`tools/test-all.ps1`, `test-graphics.ps1`) с побайтной или
   попиксельной сверкой и защитными областями.
 - Validation layers (`tools/test-validation.ps1`): пробы и vkcube без ошибок.
-- CTS 1.4.5.5 (`C:\VulkanCTS-local`): сборка (`tools/build-cts.ps1`), запуск
+- CTS 1.4.5.5 (`C:\VulkanCTS-local`; 2026-11-21 для места удалены исходники
+  и сырые журналы прогонов; собранный CTS остался, `run-cts.ps1` и срезы
+  работают, а `run-cts-full.ps1` берёт списки mustpass из исходников — для
+  него и для пересборки `build-cts.ps1` скачает их заново): сборка
+  (`tools/build-cts.ps1`), запуск
   без окон с переживанием падений (`tools/run-cts.ps1`), срезы по группам
   (`tools/run-cts-sample.ps1`, `tools/run-cts-extensions.ps1`).
 - Отладка падений через lldb (`tools/debug-icd.ps1`), профиль отправки
