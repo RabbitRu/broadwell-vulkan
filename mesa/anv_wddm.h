@@ -79,6 +79,11 @@ struct anv_wddm_device_state {
    struct anv_bo *event_bo;
    BITSET_WORD event_slots[BITSET_WORDS(ANV_WDDM_EVENT_SLOTS)];
    uint32_t event_hint;   /* where the search for a free slot starts (mutex) */
+   /* RENDER_SURFACE_STATE of a dynamic storage [0] / uniform [1] buffer with
+    * the size and address fields cleared (anv_wddm_memory.c); valid only if
+    * the self-check against ISL passed at device creation. */
+   uint32_t buffer_state_template[2][16];
+   bool buffer_state_template_valid;
    uint64_t command_batches_completed;
    uint64_t runs;   /* kernel submissions of command buffers, for chaining */
    /* The entry BO is a ring of 128-byte slots (jump at +0, completion write
@@ -181,6 +186,11 @@ void anv_wddm_wait_verified(struct anv_device *device, uint64_t seq);
 VkResult anv_wddm_alloc_window_surface_bo(struct anv_device *device, uint32_t width, uint32_t height,
                                           struct anv_bo **out, uint32_t *share, uint64_t *pitch);
 #ifdef HASVK_WDDM_GRAPHICS
+/* Dynamic uniform/storage buffer surface state from a per-device template
+ * (anv_wddm_memory.c); falls back to ISL when the template is not usable. */
+void anv_wddm_fill_dynamic_buffer_surface_state(struct anv_device *device, struct anv_state state, VkDescriptorType type,
+                                                struct anv_address address, uint32_t range);
+void anv_wddm_init_buffer_state_templates(struct anv_device *device);
 VkCommandBuffer anv_wddm_present_redirected_record(VkDevice device, VkQueue queue, VkImage image, uint32_t index,
                                                    void *hwnd, VkExtent2D extent, void **state);
 void anv_wddm_present_redirected_finish(VkDevice device, void *state);

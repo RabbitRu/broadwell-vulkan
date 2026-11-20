@@ -223,6 +223,25 @@ def hiz_clear_value(hardware, blorp):
     return hardware, blorp
 
 
+def dynamic_buffer_surface_state(hardware):
+    """emit_binding_table writes a surface state for every dynamic uniform or
+    storage buffer of every draw; the general ISL path was ~6 % of the
+    driver's CPU time per draw. The port fills it from a per-device template
+    (anv_wddm_fill_dynamic_buffer_surface_state, anv_wddm_memory.c), which is
+    checked against ISL when the device is created."""
+    old = '''               anv_fill_buffer_surface_state(cmd_buffer->device, surface_state,
+                                             format, ISL_SWIZZLE_IDENTITY,
+                                             usage, address, range, 1);
+               if (need_client_mem_relocs)'''
+    assert hardware.count(old) == 1
+    return hardware.replace(old, '''               (void)format; (void)usage;
+               anv_wddm_fill_dynamic_buffer_surface_state(cmd_buffer->device,
+                                                          surface_state,
+                                                          desc->type, address,
+                                                          range);
+               if (need_client_mem_relocs)''')
+
+
 def push_constants_active_stages(hardware):
     """Push constants (3DSTATE_CONSTANT_*) and binding table/sampler pointers
     only for the stages the bound pipeline has.
@@ -394,6 +413,7 @@ anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct
     blorp = blorp[:start] + '   device->blorp.exec = gfx8_blorp_exec;' + blorp[end:]
     hardware, blorp = hiz_clear_value(hardware, blorp)
     hardware = push_constants_active_stages(hardware)
+    hardware = dynamic_buffer_surface_state(hardware)
     # A failed shader upload (out of memory) marks the command buffer failed:
     # vkEndCommandBuffer then reports it instead of BLORP asserting.
     marker = '''                               NULL, 0, NULL, &bind_map);

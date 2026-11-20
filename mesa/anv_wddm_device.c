@@ -1050,6 +1050,7 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle
 #ifdef HASVK_WDDM_GRAPHICS
    result = gfx8_init_device_state(device);
    if (result != VK_SUCCESS) { vk_queue_finish(&device->queues[0].vk); goto fail_queue_alloc; }
+   anv_wddm_init_buffer_state_templates(device);
 #endif
    *out = anv_device_to_handle(device);
    return VK_SUCCESS;

@@ -56,6 +56,91 @@ anv_fill_buffer_surface_state(struct anv_device *device, struct anv_state state,
       .size_B = range, .format = format, .swizzle = swizzle, .stride_B = stride);
 }
 
+#ifdef HASVK_WDDM_GRAPHICS
+/* Surface state of a dynamic uniform or storage buffer. emit_binding_table
+ * writes one for every draw that uses such a descriptor, and the general ISL
+ * path (format lookup, a call through the device table, packing every field)
+ * was ~6 % of the driver's CPU time per draw. Only the element count and the
+ * address differ between two such states, so the rest comes from a template
+ * packed by ISL once per device. Gen8 RENDER_SURFACE_STATE (16 dwords): Width dword 2
+ * bits 6:0 and Height bits 29:16, Depth dword 3 bits 30:21 (ISL's split of
+ * the element count minus one), address dwords 8-9. The template is used only
+ * if it reproduced ISL's output for every case of the self-check below. */
+enum { buffer_state_dwords = 16 };   /* Gen8 RENDER_SURFACE_STATE */
+static inline uint64_t
+dynamic_buffer_elements(const struct anv_device *device, uint32_t range)
+{
+   /* isl_buffer_fill_state_s for stride 1: the size is padded to a multiple
+    * of four and the padding is stored in the low two bits. */
+   const uint64_t aligned = align64(range, 4);
+   return MIN2(aligned + (aligned - range), device->isl_dev.max_buffer_size);
+}
+void
+anv_wddm_fill_dynamic_buffer_surface_state(struct anv_device *device, struct anv_state state, VkDescriptorType type,
+                                           struct anv_address address, uint32_t range)
+{
+   const struct anv_wddm_device_state *w = device->wddm;
+   const bool uniform = type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+   if (unlikely(!w->buffer_state_template_valid || !range || (address.bo && address.bo->is_external))) {
+      anv_fill_buffer_surface_state(device, state, anv_isl_format_for_descriptor_type(device, type), ISL_SWIZZLE_IDENTITY,
+         uniform ? ISL_SURF_USAGE_CONSTANT_BUFFER_BIT : ISL_SURF_USAGE_STORAGE_BIT, address, range, 1);
+      return;
+   }
+   const uint32_t *template = w->buffer_state_template[uniform];
+   uint32_t *out = state.map;
+   const uint32_t last = (uint32_t)(dynamic_buffer_elements(device, range) - 1);
+   const uint64_t gpu = anv_address_physical(address);
+   memcpy(out, template, buffer_state_dwords * 4);
+   out[2] = template[2] | (last & 0x7f) | ((last >> 7) & 0x3fff) << 16;
+   out[3] = template[3] | ((last >> 21) & 0x3ff) << 21;
+   out[8] = (uint32_t)gpu; out[9] = (uint32_t)(gpu >> 32);
+}
+/* Builds the templates and compares the fast path with ISL for sizes around
+ * every field boundary; on any difference the fast path stays off. */
+void
+anv_wddm_init_buffer_state_templates(struct anv_device *device)
+{
+   struct anv_wddm_device_state *w = device->wddm;
+   static const VkDescriptorType types[2] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC};
+   static const uint32_t ranges[] = {1, 2, 3, 4, 5, 63, 64, 65, 127, 128, 129, 255, 256, 4096, 65535, 65536, 65537,
+      (1u << 21) - 4, 1u << 21, (1u << 21) + 4, 1u << 24, (1u << 27) - 4, 1u << 27, (1u << 28) + 12};
+   static const uint64_t offsets[] = {0, 0x1000, 0x12345680, 0xfffff000ull, 0x1fedcb000ull};
+   /* Two guard dwords: neither path may write past the 16 of Gen8. */
+   uint32_t expected[buffer_state_dwords + 2], actual[buffer_state_dwords + 2];
+   STATIC_ASSERT(sizeof(w->buffer_state_template[0]) == buffer_state_dwords * 4);
+   w->buffer_state_template_valid = false;
+   for (unsigned t = 0; t < 2; ++t) {
+      const struct anv_state state = {.map = expected, .alloc_size = sizeof(expected)};
+      memset(expected, 0, sizeof(expected));
+      anv_fill_buffer_surface_state(device, state, anv_isl_format_for_descriptor_type(device, types[t]), ISL_SWIZZLE_IDENTITY,
+         t ? ISL_SURF_USAGE_CONSTANT_BUFFER_BIT : ISL_SURF_USAGE_STORAGE_BIT, ANV_NULL_ADDRESS, 4, 1);
+      memcpy(w->buffer_state_template[t], expected, buffer_state_dwords * 4);
+      w->buffer_state_template[t][2] &= ~(0x7fu | 0x3fffu << 16);
+      w->buffer_state_template[t][3] &= ~(0x3ffu << 21);
+      w->buffer_state_template[t][8] = w->buffer_state_template[t][9] = 0;
+   }
+   w->buffer_state_template_valid = true;
+   for (unsigned t = 0; t < 2; ++t) for (unsigned r = 0; r < ARRAY_SIZE(ranges); ++r) for (unsigned o = 0; o < ARRAY_SIZE(offsets); ++o) {
+      if (ranges[r] > device->isl_dev.max_buffer_size) continue;
+      const struct anv_address address = {NULL, intel_canonical_address(device->wddm->origin + offsets[o])};
+      memset(expected, 0xa5, sizeof(expected)); memset(actual, 0xa5, sizeof(actual));
+      anv_fill_buffer_surface_state(device, (struct anv_state){.map = expected, .alloc_size = sizeof(expected)},
+         anv_isl_format_for_descriptor_type(device, types[t]), ISL_SWIZZLE_IDENTITY,
+         t ? ISL_SURF_USAGE_CONSTANT_BUFFER_BIT : ISL_SURF_USAGE_STORAGE_BIT, address, ranges[r], 1);
+      anv_wddm_fill_dynamic_buffer_surface_state(device, (struct anv_state){.map = actual, .alloc_size = sizeof(actual)},
+         types[t], address, ranges[r]);
+      if (memcmp(expected, actual, sizeof(expected))) {
+         unsigned d = 0;
+         while (expected[d] == actual[d]) ++d;
+         fprintf(stderr, "HasVK/WDDM: buffer surface state template differs from ISL (type %u, range %u, dword %u: "
+            "0x%08x, ISL 0x%08x); using ISL\n", t, ranges[r], d, actual[d], expected[d]);
+         w->buffer_state_template_valid = false;
+         return;
+      }
+   }
+}
+#endif
+
 static VkResult
 alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo_alloc_flags flags,
          uint64_t explicit_address, bool cpu_map, struct anv_bo **out);
