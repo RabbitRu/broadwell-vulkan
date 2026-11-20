@@ -1,0 +1,979 @@
+﻿{
+    "schema":  1,
+    "testedUtc":  "2026-11-19T23:59:28.7566965Z",
+    "icd":  "build\\icd",
+    "icdSha256":  "60415bcd5a4481d596369a7e4711dffe710a608eccf147e857a00ead7a064807",
+    "seconds":  600,
+    "frames":  36000,
+    "elapsedSeconds":  600.7,
+    "exitCode":  0,
+    "timedOut":  false,
+    "cpuPercentOfOneCore":  6.8,
+    "growthAfterWarmup":  {
+                              "privateMB":  -0.18,
+                              "handles":  -3,
+                              "gdi":  0,
+                              "user":  0,
+                              "maxPrivateMB":  17.96,
+                              "minPrivateMB":  17.69
+                          },
+    "passed":  true,
+    "samples":  [
+                    {
+                        "t":  5,
+                        "privateMB":  17.83,
+                        "handles":  224,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  0.5
+                    },
+                    {
+                        "t":  10,
+                        "privateMB":  17.83,
+                        "handles":  224,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  0.9
+                    },
+                    {
+                        "t":  15,
+                        "privateMB":  17.83,
+                        "handles":  224,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  1.2
+                    },
+                    {
+                        "t":  20,
+                        "privateMB":  17.83,
+                        "handles":  224,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  1.6
+                    },
+                    {
+                        "t":  25,
+                        "privateMB":  17.83,
+                        "handles":  224,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  1.9
+                    },
+                    {
+                        "t":  30,
+                        "privateMB":  17.95,
+                        "handles":  224,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  2.2
+                    },
+                    {
+                        "t":  35,
+                        "privateMB":  17.95,
+                        "handles":  224,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  2.6
+                    },
+                    {
+                        "t":  40,
+                        "privateMB":  17.95,
+                        "handles":  225,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  2.9
+                    },
+                    {
+                        "t":  45,
+                        "privateMB":  17.95,
+                        "handles":  224,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  3.1
+                    },
+                    {
+                        "t":  50,
+                        "privateMB":  17.95,
+                        "handles":  224,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  3.5
+                    },
+                    {
+                        "t":  55,
+                        "privateMB":  17.95,
+                        "handles":  224,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  4
+                    },
+                    {
+                        "t":  60,
+                        "privateMB":  17.86,
+                        "handles":  225,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  4.4
+                    },
+                    {
+                        "t":  65,
+                        "privateMB":  17.86,
+                        "handles":  225,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  4.7
+                    },
+                    {
+                        "t":  70,
+                        "privateMB":  17.86,
+                        "handles":  225,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  5.1
+                    },
+                    {
+                        "t":  75,
+                        "privateMB":  17.86,
+                        "handles":  225,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  5.5
+                    },
+                    {
+                        "t":  80,
+                        "privateMB":  17.86,
+                        "handles":  225,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  5.8
+                    },
+                    {
+                        "t":  85,
+                        "privateMB":  17.86,
+                        "handles":  226,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  6.1
+                    },
+                    {
+                        "t":  90,
+                        "privateMB":  17.86,
+                        "handles":  225,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  6.4
+                    },
+                    {
+                        "t":  95,
+                        "privateMB":  17.86,
+                        "handles":  226,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  6.8
+                    },
+                    {
+                        "t":  100,
+                        "privateMB":  17.86,
+                        "handles":  225,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  7.2
+                    },
+                    {
+                        "t":  105,
+                        "privateMB":  17.86,
+                        "handles":  225,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  7.5
+                    },
+                    {
+                        "t":  110,
+                        "privateMB":  17.86,
+                        "handles":  225,
+                        "gdi":  17,
+                        "user":  16,
+                        "cpu":  7.9
+                    },
+                    {
+                        "t":  115,
+                        "privateMB":  17.86,
+                        "handles":  225,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  8.2
+                    },
+                    {
+                        "t":  120,
+                        "privateMB":  17.86,
+                        "handles":  225,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  8.5
+                    },
+                    {
+                        "t":  125,
+                        "privateMB":  17.86,
+                        "handles":  225,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  8.9
+                    },
+                    {
+                        "t":  130,
+                        "privateMB":  17.86,
+                        "handles":  225,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  9.2
+                    },
+                    {
+                        "t":  135,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  9.6
+                    },
+                    {
+                        "t":  140,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  9.9
+                    },
+                    {
+                        "t":  145,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  10.2
+                    },
+                    {
+                        "t":  150,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  10.6
+                    },
+                    {
+                        "t":  155,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  10.9
+                    },
+                    {
+                        "t":  160,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  11.3
+                    },
+                    {
+                        "t":  165,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  11.7
+                    },
+                    {
+                        "t":  170,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  12
+                    },
+                    {
+                        "t":  175,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  12.3
+                    },
+                    {
+                        "t":  180,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  12.7
+                    },
+                    {
+                        "t":  185,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  13.1
+                    },
+                    {
+                        "t":  190,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  13.4
+                    },
+                    {
+                        "t":  195,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  13.8
+                    },
+                    {
+                        "t":  200,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  14.2
+                    },
+                    {
+                        "t":  205,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  14.6
+                    },
+                    {
+                        "t":  210,
+                        "privateMB":  17.69,
+                        "handles":  222,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  14.9
+                    },
+                    {
+                        "t":  215,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  15.2
+                    },
+                    {
+                        "t":  220,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  15.5
+                    },
+                    {
+                        "t":  225,
+                        "privateMB":  17.69,
+                        "handles":  222,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  15.8
+                    },
+                    {
+                        "t":  230,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  16.2
+                    },
+                    {
+                        "t":  235,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  16.5
+                    },
+                    {
+                        "t":  240,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  16.9
+                    },
+                    {
+                        "t":  245,
+                        "privateMB":  17.69,
+                        "handles":  222,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  17.2
+                    },
+                    {
+                        "t":  250,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  17.4
+                    },
+                    {
+                        "t":  255,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  17.8
+                    },
+                    {
+                        "t":  260,
+                        "privateMB":  17.69,
+                        "handles":  222,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  18.2
+                    },
+                    {
+                        "t":  265,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  18.4
+                    },
+                    {
+                        "t":  270,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  18.9
+                    },
+                    {
+                        "t":  275,
+                        "privateMB":  17.69,
+                        "handles":  222,
+                        "gdi":  17,
+                        "user":  16,
+                        "cpu":  19.2
+                    },
+                    {
+                        "t":  280,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  19.5
+                    },
+                    {
+                        "t":  285,
+                        "privateMB":  17.69,
+                        "handles":  222,
+                        "gdi":  17,
+                        "user":  16,
+                        "cpu":  19.8
+                    },
+                    {
+                        "t":  290,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  20.3
+                    },
+                    {
+                        "t":  295,
+                        "privateMB":  17.69,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  20.6
+                    },
+                    {
+                        "t":  300,
+                        "privateMB":  17.96,
+                        "handles":  222,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  21
+                    },
+                    {
+                        "t":  305,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  21.3
+                    },
+                    {
+                        "t":  310,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  21.5
+                    },
+                    {
+                        "t":  315,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  21.8
+                    },
+                    {
+                        "t":  320,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  22.1
+                    },
+                    {
+                        "t":  325,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  22.5
+                    },
+                    {
+                        "t":  330,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  22.9
+                    },
+                    {
+                        "t":  335,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  23.2
+                    },
+                    {
+                        "t":  340,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  23.5
+                    },
+                    {
+                        "t":  345,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  23.7
+                    },
+                    {
+                        "t":  350,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  24
+                    },
+                    {
+                        "t":  355,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  24.2
+                    },
+                    {
+                        "t":  360,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  24.4
+                    },
+                    {
+                        "t":  365,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  24.9
+                    },
+                    {
+                        "t":  370,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  25.2
+                    },
+                    {
+                        "t":  375,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  25.5
+                    },
+                    {
+                        "t":  380,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  25.8
+                    },
+                    {
+                        "t":  385,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  26.2
+                    },
+                    {
+                        "t":  390,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  26.5
+                    },
+                    {
+                        "t":  395,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  26.9
+                    },
+                    {
+                        "t":  400,
+                        "privateMB":  17.96,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  27.2
+                    },
+                    {
+                        "t":  405,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  27.5
+                    },
+                    {
+                        "t":  410,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  28
+                    },
+                    {
+                        "t":  415,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  28.4
+                    },
+                    {
+                        "t":  420,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  28.7
+                    },
+                    {
+                        "t":  425,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  29.1
+                    },
+                    {
+                        "t":  430,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  29.4
+                    },
+                    {
+                        "t":  435,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  29.8
+                    },
+                    {
+                        "t":  440,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  30.2
+                    },
+                    {
+                        "t":  445,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  30.6
+                    },
+                    {
+                        "t":  450,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  31
+                    },
+                    {
+                        "t":  455,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  31.3
+                    },
+                    {
+                        "t":  460,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  31.7
+                    },
+                    {
+                        "t":  465,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  32.1
+                    },
+                    {
+                        "t":  470,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  32.5
+                    },
+                    {
+                        "t":  475,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  32.9
+                    },
+                    {
+                        "t":  480,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  33.1
+                    },
+                    {
+                        "t":  485,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  33.4
+                    },
+                    {
+                        "t":  490,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  33.8
+                    },
+                    {
+                        "t":  495,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  34.1
+                    },
+                    {
+                        "t":  500,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  34.5
+                    },
+                    {
+                        "t":  506,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  34.9
+                    },
+                    {
+                        "t":  511,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  35.2
+                    },
+                    {
+                        "t":  516,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  35.6
+                    },
+                    {
+                        "t":  521,
+                        "privateMB":  17.77,
+                        "handles":  222,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  35.8
+                    },
+                    {
+                        "t":  526,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  36.2
+                    },
+                    {
+                        "t":  531,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  36.5
+                    },
+                    {
+                        "t":  536,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  36.8
+                    },
+                    {
+                        "t":  541,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  37.1
+                    },
+                    {
+                        "t":  546,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  37.4
+                    },
+                    {
+                        "t":  551,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  37.7
+                    },
+                    {
+                        "t":  556,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  38
+                    },
+                    {
+                        "t":  561,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  38.3
+                    },
+                    {
+                        "t":  566,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  38.7
+                    },
+                    {
+                        "t":  571,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  39
+                    },
+                    {
+                        "t":  576,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  39.3
+                    },
+                    {
+                        "t":  581,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  39.6
+                    },
+                    {
+                        "t":  586,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  39.9
+                    },
+                    {
+                        "t":  591,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  40.2
+                    },
+                    {
+                        "t":  596,
+                        "privateMB":  17.77,
+                        "handles":  221,
+                        "gdi":  16,
+                        "user":  16,
+                        "cpu":  40.6
+                    }
+                ],
+    "stderrTail":  [
+                       "Selected WSI platform: win32\r",
+                       "Selected GPU 0: Intel Iris 6100 (HasVK/WDDM), type: IntegratedGpu, apiVersion: 4206946 (1.3.354), driverVersion: 109060103 (26.2.7) \r"
+                   ]
+}
