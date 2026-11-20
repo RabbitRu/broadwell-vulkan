@@ -842,9 +842,57 @@ edit(pipeline_name, pipeline_replacements)
 edit('src/intel/isl/isl_gfx8.c', [
     ('   uint32_t halign = 4;\n', '#ifdef _WIN32\n   uint32_t halign = 16;\n#else\n   uint32_t halign = 4;\n#endif\n'),
 ])
+# The device's default pipeline cache is persisted to %LOCALAPPDATA%\HasVK-WDDM
+# (anv_wddm_device.c) and plays the part of Mesa's disk cache, which is not
+# built for Windows: on Linux every compiled shader goes to the disk cache,
+# whichever VkPipelineCache the application passed. Here shaders created with
+# an application's own cache never reached the file, so an application that
+# does not save its cache (Dota 2) compiled every pipeline again on every
+# launch, on its render thread: 100 ms frames and 1-4 s stalls at the same
+# places of every replay. Now a miss in the application's cache looks in the
+# default one, and every new shader is added to both.
 edit('src/intel/vulkan_hasvk/anv_pipeline_cache.c', [
     ('   uint64_t shader_data_addr = INSTRUCTION_STATE_POOL_MIN_ADDRESS +',
      '#ifdef _WIN32\n   uint64_t shader_data_addr = device->instruction_state_pool.block_pool.start_address -\n                               device->instruction_state_pool.start_offset +\n#else\n   uint64_t shader_data_addr = INSTRUCTION_STATE_POOL_MIN_ADDRESS +\n#endif'),
+    ('''   if (user_cache_hit != NULL) {
+      *user_cache_hit = object != NULL && cache_hit &&
+                        cache != device->default_pipeline_cache;
+   }
+   if (object == NULL)
+      return NULL;
+''',
+     '''   if (user_cache_hit != NULL) {
+      *user_cache_hit = object != NULL && cache_hit &&
+                        cache != device->default_pipeline_cache;
+   }
+#ifdef _WIN32
+   /* The persisted default cache stands in for Mesa's disk cache. */
+   if (object == NULL && cache != device->default_pipeline_cache && cache != device->internal_cache) {
+      object = vk_pipeline_cache_lookup_object(device->default_pipeline_cache, key_data, key_size,
+                                               &anv_shader_bin_ops, NULL);
+      if (object != NULL)
+         object = vk_pipeline_cache_add_object(cache, object);
+   }
+#endif
+   if (object == NULL)
+      return NULL;
+'''),
+    ('''   struct vk_pipeline_cache_object *cached =
+      vk_pipeline_cache_add_object(cache, &shader->base);
+
+   return container_of(cached, struct anv_shader_bin, base);
+''',
+     '''   struct vk_pipeline_cache_object *cached =
+      vk_pipeline_cache_add_object(cache, &shader->base);
+#ifdef _WIN32
+   if (cache != device->default_pipeline_cache && cache != device->internal_cache)
+      vk_pipeline_cache_object_unref(&device->vk,
+         vk_pipeline_cache_add_object(device->default_pipeline_cache,
+                                      vk_pipeline_cache_object_ref(cached)));
+#endif
+
+   return container_of(cached, struct anv_shader_bin, base);
+'''),
 ])
 image_name = 'src/intel/vulkan_hasvk/anv_image.c'
 image_before = (originals / image_name).read_text(encoding='utf-8')

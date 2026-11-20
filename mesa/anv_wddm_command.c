@@ -1,7 +1,7 @@
 /* Windows lifetime and submission backing for HasVK command buffers.
  * Packet emission, descriptor binding and push packing use upstream HasVK.
  *
- * A command buffer is a chain of 64 KiB BOs linked by MI_BATCH_BUFFER_START.
+ * A command buffer is a chain of BOs (8 KiB, then 64 KiB) linked by MI_BATCH_BUFFER_START.
  * Every BO ends in a 256-byte guard region; the first one also holds the GPU
  * completion marker written by the last PIPE_CONTROL of a primary buffer.
  * Secondary command buffers are copied into the primary at
@@ -10,8 +10,15 @@
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
 
-enum { command_bytes = 65536, guard_bytes = 256, chain_bytes = 16,
-       usable_bytes = command_bytes - guard_bytes - chain_bytes, marker_offset = command_bytes - 64 };
+int64_t anv_wddm_stat_command_buffers, anv_wddm_stat_command_bos;
+
+/* The first BO of a command buffer is small: most command buffers of a game
+ * hold a few KiB (Dota 2: ~4400 of them, 1-10 KiB each, thousands recorded at
+ * once), and 64 KiB each ran the driver's own memory (ANV_WDDM_INTERNAL_BYTES)
+ * out. A buffer that outgrows it continues in 64 KiB BOs. The guard region
+ * and the completion marker sit at the end of whichever BO it is. */
+enum { first_command_bytes = 8192, command_bytes = 65536, guard_bytes = 256, chain_bytes = 16, marker_from_end = 64 };
+static inline uint32_t marker_offset(const struct anv_bo *bo) { return (uint32_t)bo->size - marker_from_end; }
 
 /* 16 bytes: MI_BATCH_BUFFER_START to next (jump) or MI_BATCH_BUFFER_END, padded with MI_NOOP. */
 static void write_tail(uint32_t *tail, struct anv_address next, bool jump)
@@ -28,8 +35,8 @@ static void write_tail(uint32_t *tail, struct anv_address next, bool jump)
 }
 static void command_use_bo(struct anv_cmd_buffer *cmd, struct anv_bo *bo)
 {
-   memset((char *)bo->map + command_bytes - guard_bytes, 0x6d, guard_bytes);
-   anv_batch_set_storage(&cmd->batch, (struct anv_address){bo, 0}, bo->map, usable_bytes);
+   memset((char *)bo->map + bo->size - guard_bytes, 0x6d, guard_bytes);
+   anv_batch_set_storage(&cmd->batch, (struct anv_address){bo, 0}, bo->map, bo->size - guard_bytes - chain_bytes);
 }
 /* anv_batch_emit_dwords found no room: close this BO with a jump to a new one. */
 static VkResult command_extend(struct anv_batch *batch, void *data)
@@ -45,11 +52,15 @@ static VkResult command_extend(struct anv_batch *batch, void *data)
       if (!chunks) return VK_ERROR_OUT_OF_HOST_MEMORY;
       s->chunks = chunks; s->chunk_capacity = capacity;
    }
-   struct anv_bo *bo;
-   if (s->spare_count) bo = s->spare[--s->spare_count];   /* from an earlier recording of this command buffer */
-   else {
+   struct anv_bo *bo = NULL;
+   struct anv_wddm_device_state *w = cmd->device->wddm;
+   mtx_lock(&w->alloc_mutex);
+   if (w->command_spare_count) bo = w->command_spares[--w->command_spare_count];   /* from an earlier recording */
+   mtx_unlock(&w->alloc_mutex);
+   if (!bo) {
       VkResult result = anv_device_alloc_bo(cmd->device, "command", command_bytes, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &bo);
       if (result != VK_SUCCESS) return result;
+      p_atomic_inc(&anv_wddm_stat_command_bos);
    }
    s->chunks[s->chunk_count - 1].length = (uint32_t)((char *)batch->next - (char *)batch->start);
    /* chain_bytes past batch->end are reserved for this jump. */
@@ -76,16 +87,16 @@ static void command_resources_finish(struct anv_cmd_buffer *cmd)
    anv_state_stream_finish(&cmd->general_state_stream);
    anv_reloc_list_finish(&cmd->surface_relocs, &cmd->vk.pool->alloc);
    anv_reloc_list_finish(cmd->batch.relocs, &cmd->vk.pool->alloc);
-   /* Extra chunks are kept for the next recording (released in destroy_command). */
+   /* Extra chunks go to the device's spares for the next recording of any
+    * command buffer; beyond ANV_WDDM_COMMAND_SPARES idle ones they are released. */
    struct anv_wddm_cmd_state *s = cmd->wddm;
+   struct anv_wddm_device_state *w = cmd->device->wddm;
    for (uint32_t i = 1; i < s->chunk_count; ++i) {
-      if (s->spare_count == s->spare_capacity) {
-         const uint32_t capacity = MAX2(8, s->spare_capacity * 2);
-         struct anv_bo **spare = vk_realloc(&cmd->vk.pool->alloc, s->spare, capacity * sizeof(*spare), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-         if (!spare) { anv_device_release_bo(cmd->device, s->chunks[i].bo); continue; }
-         s->spare = spare; s->spare_capacity = capacity;
-      }
-      s->spare[s->spare_count++] = s->chunks[i].bo;
+      mtx_lock(&w->alloc_mutex);
+      const bool kept = w->command_spare_count < ANV_WDDM_COMMAND_SPARES;
+      if (kept) w->command_spares[w->command_spare_count++] = s->chunks[i].bo;
+      mtx_unlock(&w->alloc_mutex);
+      if (!kept) { anv_device_release_bo(cmd->device, s->chunks[i].bo); p_atomic_dec(&anv_wddm_stat_command_bos); }
    }
    for (uint32_t i = 0; i < cmd->wddm->wait_count; ++i) vk_free(&cmd->vk.pool->alloc, cmd->wddm->waits[i].events);
    cmd->wddm->wait_count = 0;
@@ -98,8 +109,9 @@ static VkResult command_storage_begin(struct anv_cmd_buffer *cmd)
 {
    struct anv_wddm_cmd_state *s = cmd->wddm;
    if (!s->bo) {
-      VkResult result = anv_device_alloc_bo(cmd->device, "command", command_bytes, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &s->bo);
+      VkResult result = anv_device_alloc_bo(cmd->device, "command", first_command_bytes, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &s->bo);
       if (result != VK_SUCCESS) { s->bo = NULL; return result; }
+      p_atomic_inc(&anv_wddm_stat_command_bos);
       s->chunks[0] = (struct anv_wddm_cmd_chunk){s->bo, 0}; s->chunk_count = 1;
    }
    command_use_bo(cmd, s->bo);
@@ -154,6 +166,7 @@ static VkResult create_command(struct vk_command_pool *pool, VkCommandBufferLeve
    if (!u_vector_init(&cmd->bt_block_states, 8, sizeof(struct anv_state))) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail; }
    cmd->batch.alloc = &pool->alloc;
    command_resources_init(cmd);
+   p_atomic_inc(&anv_wddm_stat_command_buffers);
    *out = &cmd->vk;
    return VK_SUCCESS;
 fail:
@@ -173,12 +186,19 @@ static void destroy_command(struct vk_command_buffer *base)
 {
    struct anv_cmd_buffer *cmd = container_of(base, struct anv_cmd_buffer, vk);
    command_resources_finish(cmd); u_vector_finish(&cmd->bt_block_states);
-   for (uint32_t i = 0; i < cmd->wddm->spare_count; ++i) anv_device_release_bo(cmd->device, cmd->wddm->spare[i]);
-   vk_free(&base->pool->alloc, cmd->wddm->spare);
-   if (cmd->wddm->bo) anv_device_release_bo(cmd->device, cmd->wddm->bo);
+   if (cmd->wddm->bo) { anv_device_release_bo(cmd->device, cmd->wddm->bo); p_atomic_dec(&anv_wddm_stat_command_bos); }
+   p_atomic_dec(&anv_wddm_stat_command_buffers);
    vk_free(&base->pool->alloc, cmd->wddm->chunks); vk_free(&base->pool->alloc, cmd->wddm->waits);
    vk_free(&base->pool->alloc, cmd->batch.relocs); vk_free(&base->pool->alloc, cmd->wddm);
    vk_command_buffer_finish(base); vk_free(&base->pool->alloc, cmd);
+}
+void anv_wddm_command_spares_finish(struct anv_device *device)
+{
+   struct anv_wddm_device_state *w = device->wddm;
+   while (w->command_spare_count) {
+      anv_device_release_bo(device, w->command_spares[--w->command_spare_count]);
+      p_atomic_dec(&anv_wddm_stat_command_bos);
+   }
 }
 const struct vk_command_buffer_ops anv_cmd_buffer_ops = {
    .create = create_command, .reset = anv_cmd_buffer_reset, .destroy = destroy_command,
@@ -214,13 +234,13 @@ void anv_cmd_buffer_end_batch_buffer(struct anv_cmd_buffer *cmd)
          for (unsigned i = 0; i < ARRAY_SIZE(anv_wddm_dumped_registers); ++i)
             anv_batch_emit(&cmd->batch, GENX(MI_STORE_REGISTER_MEM), store) {
                store.RegisterAddress = anv_wddm_dumped_registers[i];
-               store.MemoryAddress = (struct anv_address){cmd->wddm->bo, command_bytes - guard_bytes + 4 * i};
+               store.MemoryAddress = (struct anv_address){cmd->wddm->bo, cmd->wddm->bo->size - guard_bytes + 4 * i};
             }
       }
       anv_batch_emit(&cmd->batch, GENX(PIPE_CONTROL), flush) {
          flush.DCFlushEnable = true; flush.CommandStreamerStallEnable = true;
          flush.PostSyncOperation = WriteImmediateData;
-         flush.Address = (struct anv_address){cmd->wddm->bo, marker_offset}; flush.ImmediateData = 1;
+         flush.Address = (struct anv_address){cmd->wddm->bo, marker_offset(cmd->wddm->bo)}; flush.ImmediateData = 1;
       }
       uint32_t *tail = anv_batch_emit_dwords(&cmd->batch, 4);
       if (tail) { cmd->wddm->tail = tail; write_tail(tail, ANV_NULL_ADDRESS, false); }
@@ -483,7 +503,7 @@ int anv_wddm_execute_commands(struct anv_device *device, struct vk_command_buffe
       const bool chain = next && next != cmd && (s->wait_count || next->wddm->run != w->runs + 1);
       if (next) write_tail(s->tail, (struct anv_address){next->wddm->bo, 0}, chain);
       else write_tail(s->tail, done, serial != 0);
-      *(uint64_t *)((char *)s->bo->map + marker_offset) = 0;
+      *(uint64_t *)((char *)s->bo->map + marker_offset(s->bo)) = 0;
       /* Command BOs are not flushed by the transport: write back exactly this
        * command buffer's chunks (with its tail and marker) now. */
       for (uint32_t c = 0; c < s->chunk_count; ++c) {
@@ -543,14 +563,14 @@ int anv_wddm_execute_command(struct anv_cmd_buffer *cmd, uint64_t present_token)
 static int check_completed(struct anv_cmd_buffer *cmd)
 {
    struct anv_wddm_device_state *w = cmd->device->wddm;
-   if (hasvk_wddm_bo_flush_range(cmd->wddm->bo->wddm_bo, marker_offset & ~63u, 64)) return -1;
-   const uint64_t marker = *(volatile uint64_t *)((char *)cmd->wddm->bo->map + marker_offset);
+   if (hasvk_wddm_bo_flush_range(cmd->wddm->bo->wddm_bo, marker_offset(cmd->wddm->bo) & ~63u, 64)) return -1;
+   const uint64_t marker = *(volatile uint64_t *)((char *)cmd->wddm->bo->map + marker_offset(cmd->wddm->bo));
    if (marker != 1) {
       fprintf(stderr, "WDDM command completion: marker=%llu; %s\n", (unsigned long long)marker, hasvk_wddm_error());
       return -1;
    }
    for (uint32_t c = 0; c < cmd->wddm->chunk_count; ++c) {
-      const uint8_t *tail = (const uint8_t *)cmd->wddm->chunks[c].bo->map + command_bytes - guard_bytes;
+      const uint8_t *tail = (const uint8_t *)cmd->wddm->chunks[c].bo->map + cmd->wddm->chunks[c].bo->size - guard_bytes;
       if (!c && anv_wddm_dump_registers()) {
          static bool printed;
          if (!printed) { printed = true; const uint32_t *values = (const uint32_t *)tail;

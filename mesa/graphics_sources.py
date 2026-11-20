@@ -327,6 +327,24 @@ def push_constants_active_stages(hardware):
     return hardware
 
 
+def small_first_bt_block(text):
+    """The first binding table block of a recording is 4 KiB instead of 64 KiB;
+    later ones (when it fills) keep the full block. Dota 2 keeps ~4400 command
+    buffers, most of them a few KiB and thousands recorded at the same time: at
+    64 KiB each the binding table pool alone grew to 512 MiB, the driver's own
+    memory (ANV_WDDM_INTERNAL_BYTES) ran out and vkEndCommandBuffer returned
+    VK_ERROR_OUT_OF_DEVICE_MEMORY. The largest binding table
+    (MAX_BINDING_TABLE_SIZE entries) is under 1 KiB; a 4 KiB pool state is
+    4 KiB-aligned, as Surface State Base Address requires."""
+    old = '   *bt_block = anv_binding_table_pool_alloc(cmd_buffer->device);\n'
+    new = ('   *bt_block = u_vector_length(&cmd_buffer->bt_block_states) == 1 ?\n'
+           '      anv_state_pool_alloc(&cmd_buffer->device->binding_table_pool, 4096, 0) :\n'
+           '      anv_binding_table_pool_alloc(cmd_buffer->device);\n')
+    if text.count(old) != 1:
+        raise ValueError('anv_cmd_buffer_new_binding_table_block: unexpected source')
+    return text.replace(old, new)
+
+
 def generate_graphics_sources(originals):
     def read(name):
         return (originals / ('src/intel/vulkan_hasvk/' + name)).read_text(encoding='utf-8')
@@ -349,6 +367,7 @@ def generate_graphics_sources(originals):
         'VkResult\nanv_cmd_buffer_new_binding_table_block(',
     ]:
         common += function(chain, signature)
+    common = small_first_bt_block(common)
     device = read('anv_device.c')
     common += function(device, 'static struct anv_state\nanv_state_pool_emit_data(')
     common += function(device, 'static void\nanv_device_init_border_colors(').replace(

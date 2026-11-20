@@ -31,6 +31,10 @@ anv_wddm_heap_bytes(void)
 /* Application memory (vkAllocateMemory) of all devices of this process. */
 uint64_t anv_wddm_process_user_bytes(void);
 #define ANV_WDDM_MAX_BOS 65536u
+/* HASVK_WDDM_STATS: command buffers and their command BOs (in use,
+ * idle first BOs and spares) alive in this process. */
+extern int64_t anv_wddm_stat_command_buffers, anv_wddm_stat_command_bos;
+#define ANV_WDDM_COMMAND_SPARES 512u   /* 32 MiB of idle 64 KiB command BOs */
 /* Scratch BOs, relative to origin: above the general state pool (which ends
  * at most at origin + 2 MiB + 1 GiB), below the instruction pool (origin + 3 GiB). */
 #define ANV_WDDM_SCRATCH_START 0x50000000ull
@@ -54,6 +58,16 @@ struct anv_wddm_device_state {
     * the completion thread, fence queries and presents of other threads
     * (Talos: 10-24 ms hitches while its streaming thread allocated). */
    mtx_t alloc_mutex;
+   /* 64 KiB command BOs (beyond a command buffer's first) of finished
+    * recordings, shared by all command buffers of the device and protected by
+    * alloc_mutex. Kept per command buffer, every buffer held as many as it
+    * ever needed: Dota 2 rotates its ~4400 command buffers between small and
+    * large recordings and the sum grew without bound (15000 BOs, ~1 GiB). At
+    * most ANV_WDDM_COMMAND_SPARES idle ones are kept; reusing them spares a
+    * WDDM allocation and a residency wait per re-recording (Talos: ~6 % of
+    * the render thread). */
+   struct anv_bo *command_spares[ANV_WDDM_COMMAND_SPARES];
+   uint32_t command_spare_count;
    struct u_cnd_monotonic condition;
    struct util_vma_heap client_heap;
    struct util_vma_heap state_heap;
@@ -118,9 +132,12 @@ struct anv_wddm_pending {
 
 VkResult anv_wddm_pools_init(struct anv_device *device);
 void anv_wddm_pools_finish(struct anv_device *device);
-/* A command buffer is a chain of fixed-size BOs. The first one (bo ==
- * chunks[0].bo) is allocated by the first vkBeginCommandBuffer and then lives
- * as long as the command buffer; further chunks become spares on reset. A
+/* Releases the device's idle command BOs (anv_DestroyDevice). */
+void anv_wddm_command_spares_finish(struct anv_device *device);
+/* A command buffer is a chain of BOs: an 8 KiB first one, then 64 KiB ones.
+ * The first one (bo == chunks[0].bo) is allocated by the first vkBeginCommandBuffer and then lives
+ * as long as the command buffer; further chunks return to the device's
+ * command_spares on reset. A
  * command buffer that was never recorded holds no GPU memory (bo == NULL,
  * chunk_count == 0): CTS allocates 10000 of them at once. */
 struct anv_wddm_cmd_chunk {
@@ -141,11 +158,6 @@ struct anv_wddm_cmd_state {
    bool recording;
    struct anv_wddm_cmd_chunk *chunks;
    uint32_t chunk_count, chunk_capacity;
-   /* Chunks beyond the first, kept across resets for reuse (released at
-    * destroy): allocating a WDDM buffer and waiting for its residency on every
-    * re-recording cost the application's render thread ~6 % in Talos. */
-   struct anv_bo **spare;
-   uint32_t spare_count, spare_capacity;
    struct anv_wddm_wait *waits;
    uint32_t wait_count, wait_capacity;
    /* Last 16 bytes of a recorded primary: MI_BATCH_BUFFER_END, patched at

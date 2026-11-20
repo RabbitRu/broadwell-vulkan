@@ -1279,6 +1279,35 @@
                                 shader->kernel.offset +
                                 prog_data_in->const_data_offset;
  
+@@ -297,6 +302,15 @@
+       *user_cache_hit = object != NULL && cache_hit &&
+                         cache != device->default_pipeline_cache;
+    }
++#ifdef _WIN32
++   /* The persisted default cache stands in for Mesa's disk cache. */
++   if (object == NULL && cache != device->default_pipeline_cache && cache != device->internal_cache) {
++      object = vk_pipeline_cache_lookup_object(device->default_pipeline_cache, key_data, key_size,
++                                               &anv_shader_bin_ops, NULL);
++      if (object != NULL)
++         object = vk_pipeline_cache_add_object(cache, object);
++   }
++#endif
+    if (object == NULL)
+       return NULL;
+ 
+@@ -332,6 +346,12 @@
+ 
+    struct vk_pipeline_cache_object *cached =
+       vk_pipeline_cache_add_object(cache, &shader->base);
++#ifdef _WIN32
++   if (cache != device->default_pipeline_cache && cache != device->internal_cache)
++      vk_pipeline_cache_object_unref(&device->vk,
++         vk_pipeline_cache_add_object(device->default_pipeline_cache,
++                                      vk_pipeline_cache_object_ref(cached)));
++#endif
+ 
+    return container_of(cached, struct anv_shader_bin, base);
+ }
 --- a/src/intel/vulkan_hasvk/anv_image.c
 +++ b/src/intel/vulkan_hasvk/anv_image.c
 @@ -24,9 +24,13 @@
@@ -10451,7 +10480,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,1247 @@
+@@ -0,0 +1,1258 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -11225,6 +11254,13 @@
 +         fprintf(stderr, "HasVK/WDDM stats: %.0f submits/s, %.0f command buffers/s, %.1f MiB/s of commands, %.1f KiB per command buffer\n",
 +                 w->stats_submits / s, w->stats_command_buffers / s, w->stats_command_bytes / s / 1048576.0,
 +                 w->stats_command_buffers ? w->stats_command_bytes / 1024.0 / w->stats_command_buffers : 0.0);
++         fprintf(stderr, "HasVK/WDDM memory: internal %.1f MiB (command buffers %lld, command BOs %lld; pools: binding table %.1f, "
++                 "surface state %.1f, dynamic %.1f, instruction %.1f MiB), application %.1f MiB\n",
++                 (w->allocated_bytes - w->user_bytes) / 1048576.0,
++                 (long long)p_atomic_read(&anv_wddm_stat_command_buffers), (long long)p_atomic_read(&anv_wddm_stat_command_bos),
++                 device->binding_table_pool.block_pool.size / 1048576.0, device->surface_state_pool.block_pool.size / 1048576.0,
++                 device->dynamic_state_pool.block_pool.size / 1048576.0, device->instruction_state_pool.block_pool.size / 1048576.0,
++                 w->user_bytes / 1048576.0);
 +         w->stats_submits = w->stats_command_buffers = w->stats_command_bytes = 0; w->stats_last_ms = now;
 +      }
 +   }
@@ -11340,16 +11376,19 @@
 + * middle of a frame (frame-time spikes, roadmap stage 7 item 2):
 + *  - internal-cache.bin: the driver's own shaders (BLORP copies, clears,
 + *    blits), device->internal_cache;
-+ *  - default-cache.bin: pipelines an application creates without a
-+ *    VkPipelineCache, device->default_pipeline_cache (what Mesa's disk cache
-+ *    holds on Linux; pipelines in the application's own cache stay there).
++ *  - default-cache.bin: every pipeline an application creates, with or
++ *    without a VkPipelineCache of its own, device->default_pipeline_cache
++ *    (what Mesa's disk cache holds on Linux; anv_pipeline_cache.c looks
++ *    there when the application's cache misses).
 + * Both live in %LOCALAPPDATA%\HasVK-WDDM. The Vulkan cache header (vendor,
 + * device, pipelineCacheUUID of this build) makes the runtime ignore a file
 + * written by another build. A file is rewritten at device destruction when
 + * its cache grew, through a per-process temporary file and an atomic rename,
 + * so concurrent processes (parallel CTS) never see a partial file.
 + * HASVK_WDDM_INTERNAL_CACHE=0 disables both. */
-+#define ANV_WDDM_CACHE_FILE_MAX (64u << 20)
++/* Pipelines of an application's own VkPipelineCache are kept here too
++ * (anv_pipeline_cache.c): a game's set is tens of MiB. */
++#define ANV_WDDM_CACHE_FILE_MAX (256u << 20)
 +static bool cache_file_path(const wchar_t *name, wchar_t *path, size_t count, bool create_directory)
 +{
 +   const char *setting = getenv("HASVK_WDDM_INTERNAL_CACHE");
@@ -11580,6 +11619,7 @@
 +#ifdef HASVK_WDDM_GRAPHICS
 +   if (device->wddm && device->wddm->custom_border_colors_initialized) anv_state_reserved_pool_finish(&device->custom_border_colors);
 +#endif
++   anv_wddm_command_spares_finish(device);
 +   anv_wddm_pools_finish(device);
 +   state_finish(device->wddm);
 +   vk_device_finish(&device->vk); vk_free(&device->vk.alloc, device);
@@ -11701,7 +11741,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm.h
-@@ -0,0 +1,256 @@
+@@ -0,0 +1,268 @@
 +/* Private Windows platform state for the HasVK port. */
 +#pragma once
 +#include "anv_private.h"
@@ -11735,6 +11775,10 @@
 +/* Application memory (vkAllocateMemory) of all devices of this process. */
 +uint64_t anv_wddm_process_user_bytes(void);
 +#define ANV_WDDM_MAX_BOS 65536u
++/* HASVK_WDDM_STATS: command buffers and their command BOs (in use,
++ * idle first BOs and spares) alive in this process. */
++extern int64_t anv_wddm_stat_command_buffers, anv_wddm_stat_command_bos;
++#define ANV_WDDM_COMMAND_SPARES 512u   /* 32 MiB of idle 64 KiB command BOs */
 +/* Scratch BOs, relative to origin: above the general state pool (which ends
 + * at most at origin + 2 MiB + 1 GiB), below the instruction pool (origin + 3 GiB). */
 +#define ANV_WDDM_SCRATCH_START 0x50000000ull
@@ -11758,6 +11802,16 @@
 +    * the completion thread, fence queries and presents of other threads
 +    * (Talos: 10-24 ms hitches while its streaming thread allocated). */
 +   mtx_t alloc_mutex;
++   /* 64 KiB command BOs (beyond a command buffer's first) of finished
++    * recordings, shared by all command buffers of the device and protected by
++    * alloc_mutex. Kept per command buffer, every buffer held as many as it
++    * ever needed: Dota 2 rotates its ~4400 command buffers between small and
++    * large recordings and the sum grew without bound (15000 BOs, ~1 GiB). At
++    * most ANV_WDDM_COMMAND_SPARES idle ones are kept; reusing them spares a
++    * WDDM allocation and a residency wait per re-recording (Talos: ~6 % of
++    * the render thread). */
++   struct anv_bo *command_spares[ANV_WDDM_COMMAND_SPARES];
++   uint32_t command_spare_count;
 +   struct u_cnd_monotonic condition;
 +   struct util_vma_heap client_heap;
 +   struct util_vma_heap state_heap;
@@ -11822,9 +11876,12 @@
 +
 +VkResult anv_wddm_pools_init(struct anv_device *device);
 +void anv_wddm_pools_finish(struct anv_device *device);
-+/* A command buffer is a chain of fixed-size BOs. The first one (bo ==
-+ * chunks[0].bo) is allocated by the first vkBeginCommandBuffer and then lives
-+ * as long as the command buffer; further chunks become spares on reset. A
++/* Releases the device's idle command BOs (anv_DestroyDevice). */
++void anv_wddm_command_spares_finish(struct anv_device *device);
++/* A command buffer is a chain of BOs: an 8 KiB first one, then 64 KiB ones.
++ * The first one (bo == chunks[0].bo) is allocated by the first vkBeginCommandBuffer and then lives
++ * as long as the command buffer; further chunks return to the device's
++ * command_spares on reset. A
 + * command buffer that was never recorded holds no GPU memory (bo == NULL,
 + * chunk_count == 0): CTS allocates 10000 of them at once. */
 +struct anv_wddm_cmd_chunk {
@@ -11845,11 +11902,6 @@
 +   bool recording;
 +   struct anv_wddm_cmd_chunk *chunks;
 +   uint32_t chunk_count, chunk_capacity;
-+   /* Chunks beyond the first, kept across resets for reuse (released at
-+    * destroy): allocating a WDDM buffer and waiting for its residency on every
-+    * re-recording cost the application's render thread ~6 % in Talos. */
-+   struct anv_bo **spare;
-+   uint32_t spare_count, spare_capacity;
 +   struct anv_wddm_wait *waits;
 +   uint32_t wait_count, wait_capacity;
 +   /* Last 16 bytes of a recorded primary: MI_BATCH_BUFFER_END, patched at
@@ -12941,11 +12993,11 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_command.c
-@@ -0,0 +1,581 @@
+@@ -0,0 +1,601 @@
 +/* Windows lifetime and submission backing for HasVK command buffers.
 + * Packet emission, descriptor binding and push packing use upstream HasVK.
 + *
-+ * A command buffer is a chain of 64 KiB BOs linked by MI_BATCH_BUFFER_START.
++ * A command buffer is a chain of BOs (8 KiB, then 64 KiB) linked by MI_BATCH_BUFFER_START.
 + * Every BO ends in a 256-byte guard region; the first one also holds the GPU
 + * completion marker written by the last PIPE_CONTROL of a primary buffer.
 + * Secondary command buffers are copied into the primary at
@@ -12954,8 +13006,15 @@
 +#include "genxml/gen_macros.h"
 +#include "genxml/genX_pack.h"
 +
-+enum { command_bytes = 65536, guard_bytes = 256, chain_bytes = 16,
-+       usable_bytes = command_bytes - guard_bytes - chain_bytes, marker_offset = command_bytes - 64 };
++int64_t anv_wddm_stat_command_buffers, anv_wddm_stat_command_bos;
++
++/* The first BO of a command buffer is small: most command buffers of a game
++ * hold a few KiB (Dota 2: ~4400 of them, 1-10 KiB each, thousands recorded at
++ * once), and 64 KiB each ran the driver's own memory (ANV_WDDM_INTERNAL_BYTES)
++ * out. A buffer that outgrows it continues in 64 KiB BOs. The guard region
++ * and the completion marker sit at the end of whichever BO it is. */
++enum { first_command_bytes = 8192, command_bytes = 65536, guard_bytes = 256, chain_bytes = 16, marker_from_end = 64 };
++static inline uint32_t marker_offset(const struct anv_bo *bo) { return (uint32_t)bo->size - marker_from_end; }
 +
 +/* 16 bytes: MI_BATCH_BUFFER_START to next (jump) or MI_BATCH_BUFFER_END, padded with MI_NOOP. */
 +static void write_tail(uint32_t *tail, struct anv_address next, bool jump)
@@ -12972,8 +13031,8 @@
 +}
 +static void command_use_bo(struct anv_cmd_buffer *cmd, struct anv_bo *bo)
 +{
-+   memset((char *)bo->map + command_bytes - guard_bytes, 0x6d, guard_bytes);
-+   anv_batch_set_storage(&cmd->batch, (struct anv_address){bo, 0}, bo->map, usable_bytes);
++   memset((char *)bo->map + bo->size - guard_bytes, 0x6d, guard_bytes);
++   anv_batch_set_storage(&cmd->batch, (struct anv_address){bo, 0}, bo->map, bo->size - guard_bytes - chain_bytes);
 +}
 +/* anv_batch_emit_dwords found no room: close this BO with a jump to a new one. */
 +static VkResult command_extend(struct anv_batch *batch, void *data)
@@ -12989,11 +13048,15 @@
 +      if (!chunks) return VK_ERROR_OUT_OF_HOST_MEMORY;
 +      s->chunks = chunks; s->chunk_capacity = capacity;
 +   }
-+   struct anv_bo *bo;
-+   if (s->spare_count) bo = s->spare[--s->spare_count];   /* from an earlier recording of this command buffer */
-+   else {
++   struct anv_bo *bo = NULL;
++   struct anv_wddm_device_state *w = cmd->device->wddm;
++   mtx_lock(&w->alloc_mutex);
++   if (w->command_spare_count) bo = w->command_spares[--w->command_spare_count];   /* from an earlier recording */
++   mtx_unlock(&w->alloc_mutex);
++   if (!bo) {
 +      VkResult result = anv_device_alloc_bo(cmd->device, "command", command_bytes, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &bo);
 +      if (result != VK_SUCCESS) return result;
++      p_atomic_inc(&anv_wddm_stat_command_bos);
 +   }
 +   s->chunks[s->chunk_count - 1].length = (uint32_t)((char *)batch->next - (char *)batch->start);
 +   /* chain_bytes past batch->end are reserved for this jump. */
@@ -13020,16 +13083,16 @@
 +   anv_state_stream_finish(&cmd->general_state_stream);
 +   anv_reloc_list_finish(&cmd->surface_relocs, &cmd->vk.pool->alloc);
 +   anv_reloc_list_finish(cmd->batch.relocs, &cmd->vk.pool->alloc);
-+   /* Extra chunks are kept for the next recording (released in destroy_command). */
++   /* Extra chunks go to the device's spares for the next recording of any
++    * command buffer; beyond ANV_WDDM_COMMAND_SPARES idle ones they are released. */
 +   struct anv_wddm_cmd_state *s = cmd->wddm;
++   struct anv_wddm_device_state *w = cmd->device->wddm;
 +   for (uint32_t i = 1; i < s->chunk_count; ++i) {
-+      if (s->spare_count == s->spare_capacity) {
-+         const uint32_t capacity = MAX2(8, s->spare_capacity * 2);
-+         struct anv_bo **spare = vk_realloc(&cmd->vk.pool->alloc, s->spare, capacity * sizeof(*spare), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-+         if (!spare) { anv_device_release_bo(cmd->device, s->chunks[i].bo); continue; }
-+         s->spare = spare; s->spare_capacity = capacity;
-+      }
-+      s->spare[s->spare_count++] = s->chunks[i].bo;
++      mtx_lock(&w->alloc_mutex);
++      const bool kept = w->command_spare_count < ANV_WDDM_COMMAND_SPARES;
++      if (kept) w->command_spares[w->command_spare_count++] = s->chunks[i].bo;
++      mtx_unlock(&w->alloc_mutex);
++      if (!kept) { anv_device_release_bo(cmd->device, s->chunks[i].bo); p_atomic_dec(&anv_wddm_stat_command_bos); }
 +   }
 +   for (uint32_t i = 0; i < cmd->wddm->wait_count; ++i) vk_free(&cmd->vk.pool->alloc, cmd->wddm->waits[i].events);
 +   cmd->wddm->wait_count = 0;
@@ -13042,8 +13105,9 @@
 +{
 +   struct anv_wddm_cmd_state *s = cmd->wddm;
 +   if (!s->bo) {
-+      VkResult result = anv_device_alloc_bo(cmd->device, "command", command_bytes, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &s->bo);
++      VkResult result = anv_device_alloc_bo(cmd->device, "command", first_command_bytes, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &s->bo);
 +      if (result != VK_SUCCESS) { s->bo = NULL; return result; }
++      p_atomic_inc(&anv_wddm_stat_command_bos);
 +      s->chunks[0] = (struct anv_wddm_cmd_chunk){s->bo, 0}; s->chunk_count = 1;
 +   }
 +   command_use_bo(cmd, s->bo);
@@ -13098,6 +13162,7 @@
 +   if (!u_vector_init(&cmd->bt_block_states, 8, sizeof(struct anv_state))) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail; }
 +   cmd->batch.alloc = &pool->alloc;
 +   command_resources_init(cmd);
++   p_atomic_inc(&anv_wddm_stat_command_buffers);
 +   *out = &cmd->vk;
 +   return VK_SUCCESS;
 +fail:
@@ -13117,12 +13182,19 @@
 +{
 +   struct anv_cmd_buffer *cmd = container_of(base, struct anv_cmd_buffer, vk);
 +   command_resources_finish(cmd); u_vector_finish(&cmd->bt_block_states);
-+   for (uint32_t i = 0; i < cmd->wddm->spare_count; ++i) anv_device_release_bo(cmd->device, cmd->wddm->spare[i]);
-+   vk_free(&base->pool->alloc, cmd->wddm->spare);
-+   if (cmd->wddm->bo) anv_device_release_bo(cmd->device, cmd->wddm->bo);
++   if (cmd->wddm->bo) { anv_device_release_bo(cmd->device, cmd->wddm->bo); p_atomic_dec(&anv_wddm_stat_command_bos); }
++   p_atomic_dec(&anv_wddm_stat_command_buffers);
 +   vk_free(&base->pool->alloc, cmd->wddm->chunks); vk_free(&base->pool->alloc, cmd->wddm->waits);
 +   vk_free(&base->pool->alloc, cmd->batch.relocs); vk_free(&base->pool->alloc, cmd->wddm);
 +   vk_command_buffer_finish(base); vk_free(&base->pool->alloc, cmd);
++}
++void anv_wddm_command_spares_finish(struct anv_device *device)
++{
++   struct anv_wddm_device_state *w = device->wddm;
++   while (w->command_spare_count) {
++      anv_device_release_bo(device, w->command_spares[--w->command_spare_count]);
++      p_atomic_dec(&anv_wddm_stat_command_bos);
++   }
 +}
 +const struct vk_command_buffer_ops anv_cmd_buffer_ops = {
 +   .create = create_command, .reset = anv_cmd_buffer_reset, .destroy = destroy_command,
@@ -13158,13 +13230,13 @@
 +         for (unsigned i = 0; i < ARRAY_SIZE(anv_wddm_dumped_registers); ++i)
 +            anv_batch_emit(&cmd->batch, GENX(MI_STORE_REGISTER_MEM), store) {
 +               store.RegisterAddress = anv_wddm_dumped_registers[i];
-+               store.MemoryAddress = (struct anv_address){cmd->wddm->bo, command_bytes - guard_bytes + 4 * i};
++               store.MemoryAddress = (struct anv_address){cmd->wddm->bo, cmd->wddm->bo->size - guard_bytes + 4 * i};
 +            }
 +      }
 +      anv_batch_emit(&cmd->batch, GENX(PIPE_CONTROL), flush) {
 +         flush.DCFlushEnable = true; flush.CommandStreamerStallEnable = true;
 +         flush.PostSyncOperation = WriteImmediateData;
-+         flush.Address = (struct anv_address){cmd->wddm->bo, marker_offset}; flush.ImmediateData = 1;
++         flush.Address = (struct anv_address){cmd->wddm->bo, marker_offset(cmd->wddm->bo)}; flush.ImmediateData = 1;
 +      }
 +      uint32_t *tail = anv_batch_emit_dwords(&cmd->batch, 4);
 +      if (tail) { cmd->wddm->tail = tail; write_tail(tail, ANV_NULL_ADDRESS, false); }
@@ -13427,7 +13499,7 @@
 +      const bool chain = next && next != cmd && (s->wait_count || next->wddm->run != w->runs + 1);
 +      if (next) write_tail(s->tail, (struct anv_address){next->wddm->bo, 0}, chain);
 +      else write_tail(s->tail, done, serial != 0);
-+      *(uint64_t *)((char *)s->bo->map + marker_offset) = 0;
++      *(uint64_t *)((char *)s->bo->map + marker_offset(s->bo)) = 0;
 +      /* Command BOs are not flushed by the transport: write back exactly this
 +       * command buffer's chunks (with its tail and marker) now. */
 +      for (uint32_t c = 0; c < s->chunk_count; ++c) {
@@ -13487,14 +13559,14 @@
 +static int check_completed(struct anv_cmd_buffer *cmd)
 +{
 +   struct anv_wddm_device_state *w = cmd->device->wddm;
-+   if (hasvk_wddm_bo_flush_range(cmd->wddm->bo->wddm_bo, marker_offset & ~63u, 64)) return -1;
-+   const uint64_t marker = *(volatile uint64_t *)((char *)cmd->wddm->bo->map + marker_offset);
++   if (hasvk_wddm_bo_flush_range(cmd->wddm->bo->wddm_bo, marker_offset(cmd->wddm->bo) & ~63u, 64)) return -1;
++   const uint64_t marker = *(volatile uint64_t *)((char *)cmd->wddm->bo->map + marker_offset(cmd->wddm->bo));
 +   if (marker != 1) {
 +      fprintf(stderr, "WDDM command completion: marker=%llu; %s\n", (unsigned long long)marker, hasvk_wddm_error());
 +      return -1;
 +   }
 +   for (uint32_t c = 0; c < cmd->wddm->chunk_count; ++c) {
-+      const uint8_t *tail = (const uint8_t *)cmd->wddm->chunks[c].bo->map + command_bytes - guard_bytes;
++      const uint8_t *tail = (const uint8_t *)cmd->wddm->chunks[c].bo->map + cmd->wddm->chunks[c].bo->size - guard_bytes;
 +      if (!c && anv_wddm_dump_registers()) {
 +         static bool printed;
 +         if (!printed) { printed = true; const uint32_t *values = (const uint32_t *)tail;
@@ -18338,7 +18410,7 @@
 +#endif
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_command_common.c
-@@ -0,0 +1,397 @@
+@@ -0,0 +1,399 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -18725,7 +18797,9 @@
 +      return vk_error(cmd_buffer, VK_ERROR_OUT_OF_HOST_MEMORY);
 +   }
 +
-+   *bt_block = anv_binding_table_pool_alloc(cmd_buffer->device);
++   *bt_block = u_vector_length(&cmd_buffer->bt_block_states) == 1 ?
++      anv_state_pool_alloc(&cmd_buffer->device->binding_table_pool, 4096, 0) :
++      anv_binding_table_pool_alloc(cmd_buffer->device);
 +
 +   /* The bt_next state is a rolling state (we update it as we suballocate
 +    * from it) which is relative to the start of the binding table block.
@@ -23003,7 +23077,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_common.c
-@@ -0,0 +1,866 @@
+@@ -0,0 +1,868 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -23792,7 +23866,9 @@
 +      return vk_error(cmd_buffer, VK_ERROR_OUT_OF_HOST_MEMORY);
 +   }
 +
-+   *bt_block = anv_binding_table_pool_alloc(cmd_buffer->device);
++   *bt_block = u_vector_length(&cmd_buffer->bt_block_states) == 1 ?
++      anv_state_pool_alloc(&cmd_buffer->device->binding_table_pool, 4096, 0) :
++      anv_binding_table_pool_alloc(cmd_buffer->device);
 +
 +   /* The bt_next state is a rolling state (we update it as we suballocate
 +    * from it) which is relative to the start of the binding table block.

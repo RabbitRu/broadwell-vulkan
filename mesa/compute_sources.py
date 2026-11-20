@@ -40,6 +40,8 @@ def generate_compute_sources(originals):
         "VkResult\nanv_cmd_buffer_new_binding_table_block(",
     ]:
         common += function(chain, signature)
+    from graphics_sources import small_first_bt_block
+    common = small_first_bt_block(common)
 
     hardware = license_text + '''#include "anv_wddm.h"
 #include "vk_format.h"

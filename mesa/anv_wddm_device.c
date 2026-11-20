@@ -771,6 +771,13 @@ static VkResult submit(struct vk_queue *queue, struct vk_queue_submit *work)
          fprintf(stderr, "HasVK/WDDM stats: %.0f submits/s, %.0f command buffers/s, %.1f MiB/s of commands, %.1f KiB per command buffer\n",
                  w->stats_submits / s, w->stats_command_buffers / s, w->stats_command_bytes / s / 1048576.0,
                  w->stats_command_buffers ? w->stats_command_bytes / 1024.0 / w->stats_command_buffers : 0.0);
+         fprintf(stderr, "HasVK/WDDM memory: internal %.1f MiB (command buffers %lld, command BOs %lld; pools: binding table %.1f, "
+                 "surface state %.1f, dynamic %.1f, instruction %.1f MiB), application %.1f MiB\n",
+                 (w->allocated_bytes - w->user_bytes) / 1048576.0,
+                 (long long)p_atomic_read(&anv_wddm_stat_command_buffers), (long long)p_atomic_read(&anv_wddm_stat_command_bos),
+                 device->binding_table_pool.block_pool.size / 1048576.0, device->surface_state_pool.block_pool.size / 1048576.0,
+                 device->dynamic_state_pool.block_pool.size / 1048576.0, device->instruction_state_pool.block_pool.size / 1048576.0,
+                 w->user_bytes / 1048576.0);
          w->stats_submits = w->stats_command_buffers = w->stats_command_bytes = 0; w->stats_last_ms = now;
       }
    }
@@ -886,16 +893,19 @@ VkResult anv_queue_submit_simple_batch(struct anv_queue *queue, struct anv_batch
  * middle of a frame (frame-time spikes, roadmap stage 7 item 2):
  *  - internal-cache.bin: the driver's own shaders (BLORP copies, clears,
  *    blits), device->internal_cache;
- *  - default-cache.bin: pipelines an application creates without a
- *    VkPipelineCache, device->default_pipeline_cache (what Mesa's disk cache
- *    holds on Linux; pipelines in the application's own cache stay there).
+ *  - default-cache.bin: every pipeline an application creates, with or
+ *    without a VkPipelineCache of its own, device->default_pipeline_cache
+ *    (what Mesa's disk cache holds on Linux; anv_pipeline_cache.c looks
+ *    there when the application's cache misses).
  * Both live in %LOCALAPPDATA%\HasVK-WDDM. The Vulkan cache header (vendor,
  * device, pipelineCacheUUID of this build) makes the runtime ignore a file
  * written by another build. A file is rewritten at device destruction when
  * its cache grew, through a per-process temporary file and an atomic rename,
  * so concurrent processes (parallel CTS) never see a partial file.
  * HASVK_WDDM_INTERNAL_CACHE=0 disables both. */
-#define ANV_WDDM_CACHE_FILE_MAX (64u << 20)
+/* Pipelines of an application's own VkPipelineCache are kept here too
+ * (anv_pipeline_cache.c): a game's set is tens of MiB. */
+#define ANV_WDDM_CACHE_FILE_MAX (256u << 20)
 static bool cache_file_path(const wchar_t *name, wchar_t *path, size_t count, bool create_directory)
 {
    const char *setting = getenv("HASVK_WDDM_INTERNAL_CACHE");
@@ -1126,6 +1136,7 @@ VKAPI_ATTR void VKAPI_CALL anv_DestroyDevice(VkDevice handle, const VkAllocation
 #ifdef HASVK_WDDM_GRAPHICS
    if (device->wddm && device->wddm->custom_border_colors_initialized) anv_state_reserved_pool_finish(&device->custom_border_colors);
 #endif
+   anv_wddm_command_spares_finish(device);
    anv_wddm_pools_finish(device);
    state_finish(device->wddm);
    vk_device_finish(&device->vk); vk_free(&device->vk.alloc, device);
