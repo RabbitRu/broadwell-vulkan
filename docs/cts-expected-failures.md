@@ -17,7 +17,8 @@ NotSupported 2 179 726, QualityWarning 6, Fail 85, ResourceError 5. Итог —
 - 2 теста исключены заранее (первые две строки таблицы ниже).
 
 Прогон шёл на сборке до исправлений. Из 90 непрошедших тестов после
-исправлений (раздел «Исправлено») проходит 82; остаётся 8. Повторного полного
+исправлений (раздел «Исправлено») проходит 87; остаётся 3: один ожидаемый
+отказ и два теста, вешающие видеодвижок. Повторного полного
 прогона на исправленной сборке не было: перепроверены только непрошедшие
 тесты и часть `draw`.
 
@@ -34,8 +35,6 @@ NotSupported 2 179 726, QualityWarning 6, Fail 85, ResourceError 5. Итог —
 | Тест | Результат | Что известно |
 |---|---|---|
 | `dEQP-VK.spirv_assembly.instruction.graphics.execution_mode.depthunchanged_0`, `depthunchanged_2` | `VK_ERROR_DEVICE_LOST` через ~4 с: **зависание видеодвижка** (Windows LiveKernelEvent 141); в `run-cts-full.ps1` исключены | Шейдер пишет `gl_FragDepth` с режимом `DepthUnchanged`, проверка глубины GREATER, запись глубины включена, фрагменты проходят (варианты `_1` и `_3`, где проверка не проходит, работают; тот же тест с режимом `DepthGreater` проходит). Не помогли: режим вычисленной глубины `PSCDEPTH_ON` вместо `ON_LE` (на который ELK отображает `DepthUnchanged`) и отключение HiZ (`HASVK_WDDM_NO_AUX=1`). Причина не найдена; каждая попытка — сброс видеодвижка, см. «Зависания GPU и сбои системы». |
-| `dEQP-VK.pipeline.monolithic.vertex_input.component_mismatch.r64g64b64_to_double`, `…_to_dvec2`, `r64g64b64a64_to_double`, `…_to_dvec2` | Fail (изображение не совпало) | 64-битный вершинный атрибут, у которого компонент в формате больше, чем читает шейдер. Не разбиралось. |
-| `dEQP-VK.pipeline.monolithic.misc.identically_defined_layout` | Fail: `vkCreateGraphicsPipelines` вернул `VK_PIPELINE_COMPILE_REQUIRED` | Второй конвейер с отдельно созданной, но одинаково описанной раскладкой должен найтись в кэше, а не находится: хеш конвейера различает такие раскладки. Не разбиралось. |
 
 ## Зависания GPU и сбои системы
 
@@ -50,7 +49,7 @@ NotSupported 2 179 726, QualityWarning 6, Fail 85, ResourceError 5. Итог —
 
 ## Исправлено
 
-2026-11-20, по итогам полного прогона (82 теста из 90 непрошедших):
+2026-11-20, по итогам полного прогона (87 тестов из 90 непрошедших):
 
 | Что | Тесты | Причина и исправление |
 |---|---|---|
@@ -61,6 +60,8 @@ NotSupported 2 179 726, QualityWarning 6, Fail 85, ResourceError 5. Итог —
 | 10 000 командных буферов сразу | `api.command_buffers.allocate_many_primary`, `…_secondary`, `api.object_management.max_concurrent.command_buffer_primary`, `…_secondary` | Каждый командный буфер при создании получал BO на 64 КиБ и блок таблиц привязок; теперь — при начале записи. |
 | 10 000 событий сразу | `api.command_buffers.execute_large_primary` | 65 536 слотов событий вместо 4096. |
 | Следствие потери устройства | `spirv_assembly…mixed_relaxed_precision_operands` | Отдельно проходит; падал после зависания на `depthunchanged`. |
+| Флаги создания графического конвейера из старого поля | `pipeline.monolithic.misc.identically_defined_layout` | Upstream HasVK берёт флаги графического конвейера из `pCreateInfo->flags`, не учитывая `VkPipelineCreateFlags2CreateInfo` (maintenance5); тест кладёт в старое поле 0x7fffffff, и драйвер возвращал `VK_PIPELINE_COMPILE_REQUIRED`. То же в проверке «не компилировать» compute-конвейера. |
+| 64-битный вершинный атрибут шире, чем читает шейдер | `pipeline.monolithic.vertex_input.component_mismatch.r64g64b64_to_double`, `…_to_dvec2`, `r64g64b64a64_to_double`, `…_to_dvec2` | Элемент вершины записывался в поток как 256 бит по формату, а шейдер (`double`, `dvec2`) читал 128; теперь такой атрибут выбирается как R64G64. Соседние группы (`vertex_input` каждый 3-й, `misc`, `cache`, `creation_feedback`, `creation_cache_control`): 1939 Pass, 0 Fail. |
 
 2026-11-20, по выборкам:
 

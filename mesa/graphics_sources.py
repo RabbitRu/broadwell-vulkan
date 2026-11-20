@@ -76,6 +76,31 @@ def scratch_address(source):
     return source.replace(old, SCRATCH_PROTOTYPE + old)
 
 
+def double_attribute_width(source):
+    """A 64-bit vertex attribute goes into the URB without conversion, as 128
+    bits (one or two components) or 256 bits (three or four), by its format
+    (see the Broadwell note in vertex_element_comp_control). The vertex
+    shader, however, reads one slot for double and dvec2 and two for dvec3 and
+    dvec4, by its own type. Upstream sizes the element by the format alone, so
+    a format with more components than the shader reads (R64G64B64 into a
+    double) stored 256 bits where the shader expected 128, and everything
+    after it in the vertex was read from the wrong place (CTS
+    pipeline.*.vertex_input.component_mismatch.r64g64b64*_to_double/dvec2).
+    Such an attribute is now fetched as R64G64: the extra components are not
+    read at all."""
+    old = '''      struct GENX(VERTEX_ELEMENT_STATE) element = {
+         .VertexBufferIndex = vi->attributes[a].binding,'''
+    assert source.count(old) == 1
+    return source.replace(old, '''      /* elements_double marks dvec3 and dvec4 inputs (two slots); a 64-bit
+       * attribute outside it is a double or dvec2 and takes one slot. */
+      if (!(elements_double & (1u << a)) &&
+          (format == ISL_FORMAT_R64G64B64_PASSTHRU ||
+           format == ISL_FORMAT_R64G64B64A64_PASSTHRU))
+         format = ISL_FORMAT_R64G64_PASSTHRU;
+
+''' + old)
+
+
 SCRATCH_PROTOTYPE = '''struct anv_address
 anv_wddm_scratch_address(struct anv_device *device, mesa_shader_stage stage,
                          unsigned per_thread_scratch);
@@ -428,5 +453,5 @@ anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct
         'src/intel/wddm_compiler/anv_wddm_graphics_blorp.c': blorp,
         'src/intel/wddm_compiler/anv_wddm_graphics_blorp_exec.c': unifdef_gen8(instrumentation(read('genX_blorp_exec.c'))),
         'src/intel/wddm_compiler/anv_wddm_graphics_dynamic.c': unifdef_gen8(fragment_dispatch(read('gfx8_cmd_buffer.c').replace('#include <unistd.h>', ''))),
-        'src/intel/wddm_compiler/anv_wddm_graphics_pipeline.c': unifdef_gen8(scratch_address(read('genX_pipeline.c').replace('#include <unistd.h>', ''))),
+        'src/intel/wddm_compiler/anv_wddm_graphics_pipeline.c': unifdef_gen8(double_attribute_width(scratch_address(read('genX_pipeline.c').replace('#include <unistd.h>', '')))),
     }

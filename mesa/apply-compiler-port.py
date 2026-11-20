@@ -819,6 +819,18 @@ pipeline_replacements += [
          continue;   /* dropped above (HASVK_WDDM_SHADOW_NO_DISCARD) */
 #endif
       stages[stage].stage = stage;'''),
+    # VK_KHR_maintenance5: VkPipelineCreateFlags2CreateInfo replaces
+    # pCreateInfo->flags, which the application may then leave as anything.
+    # Upstream takes the graphics pipeline's flags, and the compute
+    # "fail on compile required" check, from the old field (CTS
+    # pipeline.monolithic.misc.identically_defined_layout sets it to
+    # 0x7fffffff and got VK_PIPELINE_COMPILE_REQUIRED).
+    ('                              ANV_PIPELINE_GRAPHICS, pCreateInfo->flags,',
+     '                              ANV_PIPELINE_GRAPHICS,\n'
+     '                              vk_graphics_pipeline_create_flags(pCreateInfo),'),
+    ('       (info->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT))',
+     '       (vk_compute_pipeline_create_flags(info) &\n'
+     '        VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_KHR))'),
 ]
 edit(pipeline_name, pipeline_replacements)
 # Upstream HasVK images almost always get HALIGN_16 because they may own an

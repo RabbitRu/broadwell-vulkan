@@ -1164,7 +1164,17 @@
        stages[stage].stage = stage;
        stages[stage].pipeline_flags = pipeline_flags;
        stages[stage].info = &info->pStages[i];
-@@ -1638,6 +1647,16 @@
+@@ -1475,7 +1484,8 @@
+    }
+ 
+    if (bin == NULL &&
+-       (info->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT))
++       (vk_compute_pipeline_create_flags(info) &
++        VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_KHR))
+       return VK_PIPELINE_COMPILE_REQUIRED;
+ 
+    void *mem_ctx = ralloc_context(NULL);
+@@ -1638,6 +1648,16 @@
        return result;
     }
  
@@ -1181,7 +1191,7 @@
     anv_genX(device->info, compute_pipeline_emit)(pipeline);
  
     *pPipeline = anv_pipeline_to_handle(&pipeline->base);
-@@ -1707,6 +1726,7 @@
+@@ -1707,6 +1727,7 @@
     pipeline->l3_config = intel_get_l3_config(devinfo, w);
  }
  
@@ -1189,7 +1199,17 @@
  static VkResult
  anv_graphics_pipeline_init(struct anv_graphics_pipeline *pipeline,
                             struct anv_device *device,
-@@ -1732,6 +1752,14 @@
+@@ -1718,7 +1739,8 @@
+    VkResult result;
+ 
+    result = anv_pipeline_init(&pipeline->base, device,
+-                              ANV_PIPELINE_GRAPHICS, pCreateInfo->flags,
++                              ANV_PIPELINE_GRAPHICS,
++                              vk_graphics_pipeline_create_flags(pCreateInfo),
+                               alloc);
+    if (result != VK_SUCCESS)
+       return result;
+@@ -1732,6 +1754,14 @@
  
     if (pipeline->active_stages & VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)
        pipeline->active_stages |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
@@ -1204,7 +1224,7 @@
  
     pipeline->dynamic_state.ms.sample_locations = &pipeline->sample_locations;
     vk_dynamic_graphics_state_fill(&pipeline->dynamic_state, state);
-@@ -1798,6 +1826,8 @@
+@@ -1798,6 +1828,8 @@
     return VK_SUCCESS;
  }
  
@@ -1213,7 +1233,7 @@
  static VkResult
  anv_graphics_pipeline_create(struct anv_device *device,
                               struct vk_pipeline_cache *cache,
-@@ -1841,6 +1871,8 @@
+@@ -1841,6 +1873,8 @@
     return pipeline->base.batch.status;
  }
  
@@ -1222,7 +1242,7 @@
  VkResult anv_CreateGraphicsPipelines(
      VkDevice                                    _device,
      VkPipelineCache                             pipelineCache,
-@@ -1886,6 +1918,7 @@
+@@ -1886,6 +1920,7 @@
     return result;
  }
  
@@ -32492,7 +32512,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_pipeline.c
-@@ -0,0 +1,1696 @@
+@@ -0,0 +1,1703 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -32661,6 +32681,13 @@
 +         __builtin_popcount(elements & ((1 << a) - 1)) -
 +         DIV_ROUND_UP(__builtin_popcount(elements_double &
 +                                        ((1 << a) -1)), 2);
++
++      /* elements_double marks dvec3 and dvec4 inputs (two slots); a 64-bit
++       * attribute outside it is a double or dvec2 and takes one slot. */
++      if (!(elements_double & (1u << a)) &&
++          (format == ISL_FORMAT_R64G64B64_PASSTHRU ||
++           format == ISL_FORMAT_R64G64B64A64_PASSTHRU))
++         format = ISL_FORMAT_R64G64_PASSTHRU;
 +
 +      struct GENX(VERTEX_ELEMENT_STATE) element = {
 +         .VertexBufferIndex = vi->attributes[a].binding,
