@@ -1,7 +1,11 @@
 # -Asserts: keep Mesa's assert() checks (NDEBUG off) for debugging; the default
 # build defines NDEBUG like Mesa release builds (asserts cost driver CPU time in
 # every vkCmd* call: Talos' render thread spends ~20 % in the driver).
-param([switch]$ConfigureOnly, [switch]$Graphics = $true, [switch]$Asserts)
+# -DebugInfo: emit debug information (/Z7, PDB next to the DLL) so rip_sampler,
+# debug-icd.ps1 and llvm-symbolizer show function names and lines. Off by
+# default: it does not change the generated code, but without /DEBUG the
+# linker drops unreferenced functions and folds identical ones (/OPT:REF,ICF).
+param([switch]$ConfigureOnly, [switch]$Graphics = $true, [switch]$Asserts, [switch]$DebugInfo)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'import-toolchain.ps1') -UseClang
 $taskDependencies=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'dependencies.json') -Raw | ConvertFrom-Json
@@ -23,8 +27,11 @@ if ($LASTEXITCODE) { throw "Mesa compiler configuration failed; see $taskMesaBui
 # (AVX2, BMI2, FMA): let clang use them. Setting the arguments here also drops
 # anything left from experiments (PGO flags) in an existing build directory.
 $taskCpuArgs = "['/clang:-march=broadwell']"
-& $taskToolchain.python -m mesonbuild.mesonmain configure $taskMesaBuild "-Dhasvk-wddm-graphics=$($Graphics.IsPresent.ToString().ToLowerInvariant())" "-Db_ndebug=$(if ($Asserts) { 'false' } else { 'true' })" "-Dc_args=$taskCpuArgs" "-Dcpp_args=$taskCpuArgs"
+& $taskToolchain.python -m mesonbuild.mesonmain configure $taskMesaBuild "-Dhasvk-wddm-graphics=$($Graphics.IsPresent.ToString().ToLowerInvariant())" "-Db_ndebug=$(if ($Asserts) { 'false' } else { 'true' })" "-Dc_args=$taskCpuArgs" "-Dcpp_args=$taskCpuArgs" `
+    "-Ddebug=$($DebugInfo.IsPresent.ToString().ToLowerInvariant())" '-Doptimization=2' '-Db_vscrt=md'
 if ($LASTEXITCODE) { throw 'Mesa graphics option configuration failed' }
+# A PDB left by a build with -DebugInfo would no longer match the DLL.
+if (-not $DebugInfo) { Remove-Item -LiteralPath (Join-Path $taskMesaBuild 'src\intel\wddm_compiler\vulkan_hasvk_wddm.pdb') -ErrorAction SilentlyContinue }
 if (-not $ConfigureOnly) {
     & $taskToolchain.python -m mesonbuild.mesonmain compile -C $taskMesaBuild -j 2 intel_compiler_elk intel_dev IrisElkCompile IrisImageProbe IrisNirSerializeTest vulkan_runtime vulkan_lite_runtime vulkan_instance vulkan_util vulkan_wsi vulkan_hasvk_wddm
     if ($LASTEXITCODE) { throw 'Mesa compiler build failed' }

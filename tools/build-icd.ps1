@@ -28,6 +28,11 @@ foreach ($algorithm in @('xor32','lcg32','mix32')) {
 }
 $taskSource=Join-Path $taskRoot 'build\mesa-compiler-clang'
 Copy-Item -LiteralPath (Join-Path $taskSource 'src\intel\wddm_compiler\vulkan_hasvk_wddm.dll') -Destination $taskPackage
+# Symbols exist only in a build-mesa-compiler.ps1 -DebugInfo build; never keep a
+# PDB of an older DLL next to the new one.
+$taskPdb=Join-Path $taskSource 'src\intel\wddm_compiler\vulkan_hasvk_wddm.pdb'
+if (Test-Path -LiteralPath $taskPdb) { Copy-Item -LiteralPath $taskPdb -Destination $taskPackage }
+else { Remove-Item -LiteralPath (Join-Path $taskPackage 'vulkan_hasvk_wddm.pdb') -ErrorAction SilentlyContinue }
 Copy-Item -LiteralPath (Join-Path $taskSource 'subprojects\zlib-1.3.1\z-1.dll') -Destination $taskPackage
 Copy-Item -LiteralPath (Join-Path $taskRoot 'build\native\IrisIcdProbe.exe') -Destination $taskPackage
 Copy-Item -LiteralPath (Join-Path $taskRoot 'build\native\IrisGraphicsProbe.exe') -Destination $taskPackage

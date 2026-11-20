@@ -67,7 +67,11 @@ Bootstrap устанавливает MSVC/SDK и Python, получает Mesa 2
 без установщика и прав администратора; оттуда же lld-link, lldb,
 llvm-symbolizer и llvm-profdata. Mesa собирается с `-march=broadwell`
 (AVX2, BMI2, FMA): драйвер работает только рядом с GPU Broadwell, значит
-и процессор всегда Broadwell. Версии Python-пакетов закреплены в `tools/requirements.txt`.
+и процессор всегда Broadwell. Отладочной информации в сборке по умолчанию
+нет; для профилирования и отладки с именами функций (`rip_sampler`,
+`tools/debug-icd.ps1`) — `tools/build-mesa-compiler.ps1 -DebugInfo`, затем
+`tools/build-icd.ps1 -SkipBuild` (PDB ляжет рядом с DLL в `build\icd`).
+Версии Python-пакетов закреплены в `tools/requirements.txt`.
 MSVC 14.44.35207, SDK 10.0.26100.0 и хеши компиляторов/заголовков KMT закреплены
 в `tools/toolchain-lock.json`; сборка останавливается при несовпадении.
 Онлайн-установщик Visual Studio может менять состав пакетов: для повторной
