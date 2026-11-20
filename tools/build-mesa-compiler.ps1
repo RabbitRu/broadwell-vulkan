@@ -5,7 +5,12 @@
 # debug-icd.ps1 and llvm-symbolizer show function names and lines. Off by
 # default: it does not change the generated code, but without /DEBUG the
 # linker drops unreferenced functions and folds identical ones (/OPT:REF,ICF).
-param([switch]$ConfigureOnly, [switch]$Graphics = $true, [switch]$Asserts, [switch]$DebugInfo)
+# -Pgo generate: instrumented build (clang -fprofile-instr-generate); every
+# process using the ICD writes a .profraw at exit to LLVM_PROFILE_FILE. Merge
+# them with llvm-profdata merge -o <file>.profdata (tools\pgo-profile.ps1 does
+# both). -Pgo <file.profdata>: optimize with that profile. Default: the
+# profile in tools\pgo\hasvk.profdata if present, -Pgo none for neither.
+param([switch]$ConfigureOnly, [switch]$Graphics = $true, [switch]$Asserts, [switch]$DebugInfo, [string]$Pgo = '')
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'import-toolchain.ps1') -UseClang
 $taskDependencies=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'dependencies.json') -Raw | ConvertFrom-Json
@@ -26,8 +31,30 @@ if ($LASTEXITCODE) { throw "Mesa compiler configuration failed; see $taskMesaBui
 # The driver only runs next to a Broadwell GPU, so the CPU is always Broadwell
 # (AVX2, BMI2, FMA): let clang use them. Setting the arguments here also drops
 # anything left from experiments (PGO flags) in an existing build directory.
-$taskCpuArgs = "['/clang:-march=broadwell']"
-& $taskToolchain.python -m mesonbuild.mesonmain configure $taskMesaBuild "-Dhasvk-wddm-graphics=$($Graphics.IsPresent.ToString().ToLowerInvariant())" "-Db_ndebug=$(if ($Asserts) { 'false' } else { 'true' })" "-Dc_args=$taskCpuArgs" "-Dcpp_args=$taskCpuArgs" `
+$taskCpuArgs = @('/clang:-march=broadwell')
+$taskLinkArgs = @()
+# Paths in compiler arguments: the 8.3 form, because meson's configuration
+# checks break on non-ASCII paths (the project lives under a Cyrillic user name).
+function Get-ShortPath([string]$path) { (New-Object -ComObject Scripting.FileSystemObject).GetFile($path).ShortPath }
+if (-not $Pgo) {
+    $taskDefaultProfile = Join-Path $PSScriptRoot 'pgo\hasvk.profdata'
+    if (Test-Path -LiteralPath $taskDefaultProfile) { $Pgo = $taskDefaultProfile }
+}
+if ($Pgo -eq 'generate') {
+    $taskCpuArgs += '/clang:-fprofile-instr-generate'
+    $taskProfileRuntime = Join-Path $taskToolchain.llvmBin '..\lib\clang\23\lib\windows\clang_rt.profile-x86_64.lib'
+    $taskLinkArgs += Get-ShortPath (Resolve-Path -LiteralPath $taskProfileRuntime).Path
+} elseif ($Pgo -and $Pgo -ne 'none') {
+    # Functions changed since the profile was taken are compiled without it.
+    $taskCpuArgs += @("/clang:-fprofile-instr-use=$(Get-ShortPath (Resolve-Path -LiteralPath $Pgo).Path)",
+                      '/clang:-Wno-profile-instr-unprofiled', '/clang:-Wno-profile-instr-out-of-date', '/clang:-Wno-profile-instr-missing')
+}
+"PGO: $(if ($Pgo) { $Pgo } else { 'none' })"
+# meson reads the array as a Python literal: backslashes would be escapes.
+function ConvertTo-MesonArray([string[]]$items) { '[' + (($items | ForEach-Object { "'" + ($_ -replace '\\', '/') + "'" }) -join ',') + ']' }
+& $taskToolchain.python -m mesonbuild.mesonmain configure $taskMesaBuild "-Dhasvk-wddm-graphics=$($Graphics.IsPresent.ToString().ToLowerInvariant())" "-Db_ndebug=$(if ($Asserts) { 'false' } else { 'true' })" `
+    "-Dc_args=$(ConvertTo-MesonArray $taskCpuArgs)" "-Dcpp_args=$(ConvertTo-MesonArray $taskCpuArgs)" `
+    "-Dc_link_args=$(ConvertTo-MesonArray $taskLinkArgs)" "-Dcpp_link_args=$(ConvertTo-MesonArray $taskLinkArgs)" `
     "-Ddebug=$($DebugInfo.IsPresent.ToString().ToLowerInvariant())" '-Doptimization=2' '-Db_vscrt=md'
 if ($LASTEXITCODE) { throw 'Mesa graphics option configuration failed' }
 # A PDB left by a build with -DebugInfo would no longer match the DLL.

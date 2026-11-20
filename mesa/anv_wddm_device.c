@@ -290,6 +290,9 @@ static void apply_upstream_capabilities(struct anv_physical_device *physical)
          if (!strcmp(vk_device_extensions[x].extensionName, verified_device_extensions[i])) e->extensions[x] = upstream_extensions.extensions[x];
    e->KHR_swapchain = true;
    e->KHR_swapchain_mutable_format = true;
+   /* Upstream enables it from Linux meminfo (sys.available); here the budget
+    * comes from the WDDM video memory manager (memory_budget). */
+   e->EXT_memory_budget = true;
    /* HASVK_WDDM_EXTRA_EXTENSIONS=VK_EXT_a,VK_EXT_b: also enable these upstream
     * extensions (investigating ones that are off because CTS failed). */
    const char *extra = getenv("HASVK_WDDM_EXTRA_EXTENSIONS");
@@ -579,9 +582,35 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_GetPhysicalDeviceImageFormatProperties(VkPhys
 #endif
 /* VK_KHR_get_physical_device_properties2 is advertised, so the loader and
  * layers call the "2" queries directly; they must not be left unimplemented. */
+/* VK_EXT_memory_budget. Usage: application memory of this process (what the
+ * heap limit counts). Budget: what is left of the heap, limited by what the
+ * video memory manager still grants this process (its budget minus everything
+ * the process holds, driver-internal memory included); like upstream, 90 % of
+ * the remainder, rounded down to a MiB. If the kernel query fails, the heap
+ * alone limits it. */
+static void memory_budget(VkPhysicalDevice handle, VkPhysicalDeviceMemoryBudgetPropertiesEXT *out)
+{
+   ANV_FROM_HANDLE(anv_physical_device, physical, handle);
+   memset(out->heapBudget, 0, sizeof(out->heapBudget));
+   memset(out->heapUsage, 0, sizeof(out->heapUsage));
+   if (!physical->vk.supported_extensions.EXT_memory_budget) return;
+   const uint64_t heap = anv_wddm_heap_bytes(), used = anv_wddm_process_user_bytes();
+   uint64_t available = used < heap ? heap - used : 0;
+   uint32_t luid_low; int32_t luid_high; uint64_t os_budget, os_usage;
+   memcpy(&luid_low, physical->vk.properties.deviceLUID, 4); memcpy(&luid_high, physical->vk.properties.deviceLUID + 4, 4);
+   if (!hasvk_wddm_query_video_memory(luid_low, luid_high, &os_budget, &os_usage))
+      available = MIN2(available, os_budget > os_usage ? os_budget - os_usage : 0);
+   uint64_t budget = MIN2(heap, used + available / 10 * 9) & ~((1ull << 20) - 1);
+   if (!budget) budget = 1ull << 20;   /* must be non-zero for an existing heap */
+   out->heapBudget[0] = budget;
+   out->heapUsage[0] = used;
+}
 VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice handle, VkPhysicalDeviceMemoryProperties2 *properties)
 {
    anv_GetPhysicalDeviceMemoryProperties(handle, &properties->memoryProperties);
+   vk_foreach_struct(ext, properties->pNext)
+      if (ext->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT)
+         memory_budget(handle, (void *)ext);
 }
 #ifndef HASVK_WDDM_GRAPHICS
 VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice handle, VkFormat format, VkFormatProperties2 *properties)
@@ -708,7 +737,8 @@ static VkResult submit(struct vk_queue *queue, struct vk_queue_submit *work)
    mtx_lock(&w->submit_mutex);
    pending->serial = ++w->next_serial;
    const uint64_t kernel_start = os_time_get_nano();
-   anv_wddm_timeline_event(ANV_TL_KERNEL_BEGIN, pending->serial, present_token != 0);
+   if (anv_wddm_timeline_on)
+      anv_wddm_timeline_event(ANV_TL_KERNEL_BEGIN, pending->serial, (present_token != 0) | anv_wddm_timeline_thread_cycles() << 1);
    const int failed = anv_wddm_execute_commands(device, work->command_buffers, work->command_buffer_count,
                                                 pending->serial, present_token, true, &pending->seq);
    pending->slot = w->last_slot;

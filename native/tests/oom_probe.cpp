@@ -7,7 +7,9 @@
  *     state pool growth: driver memory, outside the application heap) are
  *     recorded and run correctly;
  *  3. after freeing everything, fresh work runs correctly and the same
- *     amount of memory can be allocated again (no leaked accounting).
+ *     amount of memory can be allocated again (no leaked accounting);
+ *  4. VK_EXT_memory_budget: heapUsage follows the allocations (64 KiB, the
+ *     full heap, 64 KiB again), heapBudget stays within (0, heap size].
  * Prints one line per check and "PASS"/"FAIL"; exit code 0 on success.
  * Usage: oom_probe.exe */
 #define NOMINMAX
@@ -43,6 +45,23 @@ int main()
    F(vkMapMemory); F(vkCreateCommandPool); F(vkAllocateCommandBuffers); F(vkFreeCommandBuffers); F(vkBeginCommandBuffer);
    F(vkEndCommandBuffer); F(vkResetCommandBuffer); F(vkCmdFillBuffer); F(vkCmdPipelineBarrier); F(vkQueueSubmit); F(vkQueueWaitIdle);
    F(vkDeviceWaitIdle); F(vkDestroyCommandPool); F(vkDestroyDevice);
+   /* VK_EXT_memory_budget: usage must follow this process's allocations and
+    * the budget stay within (0, heap size]. */
+   auto memory_properties2 = (PFN_vkGetPhysicalDeviceMemoryProperties2)gipa(instance, "vkGetPhysicalDeviceMemoryProperties2");
+   bool has_budget = false;
+   {
+      uint32_t count = 0; auto enumerate = (PFN_vkEnumerateDeviceExtensionProperties)gipa(instance, "vkEnumerateDeviceExtensionProperties");
+      enumerate(pd, nullptr, &count, nullptr); std::vector<VkExtensionProperties> exts(count); enumerate(pd, nullptr, &count, exts.data());
+      for (const auto &e : exts) has_budget |= !strcmp(e.extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+   }
+   EXPECT(has_budget, "VK_EXT_memory_budget is not advertised");
+   auto budget = [&](uint64_t &usage, uint64_t &limit) {
+      VkPhysicalDeviceMemoryBudgetPropertiesEXT b{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+      VkPhysicalDeviceMemoryProperties2 p{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2}; p.pNext = &b;
+      memory_properties2(pd, &p);
+      usage = b.heapUsage[0]; limit = b.heapBudget[0];
+      for (uint32_t i = 1; i < VK_MAX_MEMORY_HEAPS; ++i) EXPECT(!b.heapUsage[i] && !b.heapBudget[i], "budget of heap %u is not zero", i);
+   };
    VkQueue queue; vkGetDeviceQueue(d, 0, 0, &queue);
    VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; pi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
    VkCommandPool pool; CHECK(vkCreateCommandPool(d, &pi, nullptr, &pool));
@@ -79,6 +98,13 @@ int main()
    VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; ca.commandPool = pool; ca.commandBufferCount = 2;
    VkCommandBuffer cmds[2]; CHECK(vkAllocateCommandBuffers(d, &ca, cmds));
    CHECK(record_fill(cmds[0], target.buffer, 0x1000, 64));
+   uint64_t usage = 0, limit = 0;
+   if (has_budget) {
+      budget(usage, limit);
+      printf("budget before filling: usage %.1f MiB, budget %.1f MiB\n", usage / 1048576.0, limit / 1048576.0);
+      EXPECT(usage == 65536, "heapUsage %llu with only the 64 KiB target allocated", (unsigned long long)usage);
+      EXPECT(limit > usage && limit <= heap, "heapBudget %llu outside (usage, heap]", (unsigned long long)limit);
+   }
 
    /* 1. Fill the heap. */
    const DWORD t0 = GetTickCount();
@@ -103,6 +129,12 @@ int main()
           GetTickCount() - t0);
    EXPECT(bad_errors == 0, "a failed allocation returned something other than VK_ERROR_OUT_OF_DEVICE_MEMORY");
    EXPECT(total >= heap * 9 / 10, "only %.1f MiB of %.1f MiB could be allocated", total / 1048576.0, heap / 1048576.0);
+   if (has_budget) {
+      budget(usage, limit);
+      printf("budget with the heap full: usage %.1f MiB, budget %.1f MiB\n", usage / 1048576.0, limit / 1048576.0);
+      EXPECT(usage == total + 65536, "heapUsage %llu with %llu bytes allocated", (unsigned long long)usage, (unsigned long long)(total + 65536));
+      EXPECT(limit > 0 && limit <= heap, "heapBudget %llu outside (0, heap]", (unsigned long long)limit);
+   }
 
    /* 2. Work with the heap full. */
    VkResult r = submit(cmds[0]);
@@ -123,6 +155,10 @@ int main()
 
    /* 3. Free, recover, refill. */
    for (VkDeviceMemory m : blocks) vkFreeMemory(d, m, nullptr);
+   if (has_budget) {
+      budget(usage, limit);
+      EXPECT(usage == 65536, "heapUsage %llu after freeing (expected 65536)", (unsigned long long)usage);
+   }
    r = record_fill(cmds[1], target.buffer, 0x3000, 20000);
    EXPECT(r == VK_SUCCESS, "recording after freeing returned %d", r);
    if (r == VK_SUCCESS) {
@@ -141,7 +177,7 @@ int main()
    vkFreeCommandBuffers(d, pool, 2, cmds); vkDestroyCommandPool(d, pool, nullptr);
    vkDestroyBuffer(d, target.buffer, nullptr); vkFreeMemory(d, target.memory, nullptr);
    vkDestroyDevice(d, nullptr);
-   printf(failures ? "FAIL: %d checks failed\n" : "PASS: heap exhaustion returns VK_ERROR_OUT_OF_DEVICE_MEMORY, work survives it, memory is reusable\n",
+   printf(failures ? "FAIL: %d checks failed\n" : "PASS: heap exhaustion returns VK_ERROR_OUT_OF_DEVICE_MEMORY, work survives it, memory is reusable, budget follows usage\n",
           failures);
    return failures ? 1 : 0;
 }

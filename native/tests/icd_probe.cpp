@@ -407,7 +407,9 @@ int wmain(int argc, wchar_t **argv)
             /* stage 3, fixed after CTS failures */
             "VK_EXT_robustness2", "VK_KHR_robustness2", "VK_KHR_maintenance6", "VK_EXT_sample_locations",
             /* stage 3, YCbCr */
-            "VK_KHR_sampler_ycbcr_conversion", "VK_EXT_ycbcr_image_arrays"};
+            "VK_KHR_sampler_ycbcr_conversion", "VK_EXT_ycbcr_image_arrays",
+            /* budget from the WDDM video memory manager (anv_wddm_device.c memory_budget) */
+            "VK_EXT_memory_budget"};
          std::vector<VkExtensionProperties> extensions(extension_count);
          check(vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, extensions.data()), "Query device extensions");
          std::vector<std::string> names; for (const auto &extension : extensions) names.push_back(extension.extensionName);

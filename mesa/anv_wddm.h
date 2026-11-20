@@ -28,6 +28,8 @@ anv_wddm_heap_bytes(void)
    }
    return bytes;
 }
+/* Application memory (vkAllocateMemory) of all devices of this process. */
+uint64_t anv_wddm_process_user_bytes(void);
 #define ANV_WDDM_MAX_BOS 65536u
 /* Scratch BOs, relative to origin: above the general state pool (which ends
  * at most at origin + 2 MiB + 1 GiB), below the instruction pool (origin + 3 GiB). */
@@ -230,7 +232,7 @@ enum anv_wddm_timeline_type {
    ANV_TL_CALL_END,         /* a: call; b: VkResult */
    ANV_TL_SUBMIT_BEGIN,     /* queue thread enters submit(): a: command buffers, b: waits */
    ANV_TL_SUBMIT_WAITED,    /* after its CPU semaphore waits: a: waits done on the CPU */
-   ANV_TL_KERNEL_BEGIN,     /* a: serial, b: 1 if a present */
+   ANV_TL_KERNEL_BEGIN,     /* a: serial, b: bit 0: a present; bits 63:1: thread cycles */
    ANV_TL_KERNEL_END,       /* a: serial, b: thread cycles */
    ANV_TL_GPU_DONE,         /* completion thread woke: a: serial, b: GPU start | end << 32 (ticks) */
    ANV_TL_SIGNALED,         /* a: serial, b: thread cycles */

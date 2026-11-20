@@ -357,6 +357,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w, LPARAM l)
 void pump() { MSG m; while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageW(&m); } }
 } // namespace
 
+/* d3d11_present_trace.cpp reuses the hooks above with its own main. */
+#ifndef PRESENT_TRACE_NO_MAIN
 int main(int argc, char **argv)
 {
    if (argc < 2) { fprintf(stderr, "usage: GlPresentTrace <log> [frames]\n"); return 2; }
@@ -422,3 +424,4 @@ int main(int argc, char **argv)
      fprintf(out, "done\n"); fflush(out); }
    return 0;
 }
+#endif

@@ -81,6 +81,11 @@ struct hasvk_wddm_alloc_profile {
    double destroy_us;
 };
 int hasvk_wddm_get_alloc_profile(struct hasvk_wddm_device *device, struct hasvk_wddm_alloc_profile *out);
+/* The video memory manager's budget for this process on the adapter and the
+ * process's current usage (D3DKMTQueryVideoMemoryInfo, the segment group with
+ * the larger budget: on this integrated GPU all memory is shared system
+ * memory). No device needed. */
+int hasvk_wddm_query_video_memory(uint32_t luid_low, int32_t luid_high, uint64_t *budget, uint64_t *usage);
 #ifdef __cplusplus
 }
 #endif

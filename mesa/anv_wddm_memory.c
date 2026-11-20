@@ -26,6 +26,16 @@
  */
 #include "anv_wddm.h"
 #include "util/os_time.h"
+#include "util/u_atomic.h"
+
+/* Application memory of every device of this process (VK_EXT_memory_budget
+ * heapUsage); each device's own share is anv_wddm_device_state::user_bytes. */
+static uint64_t process_user_bytes;
+uint64_t
+anv_wddm_process_user_bytes(void)
+{
+   return p_atomic_read(&process_user_bytes);
+}
 
 /* Common helper from anv_cmd_buffer.c; kept here until that unit is ported. */
 #ifndef HASVK_WDDM_GRAPHICS
@@ -213,7 +223,7 @@ alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo
    do { id = id % ANV_WDDM_MAX_BOS + 1; } while (BITSET_TEST(w->bo_ids, id));
    BITSET_SET(w->bo_ids, id); w->bo_id_hint = id;
    w->allocated_bytes += size; ++w->allocation_count;
-   if (user) w->user_bytes += size;
+   if (user) { w->user_bytes += size; p_atomic_add(&process_user_bytes, size); }
    mtx_unlock(&w->alloc_mutex);
 
    /* CPU cache flushing around submissions, by how the BO is used: state pool
@@ -231,7 +241,7 @@ alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo
       mtx_lock(&w->alloc_mutex);
       util_vma_heap_free(heap, address, size); BITSET_CLEAR(w->bo_ids, id);
       w->allocated_bytes -= size; --w->allocation_count;
-      if (user) w->user_bytes -= size;
+      if (user) { w->user_bytes -= size; p_atomic_add(&process_user_bytes, -(int64_t)size); }
       mtx_unlock(&w->alloc_mutex);
       free(bo);
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
@@ -342,7 +352,7 @@ anv_device_release_bo(struct anv_device *device, struct anv_bo *bo)
          util_vma_heap_free(bo->has_fixed_address ? &w->state_heap : scratch ? &w->scratch_heap : &w->client_heap, address, bo->size);
       }
       w->allocated_bytes -= bo->size; --w->allocation_count; BITSET_CLEAR(w->bo_ids, bo->gem_handle);
-      if (bo->name && !strcmp(bo->name, "user")) w->user_bytes -= bo->size;
+      if (bo->name && !strcmp(bo->name, "user")) { w->user_bytes -= bo->size; p_atomic_add(&process_user_bytes, -(int64_t)bo->size); }
       mtx_unlock(&w->alloc_mutex);
    }
    free(bo);

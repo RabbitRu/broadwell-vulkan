@@ -190,7 +190,7 @@ def main():
     sub = {}
     for ns, t, th, a, b in ev:
         if t == KERNEL_BEGIN:
-            sub.setdefault(a, {})['kb'] = ns; sub[a]['present'] = b
+            sub.setdefault(a, {})['kb'] = ns; sub[a]['present'] = b & 1; sub[a]['kb_cycles'] = b >> 1
         elif t == KERNEL_END:
             sub.setdefault(a, {})['ke'] = ns; sub[a]['ke_cycles'] = b
         elif t == GPU_DONE:
@@ -338,6 +338,12 @@ def main():
     if presents_k:
         print(f'  kernel call: present median {statistics.median(presents_k) / 1e3:.0f} us, others median '
               f'{statistics.median(others_k) / 1e3 if others_k else 0:.0f} us')
+        # Thread CPU of the call itself (timelines written before the begin
+        # event carried thread cycles have none).
+        cpu = [(sub[s]['ke_cycles'] - sub[s]['kb_cycles']) / tsc_hz * 1e3 for s in win
+               if sub[s]['present'] and sub[s].get('kb_cycles') and sub[s]['ke_cycles'] > sub[s]['kb_cycles']]
+        if cpu:
+            print(f'  kernel call CPU (thread cycles): present mean {statistics.mean(cpu):.3f} ms, median {statistics.median(cpu):.3f} ms')
     sig = [sub[s]['sig'] - sub[s]['done'] for s in win if 'sig' in sub[s]]
     ahead = []
     for f in frames:

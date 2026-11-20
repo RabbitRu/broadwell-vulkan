@@ -8,7 +8,7 @@
 
 ## Состояние
 
-- Vulkan 1.3, 107 расширений устройства. Собственный транспорт WDDM, штатные
+- Vulkan 1.3, 108 расширений устройства. Собственный транспорт WDDM, штатные
   SPIR-V → NIR → ELK → Gen8, ISL, BLORP и runtime Mesa.
 - Вывод в окно без копии через CPU, режимы FIFO, MAILBOX, IMMEDIATE.
 - CTS 1.4.5.5: полный прогон mustpass выполнен 2026-11-20 (2 849 001 тест:
@@ -69,7 +69,10 @@ Bootstrap устанавливает MSVC/SDK и Python, получает Mesa 2
 без установщика и прав администратора; оттуда же lld-link, lldb,
 llvm-symbolizer и llvm-profdata. Mesa собирается с `-march=broadwell`
 (AVX2, BMI2, FMA): драйвер работает только рядом с GPU Broadwell, значит
-и процессор всегда Broadwell. Отладочной информации в сборке по умолчанию
+и процессор всегда Broadwell. Сборка оптимизируется по профилю (PGO):
+`tools/pgo/hasvk.profdata` снят `tools/pgo-profile.ps1` на стенде записи
+команд, vkcubepp и бенчмарке Talos; поведение драйвера он не меняет, только
+раскладку кода (`build-mesa-compiler.ps1 -Pgo none` — без него). Отладочной информации в сборке по умолчанию
 нет; для профилирования и отладки с именами функций (`rip_sampler`,
 `tools/debug-icd.ps1`) — `tools/build-mesa-compiler.ps1 -DebugInfo`, затем
 `tools/build-icd.ps1 -SkipBuild` (PDB ляжет рядом с DLL в `build\icd`).

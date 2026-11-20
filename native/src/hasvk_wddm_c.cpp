@@ -106,6 +106,30 @@ extern "C" int hasvk_wddm_get_alloc_profile(hasvk_wddm_device *device, hasvk_wdd
            n.alloc_map_wait_ticks * us, n.alloc_resident_ticks * us, n.alloc_resident_wait_ticks * us, n.destroy_ticks * us};
    return 0;
 }
+extern "C" int hasvk_wddm_query_video_memory(uint32_t luid_low, int32_t luid_high, uint64_t *budget, uint64_t *usage)
+{
+   if (!budget || !usage) return failure("Missing video memory arguments");
+   return checked([&] {
+      D3DKMT_OPENADAPTERFROMLUID open{};
+      open.AdapterLuid.LowPart = luid_low; open.AdapterLuid.HighPart = luid_high;
+      const NTSTATUS opened = D3DKMTOpenAdapterFromLuid(&open);
+      if (opened) throw Error("OpenAdapterFromLuid", opened);
+      uint64_t best_budget = 0, best_usage = 0;
+      for (const D3DKMT_MEMORY_SEGMENT_GROUP group : {D3DKMT_MEMORY_SEGMENT_GROUP_LOCAL, D3DKMT_MEMORY_SEGMENT_GROUP_NON_LOCAL}) {
+         D3DKMT_QUERYVIDEOMEMORYINFO query{};
+         query.hProcess = nullptr;   /* this process */
+         query.hAdapter = open.hAdapter;
+         query.MemorySegmentGroup = group;
+         if (!D3DKMTQueryVideoMemoryInfo(&query) && query.Budget > best_budget) {
+            best_budget = query.Budget; best_usage = query.CurrentUsage;
+         }
+      }
+      D3DKMT_CLOSEADAPTER close{}; close.hAdapter = open.hAdapter;
+      D3DKMTCloseAdapter(&close);
+      if (!best_budget) throw std::runtime_error("QueryVideoMemoryInfo reported no budget");
+      *budget = best_budget; *usage = best_usage;
+   });
+}
 extern "C" int hasvk_wddm_device_get_info(hasvk_wddm_device *device, hasvk_wddm_adapter_info *out)
 {
    if (!device || !out) return failure("Missing adapter info arguments");

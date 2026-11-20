@@ -20,7 +20,7 @@
 
 ## Возможности
 
-- Vulkan 1.3, 107 расширений устройства (список — `vulkaninfo`).
+- Vulkan 1.3, 108 расширений устройства (список — `vulkaninfo`).
 - Вывод в окно без копирования через CPU (как у OpenGL-драйвера Intel);
   форматы B8G8R8A8/R8G8B8A8 в UNORM и SRGB; режимы FIFO, MAILBOX, IMMEDIATE.
 - Известные отказы CTS и их причины — `cts-expected-failures.md`. Полный

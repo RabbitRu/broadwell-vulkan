@@ -10451,7 +10451,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,1217 @@
+@@ -0,0 +1,1247 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -10744,6 +10744,9 @@
 +         if (!strcmp(vk_device_extensions[x].extensionName, verified_device_extensions[i])) e->extensions[x] = upstream_extensions.extensions[x];
 +   e->KHR_swapchain = true;
 +   e->KHR_swapchain_mutable_format = true;
++   /* Upstream enables it from Linux meminfo (sys.available); here the budget
++    * comes from the WDDM video memory manager (memory_budget). */
++   e->EXT_memory_budget = true;
 +   /* HASVK_WDDM_EXTRA_EXTENSIONS=VK_EXT_a,VK_EXT_b: also enable these upstream
 +    * extensions (investigating ones that are off because CTS failed). */
 +   const char *extra = getenv("HASVK_WDDM_EXTRA_EXTENSIONS");
@@ -11033,9 +11036,35 @@
 +#endif
 +/* VK_KHR_get_physical_device_properties2 is advertised, so the loader and
 + * layers call the "2" queries directly; they must not be left unimplemented. */
++/* VK_EXT_memory_budget. Usage: application memory of this process (what the
++ * heap limit counts). Budget: what is left of the heap, limited by what the
++ * video memory manager still grants this process (its budget minus everything
++ * the process holds, driver-internal memory included); like upstream, 90 % of
++ * the remainder, rounded down to a MiB. If the kernel query fails, the heap
++ * alone limits it. */
++static void memory_budget(VkPhysicalDevice handle, VkPhysicalDeviceMemoryBudgetPropertiesEXT *out)
++{
++   ANV_FROM_HANDLE(anv_physical_device, physical, handle);
++   memset(out->heapBudget, 0, sizeof(out->heapBudget));
++   memset(out->heapUsage, 0, sizeof(out->heapUsage));
++   if (!physical->vk.supported_extensions.EXT_memory_budget) return;
++   const uint64_t heap = anv_wddm_heap_bytes(), used = anv_wddm_process_user_bytes();
++   uint64_t available = used < heap ? heap - used : 0;
++   uint32_t luid_low; int32_t luid_high; uint64_t os_budget, os_usage;
++   memcpy(&luid_low, physical->vk.properties.deviceLUID, 4); memcpy(&luid_high, physical->vk.properties.deviceLUID + 4, 4);
++   if (!hasvk_wddm_query_video_memory(luid_low, luid_high, &os_budget, &os_usage))
++      available = MIN2(available, os_budget > os_usage ? os_budget - os_usage : 0);
++   uint64_t budget = MIN2(heap, used + available / 10 * 9) & ~((1ull << 20) - 1);
++   if (!budget) budget = 1ull << 20;   /* must be non-zero for an existing heap */
++   out->heapBudget[0] = budget;
++   out->heapUsage[0] = used;
++}
 +VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice handle, VkPhysicalDeviceMemoryProperties2 *properties)
 +{
 +   anv_GetPhysicalDeviceMemoryProperties(handle, &properties->memoryProperties);
++   vk_foreach_struct(ext, properties->pNext)
++      if (ext->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT)
++         memory_budget(handle, (void *)ext);
 +}
 +#ifndef HASVK_WDDM_GRAPHICS
 +VKAPI_ATTR void VKAPI_CALL anv_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice handle, VkFormat format, VkFormatProperties2 *properties)
@@ -11162,7 +11191,8 @@
 +   mtx_lock(&w->submit_mutex);
 +   pending->serial = ++w->next_serial;
 +   const uint64_t kernel_start = os_time_get_nano();
-+   anv_wddm_timeline_event(ANV_TL_KERNEL_BEGIN, pending->serial, present_token != 0);
++   if (anv_wddm_timeline_on)
++      anv_wddm_timeline_event(ANV_TL_KERNEL_BEGIN, pending->serial, (present_token != 0) | anv_wddm_timeline_thread_cycles() << 1);
 +   const int failed = anv_wddm_execute_commands(device, work->command_buffers, work->command_buffer_count,
 +                                                pending->serial, present_token, true, &pending->seq);
 +   pending->slot = w->last_slot;
@@ -11671,7 +11701,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm.h
-@@ -0,0 +1,254 @@
+@@ -0,0 +1,256 @@
 +/* Private Windows platform state for the HasVK port. */
 +#pragma once
 +#include "anv_private.h"
@@ -11702,6 +11732,8 @@
 +   }
 +   return bytes;
 +}
++/* Application memory (vkAllocateMemory) of all devices of this process. */
++uint64_t anv_wddm_process_user_bytes(void);
 +#define ANV_WDDM_MAX_BOS 65536u
 +/* Scratch BOs, relative to origin: above the general state pool (which ends
 + * at most at origin + 2 MiB + 1 GiB), below the instruction pool (origin + 3 GiB). */
@@ -11904,7 +11936,7 @@
 +   ANV_TL_CALL_END,         /* a: call; b: VkResult */
 +   ANV_TL_SUBMIT_BEGIN,     /* queue thread enters submit(): a: command buffers, b: waits */
 +   ANV_TL_SUBMIT_WAITED,    /* after its CPU semaphore waits: a: waits done on the CPU */
-+   ANV_TL_KERNEL_BEGIN,     /* a: serial, b: 1 if a present */
++   ANV_TL_KERNEL_BEGIN,     /* a: serial, b: bit 0: a present; bits 63:1: thread cycles */
 +   ANV_TL_KERNEL_END,       /* a: serial, b: thread cycles */
 +   ANV_TL_GPU_DONE,         /* completion thread woke: a: serial, b: GPU start | end << 32 (ticks) */
 +   ANV_TL_SIGNALED,         /* a: serial, b: thread cycles */
@@ -11928,7 +11960,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_memory.c
-@@ -0,0 +1,659 @@
+@@ -0,0 +1,669 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -11957,6 +11989,16 @@
 + */
 +#include "anv_wddm.h"
 +#include "util/os_time.h"
++#include "util/u_atomic.h"
++
++/* Application memory of every device of this process (VK_EXT_memory_budget
++ * heapUsage); each device's own share is anv_wddm_device_state::user_bytes. */
++static uint64_t process_user_bytes;
++uint64_t
++anv_wddm_process_user_bytes(void)
++{
++   return p_atomic_read(&process_user_bytes);
++}
 +
 +/* Common helper from anv_cmd_buffer.c; kept here until that unit is ported. */
 +#ifndef HASVK_WDDM_GRAPHICS
@@ -12144,7 +12186,7 @@
 +   do { id = id % ANV_WDDM_MAX_BOS + 1; } while (BITSET_TEST(w->bo_ids, id));
 +   BITSET_SET(w->bo_ids, id); w->bo_id_hint = id;
 +   w->allocated_bytes += size; ++w->allocation_count;
-+   if (user) w->user_bytes += size;
++   if (user) { w->user_bytes += size; p_atomic_add(&process_user_bytes, size); }
 +   mtx_unlock(&w->alloc_mutex);
 +
 +   /* CPU cache flushing around submissions, by how the BO is used: state pool
@@ -12162,7 +12204,7 @@
 +      mtx_lock(&w->alloc_mutex);
 +      util_vma_heap_free(heap, address, size); BITSET_CLEAR(w->bo_ids, id);
 +      w->allocated_bytes -= size; --w->allocation_count;
-+      if (user) w->user_bytes -= size;
++      if (user) { w->user_bytes -= size; p_atomic_add(&process_user_bytes, -(int64_t)size); }
 +      mtx_unlock(&w->alloc_mutex);
 +      free(bo);
 +      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
@@ -12273,7 +12315,7 @@
 +         util_vma_heap_free(bo->has_fixed_address ? &w->state_heap : scratch ? &w->scratch_heap : &w->client_heap, address, bo->size);
 +      }
 +      w->allocated_bytes -= bo->size; --w->allocation_count; BITSET_CLEAR(w->bo_ids, bo->gem_handle);
-+      if (bo->name && !strcmp(bo->name, "user")) w->user_bytes -= bo->size;
++      if (bo->name && !strcmp(bo->name, "user")) { w->user_bytes -= bo->size; p_atomic_add(&process_user_bytes, -(int64_t)bo->size); }
 +      mtx_unlock(&w->alloc_mutex);
 +   }
 +   free(bo);
@@ -34549,7 +34591,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm.h
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,91 @@
 +#pragma once
 +#include <stdint.h>
 +#ifdef __cplusplus
@@ -34633,6 +34675,11 @@
 +   double destroy_us;
 +};
 +int hasvk_wddm_get_alloc_profile(struct hasvk_wddm_device *device, struct hasvk_wddm_alloc_profile *out);
++/* The video memory manager's budget for this process on the adapter and the
++ * process's current usage (D3DKMTQueryVideoMemoryInfo, the segment group with
++ * the larger budget: on this integrated GPU all memory is shared system
++ * memory). No device needed. */
++int hasvk_wddm_query_video_memory(uint32_t luid_low, int32_t luid_high, uint64_t *budget, uint64_t *usage);
 +#ifdef __cplusplus
 +}
 +#endif
@@ -35298,7 +35345,7 @@
 +} // namespace hasvk::wddm
 --- /dev/null
 +++ b/src/intel/wddm/hasvk_wddm_c.cpp
-@@ -0,0 +1,371 @@
+@@ -0,0 +1,395 @@
 +#include "hasvk_wddm.h"
 +#include "hasvk_wddm.hpp"
 +#include <cstdio>
@@ -35406,6 +35453,30 @@
 +   *out = {n.alloc_count.load(), n.alloc_bytes.load(), n.destroy_count.load(), n.alloc_create_ticks * us, n.alloc_map_ticks * us,
 +           n.alloc_map_wait_ticks * us, n.alloc_resident_ticks * us, n.alloc_resident_wait_ticks * us, n.destroy_ticks * us};
 +   return 0;
++}
++extern "C" int hasvk_wddm_query_video_memory(uint32_t luid_low, int32_t luid_high, uint64_t *budget, uint64_t *usage)
++{
++   if (!budget || !usage) return failure("Missing video memory arguments");
++   return checked([&] {
++      D3DKMT_OPENADAPTERFROMLUID open{};
++      open.AdapterLuid.LowPart = luid_low; open.AdapterLuid.HighPart = luid_high;
++      const NTSTATUS opened = D3DKMTOpenAdapterFromLuid(&open);
++      if (opened) throw Error("OpenAdapterFromLuid", opened);
++      uint64_t best_budget = 0, best_usage = 0;
++      for (const D3DKMT_MEMORY_SEGMENT_GROUP group : {D3DKMT_MEMORY_SEGMENT_GROUP_LOCAL, D3DKMT_MEMORY_SEGMENT_GROUP_NON_LOCAL}) {
++         D3DKMT_QUERYVIDEOMEMORYINFO query{};
++         query.hProcess = nullptr;   /* this process */
++         query.hAdapter = open.hAdapter;
++         query.MemorySegmentGroup = group;
++         if (!D3DKMTQueryVideoMemoryInfo(&query) && query.Budget > best_budget) {
++            best_budget = query.Budget; best_usage = query.CurrentUsage;
++         }
++      }
++      D3DKMT_CLOSEADAPTER close{}; close.hAdapter = open.hAdapter;
++      D3DKMTCloseAdapter(&close);
++      if (!best_budget) throw std::runtime_error("QueryVideoMemoryInfo reported no budget");
++      *budget = best_budget; *usage = best_usage;
++   });
 +}
 +extern "C" int hasvk_wddm_device_get_info(hasvk_wddm_device *device, hasvk_wddm_adapter_info *out)
 +{
