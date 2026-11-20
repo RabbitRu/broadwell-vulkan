@@ -32207,7 +32207,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_dynamic.c
-@@ -0,0 +1,456 @@
+@@ -0,0 +1,461 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -32532,7 +32532,12 @@
 +         ds.BackfaceStencilTestFunction = genX(vk_to_intel_compare_op)[opt_ds.stencil.back.op.compare];
 +      }
 +
-+      const bool pma = want_depth_pma_fix(cmd_buffer, &opt_ds);
++      static int pma_allowed = -1;
++      if (pma_allowed < 0) {
++         const char *e = getenv("HASVK_WDDM_PMA_FIX");
++         pma_allowed = !(e && e[0] == '0');
++      }
++      const bool pma = pma_allowed && want_depth_pma_fix(cmd_buffer, &opt_ds);
 +      genX(cmd_buffer_enable_pma_fix)(cmd_buffer, pma);
 +   }
 +

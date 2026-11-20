@@ -1,6 +1,6 @@
 ﻿{
     "schema":  1,
-    "testedUtc":  "2026-11-20T11:46:31.2378472Z",
+    "testedUtc":  "2026-11-20T12:31:06.0327317Z",
     "hardware":  "8086:162b",
     "driverVersion":  "20.19.15.5171",
     "mesa":  "26.2.7",
@@ -14,27 +14,27 @@
     "proofs":  [
                    {
                        "file":  "validation.json",
-                       "sha256":  "8687d79c80b56bb41162ef8b8ccda31fec631fb511e53626f09e0f9c983c4e69"
+                       "sha256":  "492fea775b8aa9c39deb4f645ed614e65e11376fb7206c5df256e2992d115249"
                    },
                    {
                        "file":  "elk-validation.json",
-                       "sha256":  "8808a1d89bbcf3510708a136fdc8823773cb2d1e0172be1cae11b419907d70db"
+                       "sha256":  "5e0517e3f3e2c346355c7be87464f6620042cff7ad737d296c7f376b967ae4ae"
                    },
                    {
                        "file":  "spirv-validation.json",
-                       "sha256":  "6dc1893836a339ca2a78a4db472582ab38948569e87d4c2f0c1106c7c1c2a0de"
+                       "sha256":  "6fa35b971e0c6b7bdea031e23f1529a3102e0198d227073e7242ae634190552c"
                    },
                    {
                        "file":  "images-validation.json",
-                       "sha256":  "bd60b0957997c5aeac5651c37e6022cef7802cd6ecef1f8b9236745520d24e96"
+                       "sha256":  "d1730c00865de06c4ac89ade22753f0336a3b317f530e1f2a43a81544014cfff"
                    },
                    {
                        "file":  "icd-validation.json",
-                       "sha256":  "1733a1db23cc094ac501c5bd71106983b2f535380eeb0299b509a06b0d9f0071"
+                       "sha256":  "84d0c966a0bbd7709d6bd82cc837da6e1a548d81280340bfc1533f4a4fbdd8d1"
                    },
                    {
                        "file":  "graphics-validation.json",
-                       "sha256":  "23876c964ce5865fdebff8877c316810eb2f2f5a13df112cfd1b7078ce7184df"
+                       "sha256":  "68f6f027a8677174bdb5dfe1187cced99e14f52f321fa1f70715d958774a7092"
                    }
                ],
     "vulkanControlPlaneIcdValidated":  true,
