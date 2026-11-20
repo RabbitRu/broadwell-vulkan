@@ -59,11 +59,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\test-all.ps1
 ```
 
 Bootstrap устанавливает MSVC/SDK и Python, получает Mesa 26.2.7 и зависимости
-с закреплёнными SHA-256. Для GNU-расширений ELK используется clang-cl 19.1.5.
-Из официального Microsoft VSIX извлекаются только необходимые файлы x64:
-оглавление проверяется SHA-256, файлы — ZIP CRC, их SHA-256 сохраняются в манифест.
-Полный архив VSIX при этом не загружается и не считается проверенным целиком.
-Версии Python-пакетов закреплены в `tools/requirements.txt`.
+с закреплёнными SHA-256. Драйвер (Mesa) собирается clang-cl из LLVM 23.1.6:
+официальный архив выпуска `clang+llvm-23.1.6-x86_64-pc-windows-msvc.tar.xz`
+(SHA-256 в `tools/dependencies.json`) распаковывается в `.tools\llvm-23.1.6`
+без установщика и прав администратора; оттуда же lld-link, lldb,
+llvm-symbolizer и llvm-profdata. Mesa собирается с `-march=broadwell`
+(AVX2, BMI2, FMA): драйвер работает только рядом с GPU Broadwell, значит
+и процессор всегда Broadwell. Версии Python-пакетов закреплены в `tools/requirements.txt`.
 MSVC 14.44.35207, SDK 10.0.26100.0 и хеши компиляторов/заголовков KMT закреплены
 в `tools/toolchain-lock.json`; сборка останавливается при несовпадении.
 Онлайн-установщик Visual Studio может менять состав пакетов: для повторной

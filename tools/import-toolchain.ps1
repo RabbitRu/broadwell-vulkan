@@ -36,13 +36,12 @@ foreach ($header in $taskLock.sdkHeaders.PSObject.Properties) {
         throw "Windows KMT ABI header differs from lock: $taskHeaderPath"
     }
 }
-$taskClangBin=Join-Path $taskTools 'clang\bin'
-if (-not (Test-Path -LiteralPath (Join-Path $taskClangBin 'clang-cl.exe'))) {
-    $taskClangBin=Join-Path $taskTools 'vs\VC\Tools\Llvm\x64\bin'
-}
+$taskClangBin=Join-Path $taskTools ('llvm-'+$taskLock.clangVersion+'\bin')
 $taskClangExe=Join-Path $taskClangBin 'clang-cl.exe'
 if (Test-Path -LiteralPath $taskClangExe) {
+    $taskToolchain.llvmBin = $taskClangBin
     $taskToolchain.clang = $taskClangExe
+    $taskToolchain.clangVersion = $taskLock.clangVersion
     $taskToolchain.clangSha256 = (Get-FileHash -LiteralPath $taskClangExe -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($taskToolchain.clangSha256 -ne $taskLock.clangCompilerSha256) { throw 'clang-cl differs from tools\toolchain-lock.json' }
 }

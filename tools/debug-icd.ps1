@@ -5,6 +5,7 @@ param([Parameter(Mandatory)][string]$Executable, [string[]]$Arguments = @(), [sw
 # are resolved with llvm-symbolizer because lldb does not load their PDBs.
 $ErrorActionPreference='Stop'
 $taskRoot=Split-Path $PSScriptRoot -Parent
+$taskLlvmBin=Join-Path $taskRoot ('.tools\llvm-'+(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'toolchain-lock.json') -Raw | ConvertFrom-Json).clangVersion+'\bin')
 $taskPackage=Join-Path $taskRoot 'build\icd'
 $Executable=(Resolve-Path -LiteralPath $Executable).Path
 $taskSaved=@{}
@@ -18,12 +19,16 @@ try {
     Push-Location $(if ($WorkingDirectory) { $WorkingDirectory } else { $taskPackage })
     try {
         $ErrorActionPreference='Continue'   # Windows PowerShell turns native stderr into errors
-        $taskOutput=& (Join-Path $taskRoot '.tools\llvm\bin\lldb.exe') --batch -o run -k "bt $Frames" -k 'image list -o -f' -k quit -- $Executable @Arguments 2>$null
+        # The LLVM release archive has no lldb; use the one from a full LLVM install
+        # in .tools\llvm (LLVM-19.1.5-win64.exe, linked against Python 3.10).
+        $taskLldb=Join-Path $taskLlvmBin 'lldb.exe'
+        if (-not (Test-Path -LiteralPath $taskLldb)) { $taskLldb=Join-Path $taskRoot '.tools\llvm\bin\lldb.exe' }
+        $taskOutput=& $taskLldb --batch -o run -k "bt $Frames" -k 'image list -o -f' -k quit -- $Executable @Arguments 2>$null
     } finally { Pop-Location }
 } finally { foreach ($name in $taskSaved.Keys) { [Environment]::SetEnvironmentVariable($name, $taskSaved[$name]) } }
 $taskSlides=@{}
 foreach ($line in $taskOutput) { if ($line -match '\[\s*\d+\]\s+(0x[0-9a-fA-F]+)\s+(.+)$') { $taskSlides[[IO.Path]::GetFileName($Matches[2].Trim())]=@([Convert]::ToUInt64($Matches[1],16), $Matches[2].Trim()) } }
-$taskSymbolizer=Join-Path $taskRoot '.tools\llvm\bin\llvm-symbolizer.exe'
+$taskSymbolizer=Join-Path $taskLlvmBin 'llvm-symbolizer.exe'
 $taskStop=$taskOutput | Where-Object { $_ -match 'stop reason' } | Select-Object -First 1
 if (-not $taskStop) { 'No crash: process exited normally'; $taskOutput | Select-Object -Last 3; return }
 $taskStop

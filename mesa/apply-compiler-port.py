@@ -751,8 +751,8 @@ allocator_replacements.append(('''         do {
 #ifdef _WIN32
             if (new.end == 0) {
                if (++grow_failures == 64) {
-                  fprintf(stderr, "HasVK/WDDM: out of memory growing the %s pool (%u bytes); cannot continue\\n",
-                          pool->name, pool->size);
+                  fprintf(stderr, "HasVK/WDDM: out of memory growing the %s pool (%llu bytes); cannot continue\\n",
+                          pool->name, (unsigned long long)pool->size);
                   abort();
                }
                if (grow_failures > 1) os_time_sleep(1000);
@@ -1209,6 +1209,16 @@ for name, enum_names in {
         replacements.append(('enum elk_reg_file;', 'enum elk_reg_file ELK_ENUM_BASE;'))
     if name.endswith('elk_compiler.h'):
         replacements.append(('alpha_test_func:3;', 'alpha_test_func:ELK_COMPARE_FUNC_BITS;'))
+        # The program keys are laid out for the System V bit-field rules: there
+        # adjacent bool/enum/unsigned bit-fields share one unit and the explicit
+        # padding members fill it. The Microsoft ABI starts a new unit whenever
+        # the declared type size changes, so the same keys have holes on
+        # Windows. Clang 19 did not check the Microsoft layout; clang 23 does
+        # and -Wpadded is an error here. The holes are harmless: every key that
+        # is hashed or memcmp'd is cleared with memset first (populate_*_prog_key
+        # in anv_pipeline.c, the BLORP keys), so they hold zeros.
+        replacements.append(('PRAGMA_DIAGNOSTIC_PUSH\nPRAGMA_DIAGNOSTIC_ERROR(-Wpadded)\n',
+                             'PRAGMA_DIAGNOSTIC_PUSH\n#if !defined(_WIN32)\nPRAGMA_DIAGNOSTIC_ERROR(-Wpadded)\n#endif\n'))
     edit(name, replacements)
 # The same Microsoft enum signedness in the shared shader headers: shader_info
 # keeps these enums in narrow bit-fields, and a value with the top bit set

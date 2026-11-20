@@ -19,7 +19,11 @@ $taskArgs = @('setup', $taskMesaBuild, $taskMesa, '-Dplatforms=windows', '-Dvulk
 if (Test-Path -LiteralPath (Join-Path $taskMesaBuild 'build.ninja')) { $taskArgs += '--reconfigure' }
 & $taskToolchain.python -m mesonbuild.mesonmain @taskArgs
 if ($LASTEXITCODE) { throw "Mesa compiler configuration failed; see $taskMesaBuild\meson-logs\meson-log.txt" }
-& $taskToolchain.python -m mesonbuild.mesonmain configure $taskMesaBuild "-Dhasvk-wddm-graphics=$($Graphics.IsPresent.ToString().ToLowerInvariant())" "-Db_ndebug=$(if ($Asserts) { 'false' } else { 'true' })"
+# The driver only runs next to a Broadwell GPU, so the CPU is always Broadwell
+# (AVX2, BMI2, FMA): let clang use them. Setting the arguments here also drops
+# anything left from experiments (PGO flags) in an existing build directory.
+$taskCpuArgs = "['/clang:-march=broadwell']"
+& $taskToolchain.python -m mesonbuild.mesonmain configure $taskMesaBuild "-Dhasvk-wddm-graphics=$($Graphics.IsPresent.ToString().ToLowerInvariant())" "-Db_ndebug=$(if ($Asserts) { 'false' } else { 'true' })" "-Dc_args=$taskCpuArgs" "-Dcpp_args=$taskCpuArgs"
 if ($LASTEXITCODE) { throw 'Mesa graphics option configuration failed' }
 if (-not $ConfigureOnly) {
     & $taskToolchain.python -m mesonbuild.mesonmain compile -C $taskMesaBuild -j 2 intel_compiler_elk intel_dev IrisElkCompile IrisImageProbe vulkan_runtime vulkan_lite_runtime vulkan_instance vulkan_util vulkan_wsi vulkan_hasvk_wddm

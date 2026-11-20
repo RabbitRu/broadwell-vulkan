@@ -6,7 +6,7 @@
     "d3dkmthk.h": "113d427b97ceb0175c90ca2f0fbf0a8531dbf6fc4de9b46af8338cd3e2559dd7",
     "d3dukmdt.h": "b904e5c89e854f6c1ab925035dcf5e4bb3f5600949f57d9e5febbf7d1cdc9594"
   },
-  "clangVersion": "19.1.5",
-  "clangCompilerSha256": "93faf6d0a9e66ed1629eb1c9ca638a070aa1839b9490a87ff89b9cb39eeae36b",
+  "clangVersion": "23.1.6",
+  "clangCompilerSha256": "0d1fb4523a41c8ec722cdb72909a0a8fff1343700125b3f11d5cf83063a4d7e3",
   "python": "3.12.10"
 }

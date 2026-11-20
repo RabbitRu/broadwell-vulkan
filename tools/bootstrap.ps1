@@ -12,7 +12,7 @@ $env:TEMP = $taskScratch
 $env:TMP = $taskScratch
 function Get-PinnedFile($dependency, $destination, [switch]$Signed) {
     if (-not (Test-Path -LiteralPath $destination)) {
-        & curl.exe -fLsS --retry 2 --connect-timeout 15 --max-time 600 -o $destination $dependency.url
+        & curl.exe -fLsS --retry 3 --connect-timeout 15 --max-time 1800 -o $destination $dependency.url
         if ($LASTEXITCODE) { throw "Download failed: $($dependency.url)" }
     }
     if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() -ne $dependency.sha256) {
@@ -51,8 +51,22 @@ $taskCache = Join-Path $taskRoot 'third_party\mesa-26.2.7\subprojects\packagecac
 New-Item -ItemType Directory -Path $taskCache -Force | Out-Null
 Get-PinnedFile $taskDependencies.zlib (Join-Path $taskCache 'zlib-1.3.1.tar.gz')
 Get-PinnedFile $taskDependencies.zlibMeson (Join-Path $taskCache 'zlib_1.3.1-1_patch.zip')
-& $taskPythonExe (Join-Path $PSScriptRoot 'fetch-clang.py')
-if ($LASTEXITCODE) { throw 'Pinned x64 Clang preparation failed' }
+# Official LLVM release archive (clang-cl, lld-link, llvm-lib, compiler-rt incl.
+# the profile runtime, lldb, llvm-symbolizer, llvm-profdata): no installer, no admin.
+# The .tar.xz, not the smaller .tar.zst: the zstd archive needs a long decoder
+# window that the Windows tar.exe (bsdtar) refuses.
+$taskLlvm = Join-Path $taskTools ('llvm-'+$taskDependencies.llvm.version)
+if (-not (Test-Path -LiteralPath (Join-Path $taskLlvm 'bin\clang-cl.exe'))) {
+    $taskLlvmArchive = Join-Path $taskDownloads $taskDependencies.llvm.archive
+    Get-PinnedFile $taskDependencies.llvm $taskLlvmArchive
+    $taskLlvmStaging = Join-Path $taskScratch 'llvm-extract'
+    if (Test-Path -LiteralPath $taskLlvmStaging) { Remove-Item -LiteralPath $taskLlvmStaging -Recurse -Force }
+    New-Item -ItemType Directory -Path $taskLlvmStaging | Out-Null
+    & (Join-Path $env:SystemRoot 'System32\tar.exe') -xf $taskLlvmArchive -C $taskLlvmStaging
+    if ($LASTEXITCODE) { throw 'LLVM archive extraction failed' }
+    Move-Item -LiteralPath (Join-Path $taskLlvmStaging $taskDependencies.llvm.directory) -Destination $taskLlvm
+    Remove-Item -LiteralPath $taskLlvmStaging -Recurse -Force
+}
 . (Join-Path $PSScriptRoot 'import-toolchain.ps1')
 $taskToolchain | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $taskTools 'installed-toolchain.json') -Encoding UTF8
 & $taskPythonExe -m pip freeze | Set-Content -LiteralPath (Join-Path $taskTools 'installed-python.txt') -Encoding UTF8

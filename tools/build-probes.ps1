@@ -53,7 +53,7 @@ foreach ($name in 'rip_sampler', 'stack_dump') {
 # The D3D11 timing proxy (run-talos.ps1 -D3D11Proxy build\probes\d3d11-proxy\d3d11.dll).
 $proxyOut = Join-Path $out 'd3d11-proxy'
 New-Item -ItemType Directory -Force $proxyOut | Out-Null
-$clang = Join-Path $taskRoot '.tools\llvm\bin\clang.exe'
+$clang = Join-Path $taskToolchain.llvmBin 'clang.exe'
 $proxyLog = & $clang -shared -O2 -D_CRT_SECURE_NO_WARNINGS -o (Join-Path $proxyOut 'd3d11.dll') (Join-Path $tests 'd3d11_proxy\proxy.c') (Join-Path $tests 'd3d11_proxy\stubs.c') -ldxguid -luser32 2>&1
 if ($LASTEXITCODE) { $failed += 'd3d11 proxy'; $proxyLog | Select-String 'error' | Select-Object -First 5 | ForEach-Object { "  d3d11 proxy: $($_.Line.Trim())" } }
 else { "  built d3d11-proxy\d3d11.dll" }

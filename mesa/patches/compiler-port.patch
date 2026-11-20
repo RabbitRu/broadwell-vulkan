@@ -1035,8 +1035,8 @@
 +#ifdef _WIN32
 +            if (new.end == 0) {
 +               if (++grow_failures == 64) {
-+                  fprintf(stderr, "HasVK/WDDM: out of memory growing the %s pool (%u bytes); cannot continue\n",
-+                          pool->name, pool->size);
++                  fprintf(stderr, "HasVK/WDDM: out of memory growing the %s pool (%llu bytes); cannot continue\n",
++                          pool->name, (unsigned long long)pool->size);
 +                  abort();
 +               }
 +               if (grow_failures > 1) os_time_sleep(1000);
@@ -4333,7 +4333,17 @@
  #include <stdio.h>
  #include "c11/threads.h"
  #include "dev/intel_device_info.h"
-@@ -182,7 +183,7 @@
+@@ -155,7 +156,9 @@
+  * with memcmp.
+  */
+ PRAGMA_DIAGNOSTIC_PUSH
++#if !defined(_WIN32)
+ PRAGMA_DIAGNOSTIC_ERROR(-Wpadded)
++#endif
+ 
+ /**
+  * Sampler information needed by VS, WM, and GS program cache keys.
+@@ -182,7 +185,7 @@
     enum elk_gfx6_gather_sampler_wa gfx6_gather_wa[ELK_MAX_SAMPLERS];
  };
  
@@ -4342,7 +4352,7 @@
     ELK_ROBUSTNESS_UBO  = BITFIELD_BIT(0),
     ELK_ROBUSTNESS_SSBO = BITFIELD_BIT(1),
  };
-@@ -363,7 +364,7 @@
+@@ -363,7 +366,7 @@
     unsigned padding:27;
  };
  
@@ -4351,7 +4361,7 @@
     ELK_SF_PRIM_POINTS = 0,
     ELK_SF_PRIM_LINES = 1,
     ELK_SF_PRIM_TRIANGLES = 2,
-@@ -385,7 +386,7 @@
+@@ -385,7 +388,7 @@
     unsigned padding: 32;
  };
  
@@ -4360,7 +4370,7 @@
     ELK_CLIP_MODE_NORMAL             = 0,
     ELK_CLIP_MODE_CLIP_ALL           = 1,
     ELK_CLIP_MODE_CLIP_NON_REJECTED  = 2,
-@@ -394,7 +395,7 @@
+@@ -394,7 +397,7 @@
     ELK_CLIP_MODE_KERNEL_CLIP        = 5,
  };
  
@@ -4369,7 +4379,7 @@
     ELK_CLIP_FILL_MODE_LINE = 0,
     ELK_CLIP_FILL_MODE_POINT = 1,
     ELK_CLIP_FILL_MODE_FILL = 2,
-@@ -441,7 +442,7 @@
+@@ -441,7 +444,7 @@
     ELK_WM_IZ_BIT_MAX                   = 0x40
  };
  
@@ -4378,7 +4388,7 @@
     ELK_NEVER = 0,
     ELK_SOMETIMES,
     ELK_ALWAYS
-@@ -466,7 +467,7 @@
+@@ -466,7 +469,7 @@
     bool stats_wm:1;
     unsigned nr_color_regions:5;
     bool emit_alpha_test:1;
@@ -4387,7 +4397,7 @@
     bool alpha_test_replicate_alpha:1;
     enum elk_sometimes alpha_to_coverage:2;
  
-@@ -1601,7 +1602,7 @@
+@@ -1601,7 +1604,7 @@
      * to do a full test run with elk_fs_test_dispatch_packing() hooked up to
      * the NIR front-end before changing this assertion.
      */
