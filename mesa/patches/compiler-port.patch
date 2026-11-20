@@ -4396,6 +4396,62 @@
  
     switch (stage) {
     case MESA_SHADER_FRAGMENT: {
+--- a/src/compiler/shader_enums.h
++++ b/src/compiler/shader_enums.h
+@@ -25,6 +25,15 @@
+ 
+ #ifndef SHADER_ENUMS_H
+ #define SHADER_ENUMS_H
++
++/* Microsoft ABI: an enum without a fixed underlying type is int, so a
++ * bit-field of that enum type is signed. Enums kept in narrow bit-fields get
++ * an unsigned underlying type of the same size (see elk_win32_compat.h). */
++#if defined(_WIN32) && defined(__clang__)
++#define SHADER_ENUM_BASE : unsigned int
++#else
++#define SHADER_ENUM_BASE
++#endif
+ 
+ #ifndef __OPENCL_VERSION__
+ #include <stdbool.h>
+@@ -1054,7 +1063,7 @@
+  *
+  * \see enum ir_depth_layout
+  */
+-enum gl_frag_depth_layout
++enum gl_frag_depth_layout SHADER_ENUM_BASE
+ {
+    FRAG_DEPTH_LAYOUT_NONE, /**< No layout is specified. */
+    FRAG_DEPTH_LAYOUT_ANY,
+@@ -1066,7 +1075,7 @@
+ /**
+  * \brief Layout qualifiers for AMD_shader_early_and_late_fragment_tests.
+  */
+-enum gl_frag_stencil_layout
++enum gl_frag_stencil_layout SHADER_ENUM_BASE
+ {
+    FRAG_STENCIL_LAYOUT_NONE, /**< No layout is specified. */
+    FRAG_STENCIL_LAYOUT_ANY,
+@@ -1556,7 +1565,7 @@
+  *   return zero, which is consistent with the handling of built-in texture
+  *   functions like texture() in GLSL 4.50 compute shaders.
+  */
+-enum gl_derivative_group {
++enum gl_derivative_group SHADER_ENUM_BASE {
+    DERIVATIVE_GROUP_NONE = 0,
+    DERIVATIVE_GROUP_QUADS,
+    DERIVATIVE_GROUP_LINEAR,
+--- a/src/compiler/shader_info.h
++++ b/src/compiler/shader_info.h
+@@ -37,7 +37,7 @@
+ #define MAX_XFB_BUFFERS        4
+ #define MAX_INLINABLE_UNIFORMS 4
+ 
+-enum shader_info_hash_type {
++enum shader_info_hash_type SHADER_ENUM_BASE {
+    SHADER_INFO_HASH_TYPE_RAW = 0,
+    SHADER_INFO_HASH_TYPE_DXIL,
+    SHADER_INFO_HASH_TYPE_DXBC,
 --- a/src/util/macros.h
 +++ b/src/util/macros.h
 @@ -542,7 +542,7 @@

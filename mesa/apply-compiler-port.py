@@ -22,6 +22,7 @@ names = {
     'src/intel/compiler/meson.build', 'src/intel/dev/meson.build',
     'src/intel/dev/intel_debug.c', 'src/intel/dev/intel_device_info.c',
     'src/util/macros.h', 'src/util/u_atomic.h', 'src/util/memstream.c', 'include/drm-uapi/drm_fourcc.h',
+    'src/compiler/shader_enums.h', 'src/compiler/shader_info.h',
     'src/intel/compiler/elk/elk_eu.c', 'src/intel/compiler/elk/meson.build', 'src/intel/compiler/elk/elk_shader.cpp',
     'src/intel/compiler/elk/elk_schedule_instructions.cpp', 'src/intel/compiler/elk/elk_ir_performance.cpp',
     'src/intel/compiler/elk/elk_compiler.c', 'src/intel/blorp/blorp_elk.c',
@@ -1209,6 +1210,36 @@ for name, enum_names in {
     if name.endswith('elk_compiler.h'):
         replacements.append(('alpha_test_func:3;', 'alpha_test_func:ELK_COMPARE_FUNC_BITS;'))
     edit(name, replacements)
+# The same Microsoft enum signedness in the shared shader headers: shader_info
+# keeps these enums in narrow bit-fields, and a value with the top bit set
+# reads back negative. FRAG_DEPTH_LAYOUT_UNCHANGED (4, three bits) read back as
+# -4, so ELK's computed_depth_mode() matched no case and reported "no computed
+# depth" for a fragment shader that writes gl_FragDepth: 3DSTATE_PS_EXTRA said
+# PSCDEPTH_OFF while the render target write carried a depth payload, and the
+# render engine hung on the first pixel that passed the early depth test (CTS
+# spirv_assembly...execution_mode.depthunchanged_0/_2). Same hazard, fixed
+# with it: DERIVATIVE_GROUP_LINEAR and SHADER_INFO_HASH_TYPE_DXBC (2, two
+# bits), FRAG_STENCIL_LAYOUT_UNCHANGED (4, three bits).
+edit("src/compiler/shader_enums.h", [
+    ('#ifndef SHADER_ENUMS_H\n#define SHADER_ENUMS_H\n', '''#ifndef SHADER_ENUMS_H
+#define SHADER_ENUMS_H
+
+/* Microsoft ABI: an enum without a fixed underlying type is int, so a
+ * bit-field of that enum type is signed. Enums kept in narrow bit-fields get
+ * an unsigned underlying type of the same size (see elk_win32_compat.h). */
+#if defined(_WIN32) && defined(__clang__)
+#define SHADER_ENUM_BASE : unsigned int
+#else
+#define SHADER_ENUM_BASE
+#endif
+'''),
+    ('enum gl_frag_depth_layout\n{', 'enum gl_frag_depth_layout SHADER_ENUM_BASE\n{'),
+    ('enum gl_frag_stencil_layout\n{', 'enum gl_frag_stencil_layout SHADER_ENUM_BASE\n{'),
+    ('enum gl_derivative_group {', 'enum gl_derivative_group SHADER_ENUM_BASE {'),
+])
+edit("src/compiler/shader_info.h", [
+    ('enum shader_info_hash_type {', 'enum shader_info_hash_type SHADER_ENUM_BASE {'),
+])
 edit("src/util/macros.h", [
     ("#define PRAGMA_POISON\n", "#define PRAGMA_POISON(X)\n"),
 ])
