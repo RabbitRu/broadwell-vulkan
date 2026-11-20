@@ -559,9 +559,10 @@ VS/GS/TCS — в `mesa/elk_gfx8_stages.cpp`. ISL: поколение — кон�
   `build/release/HasVK-WDDM-<дата>-<коммит>.zip` (ICD, манифест,
   `IrisIcdProbe` с шейдерами, `install-icd.ps1`, инструкция
   `docs/install.md`, `docs/cts-expected-failures.md`, SHA-256). Собран
-  2026-11-20 из текущей сборки: `HasVK-WDDM-20261120-74e2287.zip`; проба из
-  распакованного пакета проходит, `install-icd.ps1 -WhatIf` показывает верные
-  шаги.
+  2026-11-20 из текущей сборки (с исправлением `DepthUnchanged`):
+  `HasVK-WDDM-20261120-43935e7.zip`; проба из распакованного пакета проходит,
+  DLL в пакете совпадает с `build\icd` по SHA-256. Прежний пакет `…-74e2287`
+  — без этого исправления.
 - Справочно о драйвере Intel на этой машине: DX11 — уровень 11_1 без
   `TypedUAVLoadAdditionalFormats`, DX12 — устройство только на 11_0/11_1,
   OpenGL — максимум 4.4.
