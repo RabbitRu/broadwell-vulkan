@@ -26,7 +26,11 @@ request of this process, not a system setting); the display may still turn off.
 param([string]$Root = 'C:\VulkanCTS-local', [int]$Jobs = 2, [int]$ChunkCases = 20000, [string]$Only = '*', [double]$MaxHours = 0,
       [int]$CaseSeconds = 120, [int]$MaxCrashes = 200, [switch]$List,
       [string[]]$Exclude = @('dEQP-VK.tessellation.misc_draw.tess_factor_barrier_bug',
-                             'dEQP-VK.wsi.win32.swapchain.simulate_oom.min_image_count'))
+                             'dEQP-VK.wsi.win32.swapchain.simulate_oom.min_image_count',
+                             # hang the render engine (docs\cts-expected-failures.md); an engine
+                             # reset was once followed by a system crash
+                             'dEQP-VK.spirv_assembly.instruction.graphics.execution_mode.depthunchanged_0',
+                             'dEQP-VK.spirv_assembly.instruction.graphics.execution_mode.depthunchanged_2'))
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path $PSScriptRoot -Parent
 $mustpass = Join-Path $Root 'src\external\vulkancts\mustpass\main\vk-default'
