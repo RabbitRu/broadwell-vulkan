@@ -119,7 +119,12 @@ foreach ($chunk in $chunks) {
         $notPassing.Add([ordered]@{ case = "$($chunk.name) ($($chunk.cases.Count) cases)"; status = 'RunnerError' })
     } else {
         foreach ($p in $summary.counts.PSObject.Properties) { $counts[$p.Name] = [int]$counts[$p.Name] + [int]$p.Value }
-        foreach ($bad in @($summary.notPassing)) { if ($bad) { $notPassing.Add([ordered]@{ case = $bad.case; status = $bad.status }) } }
+        foreach ($bad in @($summary.notPassing)) {
+            if (-not $bad) { continue }
+            # Chunk summaries written before run-cts.ps1 read its case file with ReadAllLines hold the name as { value: ... }.
+            $case = if ($bad.case -is [string]) { $bad.case } else { [string]$bad.case.value }
+            $notPassing.Add([ordered]@{ case = $case; status = $bad.status })
+        }
         foreach ($f in @($summary.flakyUnderParallel)) { if ($f) { $flaky.Add([ordered]@{ case = $f.case; parallel = $f.parallel; serial = $f.serial }) } }
         $executed += [int]$summary.executed
         $missing = $chunk.cases.Count - [int]$summary.executed

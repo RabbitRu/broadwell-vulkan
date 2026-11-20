@@ -351,6 +351,24 @@ static VkResult enumerate(struct vk_instance *base)
    if (!intel_get_device_info_for_build(0x162b, &physical->info)) {
       vk_physical_device_finish(&physical->vk); vk_free(&base->alloc, physical); return VK_ERROR_INITIALIZATION_FAILED;
    }
+   /* How many threads of a stage can own scratch space (register spills, large
+    * local arrays). Upstream fills this in intel_get_device_info_from_fd
+    * (init_max_scratch_ids), which is Linux only: here it stayed 0, every
+    * scratch BO had size 0 and none was ever allocated. A shader that spilled
+    * then wrote through a null scratch pointer into unmapped GPU addresses:
+    * wrong results and video engine hangs (Windows LiveKernelEvent 141), one
+    * of which was followed by a system crash. Same values as upstream for
+    * Broadwell. */
+   {
+      struct intel_device_info *info = &physical->info;
+      const unsigned subslices = MAX3(intel_device_info_dual_subslice_id_bound(info), info->subslice_total, 1);
+      info->max_scratch_ids[MESA_SHADER_VERTEX] = info->max_vs_threads;
+      info->max_scratch_ids[MESA_SHADER_TESS_CTRL] = info->max_tcs_threads;
+      info->max_scratch_ids[MESA_SHADER_TESS_EVAL] = info->max_tes_threads;
+      info->max_scratch_ids[MESA_SHADER_GEOMETRY] = info->max_gs_threads;
+      info->max_scratch_ids[MESA_SHADER_FRAGMENT] = info->max_wm_threads;
+      info->max_scratch_ids[MESA_SHADER_COMPUTE] = info->max_cs_threads * subslices;
+   }
    glsl_type_singleton_init_or_ref();
    physical->compiler = elk_compiler_create(NULL, &physical->info);
    if (!physical->compiler) { physical_destroy(&physical->vk); return VK_ERROR_OUT_OF_HOST_MEMORY; }
@@ -926,7 +944,7 @@ static void state_finish(struct anv_wddm_device_state *w)
    if (!w) return;
    hasvk_wddm_bo_destroy(w->completion); hasvk_wddm_bo_destroy(w->entry);
    if (w->client_heap_initialized) {
-      util_vma_heap_finish(&w->client_heap); util_vma_heap_finish(&w->state_heap);
+      util_vma_heap_finish(&w->client_heap); util_vma_heap_finish(&w->state_heap); util_vma_heap_finish(&w->scratch_heap);
    }
    if (w->reservation) hasvk_wddm_release(w->transport, w->reservation);
    if (w->transport && hasvk_wddm_device_destroy(w->transport)) fprintf(stderr, "HasVK/WDDM cleanup: %s\n", hasvk_wddm_error());
@@ -976,7 +994,13 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle
     * dynamic state pool below (anv_wddm_pools.c, Gen8 VF cache). */
    w->client_heap.alloc_high = false;
    util_vma_heap_init(&w->state_heap, w->origin + 0x200000, (7ull << 30) - 0x200000);
+   /* Scratch BOs get their own range; take it out of the fixed-address heap so
+    * that no pool can grow into it. */
+   util_vma_heap_init(&w->scratch_heap, w->origin + ANV_WDDM_SCRATCH_START, ANV_WDDM_SCRATCH_BYTES);
    w->client_heap_initialized = true;
+   if (!util_vma_heap_alloc_addr(&w->state_heap, w->origin + ANV_WDDM_SCRATCH_START, ANV_WDDM_SCRATCH_BYTES)) {
+      result = VK_ERROR_INITIALIZATION_FAILED; goto fail_state;
+   }
    if (hasvk_wddm_bo_create(w->transport, 8192, w->origin + 0x2c0000000, 1, &w->entry) ||
        hasvk_wddm_bo_create(w->transport, 4096, w->origin + 0x2c0200000, 1, &w->completion)) { result = VK_ERROR_OUT_OF_DEVICE_MEMORY; goto fail_state; }
    memset(hasvk_wddm_bo_map(w->completion), 0x39, 4096);
@@ -1091,8 +1115,10 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateEvent(VkDevice handle, const VkEventCre
    if (!event) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    uint32_t slot = UINT32_MAX;
    mtx_lock(&w->mutex);
-   for (uint32_t i = 0; i < ANV_WDDM_EVENT_SLOTS; ++i)
-      if (!BITSET_TEST(w->event_slots, i)) { BITSET_SET(w->event_slots, i); slot = i; break; }
+   for (uint32_t n = 0; n < ANV_WDDM_EVENT_SLOTS; ++n) {
+      const uint32_t i = (w->event_hint + n) % ANV_WDDM_EVENT_SLOTS;
+      if (!BITSET_TEST(w->event_slots, i)) { BITSET_SET(w->event_slots, i); slot = i; w->event_hint = i + 1; break; }
+   }
    mtx_unlock(&w->mutex);
    if (slot == UINT32_MAX) { vk_object_free(&device->vk, allocator, event); return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY); }
    event->state = (struct anv_state){.offset = (int32_t)(slot * 8), .alloc_size = 8, .map = (char *)w->event_bo->map + slot * 8};

@@ -59,6 +59,20 @@ anv_fill_buffer_surface_state(struct anv_device *device, struct anv_state state,
 static VkResult
 alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo_alloc_flags flags,
          uint64_t explicit_address, bool cpu_map, struct anv_bo **out);
+/* Scratch space pointer of a pipeline stage (see scratch_address in
+ * graphics_sources.py): the scratch BO's offset from General State Base
+ * Address, which is the origin of the GPU address window. */
+struct anv_address
+anv_wddm_scratch_address(struct anv_device *device, mesa_shader_stage stage, unsigned per_thread_scratch)
+{
+   struct anv_bo *bo = anv_scratch_pool_alloc(device, &device->scratch_pool, stage, per_thread_scratch);
+   if (!bo) {
+      if (per_thread_scratch)
+         fprintf(stderr, "HasVK/WDDM: no scratch space (%u bytes per thread) for a shader that spills registers\n", per_thread_scratch);
+      return ANV_NULL_ADDRESS;
+   }
+   return (struct anv_address){NULL, intel_48b_address(bo->offset) - device->wddm->origin};
+}
 VkResult
 anv_device_alloc_bo(struct anv_device *device, const char *name, uint64_t size,
                     enum anv_bo_alloc_flags flags, uint64_t explicit_address,
@@ -75,10 +89,15 @@ alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo
          uint64_t explicit_address, bool cpu_map, struct anv_bo **out)
 {
    *out = NULL;
-   const unsigned allowed = ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_SNOOPED |
+   const unsigned allowed = ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_SNOOPED | ANV_BO_ALLOC_32BIT_ADDRESS |
       ANV_BO_ALLOC_CAPTURE | ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS | ANV_BO_ALLOC_FIXED_ADDRESS;
    const bool fixed = (flags & ANV_BO_ALLOC_FIXED_ADDRESS) != 0;
-   if ((flags & ~allowed) || (fixed ? !explicit_address || (explicit_address & 4095) : explicit_address != 0))
+   /* Upstream's "below 4 GiB" means "addressable from General State Base
+    * Address", which here is the window's origin: shader scratch space
+    * (anv_scratch_pool_alloc). Only the GPU touches it: no CPU mapping. */
+   const bool low = (flags & ANV_BO_ALLOC_32BIT_ADDRESS) != 0;
+   if (low) cpu_map = false;
+   if ((flags & ~allowed) || (fixed && low) || (fixed ? !explicit_address || (explicit_address & 4095) : explicit_address != 0))
       return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
    if (!size || size > ANV_WDDM_MAX_BO_BYTES)
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
@@ -97,7 +116,7 @@ alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo
       mtx_unlock(&w->alloc_mutex); free(bo);
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    }
-   struct util_vma_heap *heap = fixed ? &w->state_heap : &w->client_heap;
+   struct util_vma_heap *heap = fixed ? &w->state_heap : low ? &w->scratch_heap : &w->client_heap;
    uint64_t address = fixed ? (util_vma_heap_alloc_addr(heap, explicit_address, size) ? explicit_address : 0) :
       util_vma_heap_alloc(heap, size, 4096);
    if (!address) {
@@ -231,8 +250,12 @@ anv_device_release_bo(struct anv_device *device, struct anv_bo *bo)
       vk_device_set_lost(&device->vk, "WDDM BO destruction failed");
    } else {
       mtx_lock(&w->alloc_mutex);
-      if (!bo->is_external)   /* window surfaces: the kernel chose and frees the address */
-         util_vma_heap_free(bo->has_fixed_address ? &w->state_heap : &w->client_heap, intel_48b_address(bo->offset), bo->size);
+      if (!bo->is_external) {   /* window surfaces: the kernel chose and frees the address */
+         const uint64_t address = intel_48b_address(bo->offset);
+         const bool scratch = !bo->has_fixed_address && address >= w->origin + ANV_WDDM_SCRATCH_START &&
+            address < w->origin + ANV_WDDM_SCRATCH_START + ANV_WDDM_SCRATCH_BYTES;
+         util_vma_heap_free(bo->has_fixed_address ? &w->state_heap : scratch ? &w->scratch_heap : &w->client_heap, address, bo->size);
+      }
       w->allocated_bytes -= bo->size; --w->allocation_count; BITSET_CLEAR(w->bo_ids, bo->gem_handle);
       if (bo->name && !strcmp(bo->name, "user")) w->user_bytes -= bo->size;
       mtx_unlock(&w->alloc_mutex);
@@ -370,7 +393,10 @@ anv_CreateBuffer(VkDevice handle, const VkBufferCreateInfo *info,
       VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT |
       VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT;
-   if (info->usage & ~allowed) return VK_ERROR_FEATURE_NOT_PRESENT;
+   /* VK_KHR_maintenance5: VkBufferUsageFlags2CreateInfo in pNext replaces
+    * info->usage, which the application may then leave as anything (CTS sets
+    * it to 0xBAD00000). Checking info->usage itself failed every such buffer. */
+   if (vk_buffer_usage_flags(info) & ~(VkBufferUsageFlags2)allowed) return VK_ERROR_FEATURE_NOT_PRESENT;
    struct anv_buffer *buffer = vk_buffer_create(&device->vk, info, allocator, sizeof(*buffer));
    if (!buffer) return VK_ERROR_OUT_OF_HOST_MEMORY;
    buffer->address = ANV_NULL_ADDRESS;
@@ -511,7 +537,7 @@ anv_GetDeviceBufferMemoryRequirements(VkDevice handle, const VkDeviceBufferMemor
    ANV_FROM_HANDLE(anv_device, device, handle);
    const VkBufferCreateInfo *create = info->pCreateInfo;
    requirements->memoryRequirements = (VkMemoryRequirements){
-      .size = create->size, .alignment = (create->usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ? ANV_UBO_ALIGNMENT : 16,
+      .size = create->size, .alignment = (vk_buffer_usage_flags(create) & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ? ANV_UBO_ALIGNMENT : 16,
       .memoryTypeBits = (1u << device->physical->memory.type_count) - 1,
    };
    vk_foreach_struct(ext, requirements->pNext) {

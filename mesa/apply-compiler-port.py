@@ -9,7 +9,7 @@ import pathlib
 import tarfile
 import re
 from compute_sources import generate_compute_sources
-from graphics_sources import generate_graphics_sources
+from graphics_sources import generate_graphics_sources, scratch_address, SCRATCH_PROTOTYPE
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 MESA = ROOT / "third_party/mesa-26.2.7"
@@ -21,7 +21,7 @@ names = {
     'meson.options', 'meson.build', 'src/intel/meson.build',
     'src/intel/compiler/meson.build', 'src/intel/dev/meson.build',
     'src/intel/dev/intel_debug.c', 'src/intel/dev/intel_device_info.c',
-    'src/util/macros.h', 'src/util/u_atomic.h', 'include/drm-uapi/drm_fourcc.h',
+    'src/util/macros.h', 'src/util/u_atomic.h', 'src/util/memstream.c', 'include/drm-uapi/drm_fourcc.h',
     'src/intel/compiler/elk/elk_eu.c', 'src/intel/compiler/elk/meson.build', 'src/intel/compiler/elk/elk_shader.cpp',
     'src/intel/compiler/elk/elk_schedule_instructions.cpp', 'src/intel/compiler/elk/elk_ir_performance.cpp',
     'src/intel/compiler/elk/elk_compiler.c', 'src/intel/blorp/blorp_elk.c',
@@ -561,6 +561,35 @@ edit('src/vulkan/wsi/meson.build', [
     ('  link_with: links_vulkan_wsi,', '  link_with: links_vulkan_wsi,\n  cpp_args : wddm_gdi_args,\n  c_args : wddm_gdi_args,'),
 ])
 edit('src/intel/vulkan_hasvk/anv_private.h', [
+    # Upstream does nothing for VK_ACCESS_2_SHADER_STORAGE_READ_BIT, although the
+    # generic VK_ACCESS_2_SHADER_READ_BIT (which includes storage reads)
+    # invalidates the constant and texture caches. A storage image written as a
+    # colour attachment and then read in a vertex shader showed stale data
+    # with the specialised flag only (CTS synchronization2 ...
+    # write_draw*_read_image_vertex.*_specialized_access_flag, 20 cases).
+    ('''      case VK_ACCESS_2_SHADER_STORAGE_READ_BIT:
+      default:
+         break; /* Nothing to do */
+      }
+   }
+
+   return pipe_bits;
+}
+
+#define VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV''', '''      case VK_ACCESS_2_SHADER_STORAGE_READ_BIT:
+         /* As VK_ACCESS_2_SHADER_READ_BIT, of which this is a part. */
+         pipe_bits |= ANV_PIPE_CONSTANT_CACHE_INVALIDATE_BIT |
+                      ANV_PIPE_TEXTURE_CACHE_INVALIDATE_BIT;
+         break;
+      default:
+         break; /* Nothing to do */
+      }
+   }
+
+   return pipe_bits;
+}
+
+#define VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV'''),
     ('#include <pthread.h>', '#ifdef _WIN32\n#include "anv_wddm_compat.h"\n#else\n#include <pthread.h>\n#endif'),
     ('#include "drm-uapi/i915_drm.h"', '#ifndef _WIN32\n#include "drm-uapi/i915_drm.h"\n#endif'),
     ('#include "common/intel_gem.h"', '#ifndef _WIN32\n#include "common/intel_gem.h"\n#endif'),
@@ -1171,6 +1200,56 @@ for name, enum_names in {
 edit("src/util/macros.h", [
     ("#define PRAGMA_POISON\n", "#define PRAGMA_POISON(X)\n"),
 ])
+# u_memstream on Windows is a temporary file, and upstream removes it while it
+# is still open: remove() fails, and every use leaves a file behind. Every
+# shader compilation uses one (spirv_to_nir, create_shader_name), so the files
+# pile up in %TEMP% until GetTempFileName has no names left (65535): at that
+# point every compilation scanned them for seconds (the full CTS run slowed to
+# a crawl after 65520 files). The file is now opened delete-on-close, so it
+# disappears when it is closed, also if the process dies.
+edit("src/util/memstream.c", [
+    ('''#ifdef _WIN32
+#include <windows.h>
+#endif
+''', '''#ifdef _WIN32
+#include <windows.h>
+#include <fcntl.h>
+#include <io.h>
+#endif
+'''),
+    ('''         FILE *f = fopen(temp, "w+b");
+         success = f != NULL;
+''', '''         /* GetTempFileName created the file; reopen it so that it is deleted
+          * when the last handle closes. */
+         FILE *f = NULL;
+         HANDLE handle = CreateFileA(temp, GENERIC_READ | GENERIC_WRITE,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                                     CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+         if (handle != INVALID_HANDLE_VALUE) {
+            int fd = _open_osfhandle((intptr_t)handle, _O_RDWR | _O_BINARY);
+            if (fd < 0) {
+               CloseHandle(handle);
+            } else {
+               f = _fdopen(fd, "w+b");
+               if (!f)
+                  _close(fd);
+            }
+         }
+         if (!f)
+            DeleteFileA(temp);
+         success = f != NULL;
+'''),
+    ('''   u_memstream_update_buffer(mem);
+   remove(mem->temp);
+#endif
+
+   fclose(f);
+''', '''   u_memstream_update_buffer(mem);
+#endif
+
+   fclose(f);   /* the file is delete-on-close */
+'''),
+])
 edit("include/drm-uapi/drm_fourcc.h", [
     ('#include "drm.h"', '#ifdef _WIN32\n/* Format/modifier constants only; no DRM transport on Windows. */\n#include <stdint.h>\ntypedef uint32_t __u32;\ntypedef uint64_t __u64;\n#else\n#include "drm.h"\n#endif'),
 ])
@@ -1228,8 +1307,8 @@ libwddm_blorp = static_library('wddm_blorp',
 }
 # Gen8's actual compute emitter and its two helpers, verbatim from the pinned
 # source. Graphics emission is added when graphics command buffers are enabled.
-gen_pipeline = (originals / 'src/intel/vulkan_hasvk/genX_pipeline.c').read_text(encoding='utf-8')
-compute_emitter = gen_pipeline[:gen_pipeline.index('\nstatic ')]
+gen_pipeline = scratch_address((originals / 'src/intel/vulkan_hasvk/genX_pipeline.c').read_text(encoding='utf-8'))
+compute_emitter = gen_pipeline[:gen_pipeline.index('\nstatic ')] + '\n' + SCRATCH_PROTOTYPE
 for signature in ['static uint32_t\nget_sampler_count(', 'static UNUSED struct anv_address\nget_scratch_address(',
                   'void\ngenX(compute_pipeline_emit)(']:
     start = gen_pipeline.index(signature)

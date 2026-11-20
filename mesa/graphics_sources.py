@@ -52,6 +52,37 @@ def fragment_dispatch(source):
     return source
 
 
+def scratch_address(source):
+    """Scratch space of a shader (register spills, large local arrays): the
+    3DSTATE_*S / MEDIA_VFE_STATE scratch pointer is relative to General State
+    Base Address. Upstream sets that base to 0 and asks for a BO below 4 GiB;
+    this port's GPU address window starts above 4 GiB and its general state
+    base is the window's start (device->wddm->origin), so the pointer is the
+    BO's offset inside the window (anv_wddm_scratch_address). Before this the
+    port refused ANV_BO_ALLOC_32BIT_ADDRESS, every scratch pointer was 0 and
+    spills went to unmapped addresses: wrong results in every shader that
+    spills (CTS graphicsfuzz, clustered i64vec4 subgroup operations)."""
+    old = '''   return (struct anv_address) {
+      .bo = anv_scratch_pool_alloc(pipeline->device,
+                                   &pipeline->device->scratch_pool,
+                                   stage, bin->prog_data->total_scratch),
+      .offset = 0,
+   };'''
+    assert source.count(old) == 1
+    source = source.replace(old, '''   return anv_wddm_scratch_address(pipeline->device, stage,
+                                   bin->prog_data->total_scratch);''')
+    old = 'static UNUSED struct anv_address\nget_scratch_address('
+    assert source.count(old) == 1
+    return source.replace(old, SCRATCH_PROTOTYPE + old)
+
+
+SCRATCH_PROTOTYPE = '''struct anv_address
+anv_wddm_scratch_address(struct anv_device *device, mesa_shader_stage stage,
+                         unsigned per_thread_scratch);
+
+'''
+
+
 def _gen8_condition(expression):
     """Value of an #if/#elif condition made only of GFX_VER/GFX_VERx10,
     integers, comparisons and logical operators, for Gen8; None otherwise."""
@@ -397,5 +428,5 @@ anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct
         'src/intel/wddm_compiler/anv_wddm_graphics_blorp.c': blorp,
         'src/intel/wddm_compiler/anv_wddm_graphics_blorp_exec.c': unifdef_gen8(instrumentation(read('genX_blorp_exec.c'))),
         'src/intel/wddm_compiler/anv_wddm_graphics_dynamic.c': unifdef_gen8(fragment_dispatch(read('gfx8_cmd_buffer.c').replace('#include <unistd.h>', ''))),
-        'src/intel/wddm_compiler/anv_wddm_graphics_pipeline.c': unifdef_gen8(read('genX_pipeline.c').replace('#include <unistd.h>', '')),
+        'src/intel/wddm_compiler/anv_wddm_graphics_pipeline.c': unifdef_gen8(scratch_address(read('genX_pipeline.c').replace('#include <unistd.h>', ''))),
     }

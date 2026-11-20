@@ -29,7 +29,13 @@ anv_wddm_heap_bytes(void)
    return bytes;
 }
 #define ANV_WDDM_MAX_BOS 65536u
-#define ANV_WDDM_EVENT_SLOTS 4096u   /* 8 bytes each in one BO */
+/* Scratch BOs, relative to origin: above the general state pool (which ends
+ * at most at origin + 2 MiB + 1 GiB), below the instruction pool (origin + 3 GiB). */
+#define ANV_WDDM_SCRATCH_START 0x50000000ull
+#define ANV_WDDM_SCRATCH_BYTES 0x60000000ull
+/* 8 bytes each in one 512 KiB BO. CTS api.command_buffers.execute_large_primary
+ * creates 10000 events at once; with 4096 slots vkCreateEvent ran out. */
+#define ANV_WDDM_EVENT_SLOTS 65536u
 #define ANV_WDDM_ENTRY_SLOTS 64u     /* 128 bytes each in the 8192-byte entry BO */
 
 struct anv_wddm_device_state {
@@ -49,6 +55,9 @@ struct anv_wddm_device_state {
    struct u_cnd_monotonic condition;
    struct util_vma_heap client_heap;
    struct util_vma_heap state_heap;
+   /* Shader scratch BOs (ANV_BO_ALLOC_32BIT_ADDRESS): within 4 GiB of origin,
+    * which is General State Base Address, in a range no state pool uses. */
+   struct util_vma_heap scratch_heap;
    bool client_heap_initialized;
    bool custom_border_colors_initialized;
    bool device_mutex_initialized;
@@ -69,6 +78,7 @@ struct anv_wddm_device_state {
    uint32_t bo_id_hint;
    struct anv_bo *event_bo;
    BITSET_WORD event_slots[BITSET_WORDS(ANV_WDDM_EVENT_SLOTS)];
+   uint32_t event_hint;   /* where the search for a free slot starts (mutex) */
    uint64_t command_batches_completed;
    uint64_t runs;   /* kernel submissions of command buffers, for chaining */
    /* The entry BO is a ring of 128-byte slots (jump at +0, completion write
@@ -101,8 +111,11 @@ struct anv_wddm_pending {
 
 VkResult anv_wddm_pools_init(struct anv_device *device);
 void anv_wddm_pools_finish(struct anv_device *device);
-/* A command buffer is a chain of fixed-size BOs. chunks[0].bo == bo lives as
- * long as the command buffer; further chunks are released on reset. */
+/* A command buffer is a chain of fixed-size BOs. The first one (bo ==
+ * chunks[0].bo) is allocated by the first vkBeginCommandBuffer and then lives
+ * as long as the command buffer; further chunks become spares on reset. A
+ * command buffer that was never recorded holds no GPU memory (bo == NULL,
+ * chunk_count == 0): CTS allocates 10000 of them at once. */
 struct anv_wddm_cmd_chunk {
    struct anv_bo *bo;
    uint32_t length;
@@ -116,6 +129,9 @@ struct anv_wddm_wait {
 };
 struct anv_wddm_cmd_state {
    struct anv_bo *bo;
+   /* Set by vkBeginCommandBuffer around the reset it performs: only then the
+    * reset gives the batch its storage and a binding table block. */
+   bool recording;
    struct anv_wddm_cmd_chunk *chunks;
    uint32_t chunk_count, chunk_capacity;
    /* Chunks beyond the first, kept across resets for reuse (released at

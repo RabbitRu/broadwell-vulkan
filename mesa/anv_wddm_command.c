@@ -36,6 +36,8 @@ static VkResult command_extend(struct anv_batch *batch, void *data)
 {
    struct anv_cmd_buffer *cmd = data;
    struct anv_wddm_cmd_state *s = cmd->wddm;
+   /* No storage at all: recording was not begun, or its first BO could not be allocated. */
+   if (!s->chunk_count) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
    if (s->chunk_count == s->chunk_capacity) {
       const uint32_t capacity = MAX2(8, s->chunk_capacity * 2);
       struct anv_wddm_cmd_chunk *chunks = vk_realloc(&cmd->vk.pool->alloc, s->chunks, capacity * sizeof(*chunks), 8,
@@ -87,8 +89,21 @@ static void command_resources_finish(struct anv_cmd_buffer *cmd)
    }
    for (uint32_t i = 0; i < cmd->wddm->wait_count; ++i) vk_free(&cmd->vk.pool->alloc, cmd->wddm->waits[i].events);
    cmd->wddm->wait_count = 0;
-   cmd->wddm->chunk_count = 1; cmd->wddm->chunks[0].length = 0;
+   cmd->wddm->chunk_count = cmd->wddm->bo ? 1 : 0; cmd->wddm->chunks[0].length = 0;
    cmd->wddm->tail = NULL;
+}
+/* Storage for a recording: the first BO is allocated by the first recording
+ * and kept until the command buffer is destroyed. */
+static VkResult command_storage_begin(struct anv_cmd_buffer *cmd)
+{
+   struct anv_wddm_cmd_state *s = cmd->wddm;
+   if (!s->bo) {
+      VkResult result = anv_device_alloc_bo(cmd->device, "command", command_bytes, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &s->bo);
+      if (result != VK_SUCCESS) { s->bo = NULL; return result; }
+      s->chunks[0] = (struct anv_wddm_cmd_chunk){s->bo, 0}; s->chunk_count = 1;
+   }
+   command_use_bo(cmd, s->bo);
+   return VK_SUCCESS;
 }
 static void command_resources_init(struct anv_cmd_buffer *cmd)
 {
@@ -103,10 +118,17 @@ static void command_resources_init(struct anv_cmd_buffer *cmd)
    cmd->vk.dynamic_graphics_state.ms.sample_locations = &cmd->state.gfx.sample_locations;
    cmd->batch.status = VK_SUCCESS;
    cmd->batch.extend_cb = command_extend; cmd->batch.user_data = cmd;
-   command_use_bo(cmd, cmd->wddm->bo);
+   /* Allocated or reset but not being recorded: no storage and no binding
+    * table block. Each took 64 KiB of the driver's own memory per command
+    * buffer, and 10000 idle command buffers (CTS
+    * api.command_buffers.allocate_many_*) ran past ANV_WDDM_INTERNAL_BYTES. */
+   anv_batch_set_storage(&cmd->batch, ANV_NULL_ADDRESS, NULL, 0);
+   if (!cmd->wddm->recording) return;
+   VkResult result = command_storage_begin(cmd);
+   if (result != VK_SUCCESS) { anv_batch_set_error(&cmd->batch, result); return; }
 #ifdef HASVK_WDDM_GRAPHICS
    /* As anv_cmd_buffer_reset_batch_bo_chain: every recording starts with one binding table block. */
-   VkResult result = anv_cmd_buffer_new_binding_table_block(cmd);
+   result = anv_cmd_buffer_new_binding_table_block(cmd);
    if (result != VK_SUCCESS) anv_batch_set_error(&cmd->batch, result);
 #endif
 }
@@ -128,16 +150,12 @@ static VkResult create_command(struct vk_command_pool *pool, VkCommandBufferLeve
    cmd->wddm->chunks = vk_zalloc(&pool->alloc, 8 * sizeof(*cmd->wddm->chunks), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!cmd->wddm->chunks) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail; }
    cmd->wddm->chunk_capacity = 8;
-   result = anv_device_alloc_bo(device, "command", command_bytes, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &cmd->wddm->bo);
-   if (result != VK_SUCCESS) goto fail;
-   cmd->wddm->chunks[0] = (struct anv_wddm_cmd_chunk){cmd->wddm->bo, 0}; cmd->wddm->chunk_count = 1;
-   if (!u_vector_init(&cmd->bt_block_states, 8, sizeof(struct anv_state))) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail_bo; }
+   /* No BO yet: command_storage_begin allocates it for the first recording. */
+   if (!u_vector_init(&cmd->bt_block_states, 8, sizeof(struct anv_state))) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail; }
    cmd->batch.alloc = &pool->alloc;
    command_resources_init(cmd);
    *out = &cmd->vk;
    return VK_SUCCESS;
-fail_bo:
-   anv_device_release_bo(device, cmd->wddm->bo);
 fail:
    if (cmd->wddm) vk_free(&pool->alloc, cmd->wddm->chunks);
    vk_free(&pool->alloc, cmd->wddm); vk_free(&pool->alloc, cmd->batch.relocs);
@@ -157,7 +175,7 @@ static void destroy_command(struct vk_command_buffer *base)
    command_resources_finish(cmd); u_vector_finish(&cmd->bt_block_states);
    for (uint32_t i = 0; i < cmd->wddm->spare_count; ++i) anv_device_release_bo(cmd->device, cmd->wddm->spare[i]);
    vk_free(&base->pool->alloc, cmd->wddm->spare);
-   anv_device_release_bo(cmd->device, cmd->wddm->bo);
+   if (cmd->wddm->bo) anv_device_release_bo(cmd->device, cmd->wddm->bo);
    vk_free(&base->pool->alloc, cmd->wddm->chunks); vk_free(&base->pool->alloc, cmd->wddm->waits);
    vk_free(&base->pool->alloc, cmd->batch.relocs); vk_free(&base->pool->alloc, cmd->wddm);
    vk_command_buffer_finish(base); vk_free(&base->pool->alloc, cmd);
@@ -180,6 +198,10 @@ static bool anv_wddm_dump_registers(void)
  * completion marker that the submit path checks; a secondary just ends. */
 void anv_cmd_buffer_end_batch_buffer(struct anv_cmd_buffer *cmd)
 {
+   if (!cmd->wddm->chunk_count) {   /* the recording never got its storage */
+      if (cmd->batch.status == VK_SUCCESS) anv_batch_set_error(&cmd->batch, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      return;
+   }
    if (cmd->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
 #ifdef HASVK_WDDM_GRAPHICS
       anv_add_pending_pipe_bits(cmd, ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT | ANV_PIPE_DEPTH_CACHE_FLUSH_BIT,
@@ -297,7 +319,11 @@ void anv_cmd_buffer_add_secondary(struct anv_cmd_buffer *primary, struct anv_cmd
 VKAPI_ATTR VkResult VKAPI_CALL anv_BeginCommandBuffer(VkCommandBuffer handle, const VkCommandBufferBeginInfo *info)
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
+   /* genX(BeginCommandBuffer) starts with anv_cmd_buffer_reset: with the flag
+    * set that reset gives the batch its storage (command_resources_init). */
+   cmd->wddm->recording = true;
    VkResult result = genX(BeginCommandBuffer)(handle, info);
+   cmd->wddm->recording = false;
    anv_wddm_emit_context_workarounds(cmd);
    vk_command_buffer_begin(&cmd->vk, info);
    return result != VK_SUCCESS ? result : cmd->batch.status;
@@ -314,7 +340,9 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_BeginCommandBuffer(VkCommandBuffer handle, co
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
    vk_command_buffer_begin(&cmd->vk, info);
-   VkResult result = anv_cmd_buffer_new_binding_table_block(cmd);
+   VkResult result = cmd->batch.start ? VK_SUCCESS : command_storage_begin(cmd);
+   if (result != VK_SUCCESS) return result;
+   result = anv_cmd_buffer_new_binding_table_block(cmd);
    if (result != VK_SUCCESS) return result;
    /* Context state is restored by WDDM, but each command buffer establishes
     * its pipeline and cache state independently before selecting GPGPU. */
@@ -537,7 +565,7 @@ static int check_completed(struct anv_cmd_buffer *cmd)
 PUBLIC int hasvk_wddm_icd_query_command_buffer(VkCommandBuffer handle, const void **bytes, uint32_t *length)
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
-   if (!cmd || !bytes || !length) return -1;
+   if (!cmd || !bytes || !length || !cmd->wddm->bo) return -1;
    /* First chunk only; a chained buffer continues in further BOs. */
    *bytes = cmd->wddm->bo->map;
    *length = cmd->wddm->chunk_count > 1 ? cmd->wddm->chunks[0].length : (uint32_t)((char *)cmd->batch.next - (char *)cmd->batch.start);

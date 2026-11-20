@@ -79,7 +79,9 @@ if (-not $CaseFile) {   # a case file needs no scan of the gigabyte list (parall
 $taskMatched=$taskSelected.Count
 if ($Every -gt 1) { $taskSampled=[Collections.Generic.List[string]]::new(); for ($i=0; $i -lt $taskSelected.Count; $i+=$Every) { $taskSampled.Add($taskSelected[$i]) }; $taskSelected=$taskSampled }
 $taskCases=$taskSelected.ToArray()
-if ($CaseFile) { $taskCases=@(Get-Content -LiteralPath $CaseFile | Where-Object { $_ -match '^dEQP-' }); $taskMatched=$taskCases.Count }
+# ReadAllLines, not Get-Content: Get-Content strings carry PSPath and other note
+# properties, and ConvertTo-Json then writes each case name as an object.
+if ($CaseFile) { $taskCases=@([IO.File]::ReadAllLines($CaseFile) | Where-Object { $_ -match '^dEQP-' }); $taskMatched=$taskCases.Count }
 if (-not $taskCases.Count) { throw "No CTS cases match $Case" }
 if ($MaxCases -gt 0 -and $taskCases.Count -gt $MaxCases) { $taskCases=$taskCases[0..($MaxCases-1)] }
 if ($Jobs -gt 1 -and $taskCases.Count -gt 1) {
@@ -147,30 +149,39 @@ if ($Jobs -gt 1 -and $taskCases.Count -gt 1) {
     return
 }
 $taskResults=[ordered]@{}
-$taskNext=0; $taskRun=0; $taskCrashes=0
+$taskRun=0; $taskCrashes=0
 $taskWatch=[Diagnostics.Stopwatch]::StartNew()
-while ($taskNext -lt $taskCases.Count -and $taskCrashes -le $MaxCrashes) {
-    $remaining=$taskCases[$taskNext..($taskCases.Count-1)]
+# deqp-vk runs a case list in the order of its own test tree, not of the file,
+# and exits non-zero whenever a case failed. What is left after a run is
+# therefore "the cases without a result", never "the cases after the last one
+# seen" (that reran most of a list over and over once it held a failure).
+$remaining=[Collections.Generic.List[string]]::new([string[]]$taskCases)
+while ($remaining.Count -and $taskCrashes -le $MaxCrashes) {
     $listFile=Join-Path $taskOut ("cases-{0:d3}.txt" -f $taskRun); $qpa=Join-Path $taskOut ("results-{0:d3}.qpa" -f $taskRun)
     [IO.File]::WriteAllLines($listFile, [string[]]$remaining, [Text.ASCIIEncoding]::new())
     $run=Start-Deqp @('--deqp-caselist-file='+$listFile, '--deqp-log-filename='+$qpa, '--deqp-visibility=hidden', '--deqp-log-images=disable',
         '--deqp-log-shader-sources=disable', '--deqp-log-flush=enable') ([Math]::Max($CaseSeconds, [Math]::Min(36000, $CaseSeconds*$remaining.Count))) ("run-{0:d3}" -f $taskRun)
-    $current=$null; $finished=0; $last=$null
+    $current=$null; $finished=0; $sessionEnded=$false
     if (Test-Path -LiteralPath $qpa) {
         foreach ($line in [IO.File]::ReadLines($qpa)) {
             if ($line.StartsWith('#beginTestCaseResult ')) { $current=$line.Substring(21).Trim() }
-            elseif ($current -and $line -match '<Result StatusCode="([^"]+)"') { $taskResults[$current]=$Matches[1]; $last=$current; $current=$null; ++$finished }
+            elseif ($current -and $line -match '<Result StatusCode="([^"]+)"') { $taskResults[$current]=$Matches[1]; $current=$null; ++$finished }
+            elseif ($line.StartsWith('#endSession')) { $sessionEnded=$true }
         }
     }
     if ($current) {     # the process died or hung inside this case
         $taskResults[$current]=$(if ($run.timedOut) { 'Timeout' } else { 'Crash' }); ++$taskCrashes
-        $taskNext=[Array]::IndexOf($taskCases, $current)+1
-    } elseif ($finished -eq 0 -and ($run.exitCode -or $run.timedOut)) {
-        $taskResults[$remaining[0]]=$(if ($run.timedOut) { 'Timeout' } else { 'Crash' }); ++$taskCrashes; ++$taskNext
-    } elseif ($run.exitCode -or $run.timedOut) {   # died between cases (e.g. after a DeviceLost result)
-        $taskNext=[Array]::IndexOf($taskCases, $last)+1
-    } else { $taskNext=$taskCases.Count }
+    } elseif ($finished -eq 0 -and -not $sessionEnded) {   # nothing ran at all: charge the first case
+        $taskResults[$remaining[0]]=$(if ($run.timedOut) { 'Timeout' } else { 'Crash' }); ++$taskCrashes
+    }
     ++$taskRun
+    # A session that ended without running anything: the rest are names this
+    # deqp-vk does not have. (A session also "ends" when a ResourceError aborts
+    # the run, so an ended session alone does not mean the list is done.)
+    if ($sessionEnded -and -not $current -and $finished -eq 0) { break }
+    $left=[Collections.Generic.List[string]]::new()
+    foreach ($case in $remaining) { if (-not $taskResults.Contains($case)) { $left.Add($case) } }
+    $remaining=$left
 }
 $taskGroups=$taskResults.GetEnumerator() | Group-Object Value
 $taskCounts=[ordered]@{}; foreach ($group in ($taskGroups | Sort-Object Name)) { $taskCounts[$group.Name]=$group.Count }
