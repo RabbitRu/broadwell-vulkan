@@ -22,7 +22,7 @@ names = {
     'src/intel/compiler/meson.build', 'src/intel/dev/meson.build',
     'src/intel/dev/intel_debug.c', 'src/intel/dev/intel_device_info.c',
     'src/util/macros.h', 'src/util/u_atomic.h', 'src/util/memstream.c', 'include/drm-uapi/drm_fourcc.h',
-    'src/compiler/shader_enums.h', 'src/compiler/shader_info.h',
+    'src/compiler/shader_enums.h', 'src/compiler/shader_info.h', 'src/compiler/nir/nir_serialize.c',
     'src/intel/compiler/elk/elk_eu.c', 'src/intel/compiler/elk/meson.build', 'src/intel/compiler/elk/elk_shader.cpp',
     'src/intel/compiler/elk/elk_schedule_instructions.cpp', 'src/intel/compiler/elk/elk_ir_performance.cpp',
     'src/intel/compiler/elk/elk_compiler.c', 'src/intel/blorp/blorp_elk.c',
@@ -1250,6 +1250,28 @@ edit("src/compiler/shader_enums.h", [
 edit("src/compiler/shader_info.h", [
     ('enum shader_info_hash_type {', 'enum shader_info_hash_type SHADER_ENUM_BASE {'),
 ])
+# Upstream bug (any ABI): nir_jump_abort was added before nir_jump_break, so
+# nir_jump_continue is 4, but the serialized jump keeps its type in two bits,
+# guarded only by an assert that release builds drop. continue was written as
+# 0 and read back as nir_jump_return. HasVK serializes every shader's NIR
+# right after spirv_to_nir (anv_device_upload_nir) and the next pipeline built
+# from the same module reads it back, so a loop with continue in it ended the
+# whole shader invocation instead. Three bits hold every serializable type
+# (goto/goto_if are not serialized). The texture opcode (34 values) and texture
+# source type (33) have outgrown their five bits the same way; both structs
+# have spare padding, so they get six. Those overflows are not reachable here
+# (the Intel sparse opcodes appear only in the ELK back end, after the NIR
+# cache; block/box size sources are Qualcomm-only), but cost nothing to close.
+edit("src/compiler/nir/nir_serialize.c", [
+    ('      unsigned instr_type : 4;\n      unsigned type : 2;\n      unsigned _pad : 26;\n   } jump;',
+     '      unsigned instr_type : 4;\n      unsigned type : 3;\n      unsigned _pad : 25;\n   } jump;'),
+    ('   assert(jmp->type < 4);', '   assert(jmp->type < 8);'),
+    ('      unsigned num_srcs : 4;\n      unsigned op : 5;\n      unsigned _pad : 11;\n',
+     '      unsigned num_srcs : 4;\n      unsigned op : 6;\n      unsigned _pad : 10;\n'),
+    ('   assert(tex->op < 32);', '   assert(tex->op < 64);'),
+    ('      unsigned src_type : 5; /* <-- Footer */\n      unsigned _pad : 5;\n',
+     '      unsigned src_type : 6; /* <-- Footer */\n      unsigned _pad : 4;\n'),
+])
 edit("src/util/macros.h", [
     ("#define PRAGMA_POISON\n", "#define PRAGMA_POISON(X)\n"),
 ])
@@ -1417,6 +1439,7 @@ owned_sources['src/intel/wddm_compiler/anv_wddm_format_table.c'] = (
     formats[:format_split] + '#ifdef HASVK_WDDM_GRAPHICS\n' + format_caps + '\n#endif\n')
 owned_sources.update(generate_compute_sources(originals))
 owned_sources.update(generate_graphics_sources(originals))
+owned_sources['src/intel/wddm_compiler/nir_serialize_test.c'] = (ROOT / 'native/tests/nir_serialize_test.c').read_text(encoding='utf-8')
 for name in ['hasvk_wddm.h', 'hasvk_wddm.hpp']:
     owned_sources['src/intel/wddm/' + name] = (ROOT / 'native/include' / name).read_text(encoding='utf-8')
 for name in ['hasvk_wddm.cpp', 'hasvk_wddm_c.cpp', 'intel_2019_profile.cpp']:
@@ -1434,6 +1457,12 @@ executable('IrisImageProbe', 'image_probe.c',
   dependencies : [idep_nir, idep_intel_dev, idep_intel_compiler_elk, idep_genxml, idep_mesautil,
     cc.find_library('gdi32'), cc.find_library('dxgi')],
   c_args : [c_msvc_compat_args, '-DGFX_VERx10=80'],
+  win_subsystem : 'console',
+)
+executable('IrisNirSerializeTest', 'nir_serialize_test.c',
+  include_directories : [inc_include, inc_src],
+  dependencies : [idep_nir, idep_mesautil],
+  c_args : [c_msvc_compat_args],
   win_subsystem : 'console',
 )
 anv_wddm_entrypoints = custom_target('anv_wddm_entrypoints',

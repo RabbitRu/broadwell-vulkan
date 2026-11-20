@@ -10,6 +10,15 @@ if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot 'build-mesa-compiler.ps1')
     & (Join-Path $PSScriptRoot 'build-native.ps1') -BuildOnly
 }
+$taskAttempt.stage='nir-serialize'
+# HasVK's NIR cache serializes every shader; packed fields must survive it.
+$taskSerializeTest=Join-Path $taskRoot 'build\mesa-compiler-clang\src\intel\wddm_compiler\IrisNirSerializeTest.exe'
+$taskSavedPath=$env:PATH
+$env:PATH=(Join-Path $taskRoot 'build\mesa-compiler-clang\subprojects\zlib-1.3.1')+';'+$env:PATH
+& $taskSerializeTest
+$taskSerializeExit=$LASTEXITCODE
+$env:PATH=$taskSavedPath
+if ($taskSerializeExit) { throw 'NIR serialize round trip changed values' }
 $taskAttempt.stage='native'
 & (Join-Path $PSScriptRoot 'test-native.ps1') -SkipBuild
 $taskAttempt.stage='elk'

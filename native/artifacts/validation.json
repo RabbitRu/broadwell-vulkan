@@ -1,109 +1,109 @@
 ﻿{
     "schema":  1,
-    "testedUtc":  "2026-11-20T14:02:57.1789226Z",
+    "testedUtc":  "2026-11-20T14:57:27.1015707Z",
     "hardware":  "Intel Iris 6100 8086:162b",
     "driverVersion":  "20.19.15.5171",
-    "executableSha256":  "0803e4e3122aab3c557858e43cb3354a290abb7ca31ca2f66336dac0ca426127",
+    "executableSha256":  "893ad863e2e9c8048388f7ad36107bee3d3057a89429b590eb6cba6b53ffa333",
     "positiveCases":  [
                           {
                               "case":  "batch-chain-0",
                               "passed":  true,
-                              "reportSha256":  "dfc83aa4f240e05eb63838ffeb528982ce634209ae4fbf5ed3cadae63f710539"
+                              "reportSha256":  "6b3e90c2766615eaa021c5846efaa1306752b9a0e01d6738576bd62bfbc2e022"
                           },
                           {
                               "case":  "compute-1",
                               "passed":  true,
-                              "reportSha256":  "ea2b33e1a6336882e7f75fe42e4255c6f3ba67e8954ac3a5425db778f6abca0a"
+                              "reportSha256":  "43447688faaa0c1ee07c75ce507a6d7575847413e5c372ead411083a3434e4b5"
                           },
                           {
                               "case":  "compute-16381",
                               "passed":  true,
-                              "reportSha256":  "149e5eb849b5f35d071d4770a950a7895de2967c06dc8ae41745233a2eaa7142"
+                              "reportSha256":  "90b66ade177ece3b004fa9c9ef08b0eeed8306a2d4a3693642efa2dbf5da9d61"
                           },
                           {
                               "case":  "compute-257",
                               "passed":  true,
-                              "reportSha256":  "be289bc28438ca25546f830092b532c1177d12871cdf3157a9586363c4a4d850"
+                              "reportSha256":  "d84f290841d1bc6a0205f3b575d3b895fa499067f37c08c22df21c3c699089a1"
                           },
                           {
                               "case":  "generated-compute-1",
                               "passed":  true,
-                              "reportSha256":  "c8873219db8eaae0ca238f987069a0146c10e73086d0eaa497bd979721f4ca3f"
+                              "reportSha256":  "be25c018d977b2282ab489060a6b943f344791a95268d634691ddd5216495690"
                           },
                           {
                               "case":  "generated-compute-16381",
                               "passed":  true,
-                              "reportSha256":  "cd2e1079184eceaf64c14eb49280b1e492eb3375687a32d2b17e2db3a9dbd88d"
+                              "reportSha256":  "785b45c224c461233e0f2f3d6be5c50bbfe6596948180b4415efa166583a970a"
                           },
                           {
                               "case":  "generated-compute-257",
                               "passed":  true,
-                              "reportSha256":  "975194070818f3453f2ff8ba837feaaf8d45929c1a0a197e46048c458045cf53"
+                              "reportSha256":  "128a164bd41f1aace4913cf11cd1af5d59dc45c5c989bc7d180743ac4b05cf0c"
                           },
                           {
                               "case":  "generated-store-1048576",
                               "passed":  true,
-                              "reportSha256":  "e5d1c495c82669c2d8ce277bba03d74bd859b477411e81779826a24657b9cfd8"
+                              "reportSha256":  "cd94b70506e6e3375b98751fd58693058bb00d0d57ce586f425fb2deaf229ab8"
                           },
                           {
                               "case":  "generated-store-12288",
                               "passed":  true,
-                              "reportSha256":  "417001588cce71f171f45a3b6cd084fede302c88ab58a231442f7b732ec2cbd6"
+                              "reportSha256":  "a081042b5b161aa4001a7dd36a32d1c0df07d687d796a975adeb2f181bee1780"
                           },
                           {
                               "case":  "generated-store-131072",
                               "passed":  true,
-                              "reportSha256":  "82b793a381e75f8e200635b0fced4c7c0ea3d65580f660a218fecf4f76805607"
+                              "reportSha256":  "fa7849c85204c8919fb5c7b36760c314d858e6697be17eb1adf9e028b692b0a1"
                           },
                           {
                               "case":  "generated-store-4096",
                               "passed":  true,
-                              "reportSha256":  "298d90478e7f2b5cc652d4c47d2dcf4d98a5a580aa30dd93c77f8112ef03654d"
+                              "reportSha256":  "3ec855391792d03faa884af66ce7ed71be5343cf1ab3c8e4123c8315ae06cff6"
                           },
                           {
                               "case":  "generated-store-4194304",
                               "passed":  true,
-                              "reportSha256":  "924d688943ffcbbe61733e58fe5ff140e9b6802af95f104577f562c1b6f265c8"
+                              "reportSha256":  "2b8e84988389d3e005433ace8c77d813f1346777fbb87107c4fb585841634eb8"
                           },
                           {
                               "case":  "generated-store-65536",
                               "passed":  true,
-                              "reportSha256":  "fbe82fac28a80dc3903abbe09ed81b2cf351451613f58c9c9e95fb80aaae8bb0"
+                              "reportSha256":  "e7c758477e035d7d5e698479f2f0c570c848a6e6621386e52a28e9436e105f1f"
                           },
                           {
                               "case":  "generated-store-69632",
                               "passed":  true,
-                              "reportSha256":  "29e7af8015803d7016be479a0230a0a14fc8f359893ab123f45549627f41985d"
+                              "reportSha256":  "69bf81093571dc24aece26da21e8b7ed798ab406e1a7c5f78e36958edbb8e9f6"
                           },
                           {
                               "case":  "generated-store-8192",
                               "passed":  true,
-                              "reportSha256":  "5412fdb5f9118611c3368be9752848a506fae834eecfdecda1d2fe3ce42f6baf"
+                              "reportSha256":  "e7c3df17f3c1684f9188707afcaf063c3788d40d7e05e5194dfac4b333766db1"
                           },
                           {
                               "case":  "profile-0",
                               "passed":  true,
-                              "reportSha256":  "21b69216bab8e045a6ee60c5f8b47947686cdc971dbf648ed68a6cdd65aad890"
+                              "reportSha256":  "b1a0320364d59b98422b2035bd9e5b36c8ea4440516d9fb79daea4becf4cadb7"
                           },
                           {
                               "case":  "store-0",
                               "passed":  true,
-                              "reportSha256":  "8d380a0249f1ea097de9f84b966b88df344bfc243ea38047a45262f1520f7cce"
+                              "reportSha256":  "4b61b55fefa15f10858aaed0abba223999e1f88716cbdbfce5e682d636b4af96"
                           },
                           {
                               "case":  "va-0",
                               "passed":  true,
-                              "reportSha256":  "1605fbd31709ab2c04b473b4a43f07dae39872d8de5fdcd73c9b39de9bbc101a"
+                              "reportSha256":  "3cfa0891497497aace992358daf2d95cc548dd7718665437391c9d73bdab035a"
                           },
                           {
                               "case":  "va-layout-0",
                               "passed":  true,
-                              "reportSha256":  "d6b807842ead8e47a86b592b19667f30b9dbea32eaa7fd372b6ad8a10132aaf8"
+                              "reportSha256":  "79b9c3c0e4007015cd445374006c80c0f6b24b9ab25eb268148e1803f4ceec80"
                           },
                           {
                               "case":  "va-pool-0",
                               "passed":  true,
-                              "reportSha256":  "2e7c771b0fa7095274748b75f11cf1bee193c024a3b8936a057f94f51b1f7820"
+                              "reportSha256":  "0d9656382dba5ee91db25fb538c5a8e6d21b53c133457f9636dc10c5bbceccd6"
                           }
                       ],
     "negativeCases":  [

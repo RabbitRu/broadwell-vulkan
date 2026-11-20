@@ -26,9 +26,9 @@ $taskCpuArgs = "['/clang:-march=broadwell']"
 & $taskToolchain.python -m mesonbuild.mesonmain configure $taskMesaBuild "-Dhasvk-wddm-graphics=$($Graphics.IsPresent.ToString().ToLowerInvariant())" "-Db_ndebug=$(if ($Asserts) { 'false' } else { 'true' })" "-Dc_args=$taskCpuArgs" "-Dcpp_args=$taskCpuArgs"
 if ($LASTEXITCODE) { throw 'Mesa graphics option configuration failed' }
 if (-not $ConfigureOnly) {
-    & $taskToolchain.python -m mesonbuild.mesonmain compile -C $taskMesaBuild -j 2 intel_compiler_elk intel_dev IrisElkCompile IrisImageProbe vulkan_runtime vulkan_lite_runtime vulkan_instance vulkan_util vulkan_wsi vulkan_hasvk_wddm
+    & $taskToolchain.python -m mesonbuild.mesonmain compile -C $taskMesaBuild -j 2 intel_compiler_elk intel_dev IrisElkCompile IrisImageProbe IrisNirSerializeTest vulkan_runtime vulkan_lite_runtime vulkan_instance vulkan_util vulkan_wsi vulkan_hasvk_wddm
     if ($LASTEXITCODE) { throw 'Mesa compiler build failed' }
-    $taskProducts=@('src\intel\wddm_compiler\IrisElkCompile.exe','src\intel\wddm_compiler\IrisImageProbe.exe',
+    $taskProducts=@('src\intel\wddm_compiler\IrisElkCompile.exe','src\intel\wddm_compiler\IrisImageProbe.exe','src\intel\wddm_compiler\IrisNirSerializeTest.exe',
         'src\intel\wddm_compiler\libhasvk_wddm.a','src\intel\wddm_compiler\libwddm_blorp.a',
         'src\vulkan\runtime\libvulkan_runtime.a','src\vulkan\runtime\libvulkan_instance.a','src\vulkan\wsi\libvulkan_wsi.a',
         'src\intel\wddm_compiler\vulkan_hasvk_wddm.dll')
