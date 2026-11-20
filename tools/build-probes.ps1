@@ -13,6 +13,8 @@ build\probes (they are not part of test-all):
   Process tools:
     rip_sampler        sampling profiler with stacks (<pid> <seconds> [symbols] [module])
     stack_dump         stacks of every thread of a hung process
+    gpu_freq_monitor   actual GPU frequency (RPSTAT1) while another process renders
+                       (<duration ms> [interval ms]); native WDDM transport
     d3d11-proxy\d3d11.dll  timing proxy of Intel's D3D11 driver for run-talos.ps1 -D3D11Proxy
   Shaders (SPIR-V for the Vulkan probes), with glslangValidator from the local
   Vulkan SDK (-Glslang to point elsewhere).
@@ -50,6 +52,15 @@ foreach ($name in 'd3d11_depth_fill_probe', 'd3d11_flops_probe', 'd3d11_sample_p
 foreach ($name in 'rip_sampler', 'stack_dump') {
    Build $name @('dbghelp.lib', 'psapi.lib', 'winmm.lib')
 }
+# GPU frequency monitor: native WDDM transport, reads RPSTAT1 while another
+# process renders (any API).
+$freqObjects = Join-Path $out 'gpu_freq_monitor.obj.d'
+New-Item -ItemType Directory -Force $freqObjects | Out-Null
+$freqSources = @('native\src\hasvk_wddm.cpp', 'native\src\intel_2019_profile.cpp', 'native\tests\gpu_freq_monitor.cpp') | ForEach-Object { Join-Path $taskRoot $_ }
+$freqLog = & cl.exe /nologo /std:c++17 /EHsc /MT /O2 /utf-8 /W3 /D_WIN32_WINNT=0x0A00 "/I$(Join-Path $taskRoot 'native\include')" @freqSources "/Fo$freqObjects\" "/Fe$(Join-Path $out 'gpu_freq_monitor.exe')" /link gdi32.lib user32.lib dxgi.lib 2>&1
+if ($LASTEXITCODE) { $failed += 'gpu_freq_monitor'; $freqLog | Select-String 'error' | Select-Object -First 5 | ForEach-Object { "  gpu_freq_monitor: $($_.Line.Trim())" } }
+else { "  built gpu_freq_monitor.exe" }
+Remove-Item -LiteralPath $freqObjects -Recurse -ErrorAction SilentlyContinue
 # The D3D11 timing proxy (run-talos.ps1 -D3D11Proxy build\probes\d3d11-proxy\d3d11.dll).
 $proxyOut = Join-Path $out 'd3d11-proxy'
 New-Item -ItemType Directory -Force $proxyOut | Out-Null
