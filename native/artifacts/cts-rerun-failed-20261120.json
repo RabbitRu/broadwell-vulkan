@@ -1,0 +1,23 @@
+﻿{
+    "schema":  1,
+    "testedUtc":  "2026-11-20T09:43:32.8063926Z",
+    "cts":  "vulkan-cts-1.4.5.5",
+    "pattern":  "dEQP-VK.synchronization2.op.single_queue.barrier.write_draw_read_image_vertex.image_128x128_r8g8b8a8_unorm_specialized_access_flag",
+    "icdSha256":  "7ca6cb7eb13cb9617458312fa51d254d26c4758414a87e9341173c1f550a64ef",
+    "matched":  88,
+    "every":  1,
+    "selected":  88,
+    "executed":  88,
+    "processRuns":  1,
+    "seconds":  58.7,
+    "counts":  {
+                   "Fail":  1,
+                   "Pass":  87
+               },
+    "notPassing":  [
+                       {
+                           "case":  "dEQP-VK.api.driver_properties.conformance_version",
+                           "status":  "Fail"
+                       }
+                   ]
+}
