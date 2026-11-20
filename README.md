@@ -18,12 +18,17 @@
   [docs/cts-expected-failures.md](docs/cts-expected-failures.md).
 - Проверенные приложения: `vulkaninfo`, `vkcube`, `vkcubepp`, The Talos
   Principle.
-- Текущая работа — производительность. Цель: Vulkan быстрее DX11 в The Talos
-  Principle. Сейчас 70–83 FPS (чаще 75–79) против 79–87 у DX11 на драйвере
-  Intel в тех же сериях прогонов (в начале работы — 27,8 FPS). На одинаковой
-  работе драйвер вровень с драйвером Intel; остаток разрыва задаёт путь Vulkan
-  самой игры (тени заново каждый кадр забирают общий бюджет питания CPU и GPU) —
-  разбор в [docs/optimizations-vs-dx11.md](docs/optimizations-vs-dx11.md).
+- Производительность в The Talos Principle: 70–83 FPS (чаще 75–79) против
+  79–87 у DX11 на драйвере Intel в тех же сериях прогонов (в начале работы —
+  27,8 FPS). На главном потоке игры драйвер обходится дешевле драйвера Intel
+  примерно на 1 мс на кадр; разрыв задаёт путь Vulkan самой игры, и
+  универсальными исправлениями драйвера он не закрывается — разбор в
+  [docs/optimizations-vs-dx11.md](docs/optimizations-vs-dx11.md).
+- Конечная цель — Dota 2 под Vulkan быстрее, чем под DX11; к ней ещё не
+  приступали ([docs/roadmap.md](docs/roadmap.md), этап 8).
+- Зависание GPU на этой версии драйвера ядра Intel дважды закончилось
+  критической ошибкой системы; главная причина зависаний исправлена, два
+  теста CTS по-прежнему вешают видеодвижок (roadmap, раздел 3).
 
 ![vkcube на Iris 6100 через HasVK/WDDM ICD](native/artifacts/vkcube-preview.png)
 
