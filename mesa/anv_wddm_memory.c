@@ -197,6 +197,14 @@ alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo
    if (!size || size > ANV_WDDM_MAX_BO_BYTES)
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    size = align64(size, 4096);
+   /* HASVK_WDDM_BO_ALIGN_2M=1 (measurement): BOs of 2 MiB and more get a
+    * 2 MiB-aligned address and size, so the kernel driver could map them with
+    * 2 MiB GPU pages (fewer TLB misses), if it does that at all. */
+   static int align_2m = -1;
+   if (align_2m < 0) { const char *e = getenv("HASVK_WDDM_BO_ALIGN_2M"); align_2m = e && atoi(e) > 0; }
+   const uint64_t va_align = align_2m && !fixed && !low && size >= (2ull << 20) ? (2ull << 20) : 4096;
+   size = align64(size, va_align);
+   if (size > ANV_WDDM_MAX_BO_BYTES) return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    struct anv_bo *bo = calloc(1, sizeof(*bo));
    if (!bo) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    struct anv_wddm_device_state *w = device->wddm;
@@ -213,7 +221,7 @@ alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo
    }
    struct util_vma_heap *heap = fixed ? &w->state_heap : low ? &w->scratch_heap : &w->client_heap;
    uint64_t address = fixed ? (util_vma_heap_alloc_addr(heap, explicit_address, size) ? explicit_address : 0) :
-      util_vma_heap_alloc(heap, size, 4096);
+      util_vma_heap_alloc(heap, size, va_align);
    if (!address) {
       mtx_unlock(&w->alloc_mutex); free(bo);
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);

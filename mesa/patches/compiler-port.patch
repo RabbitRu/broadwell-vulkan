@@ -1477,7 +1477,18 @@
     } else if ((aspect & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV) && image->vk.samples == 1) {
        if (image->n_planes != 1) {
           /* Multiplanar images seem to hit a sampler bug with CCS and R16G16
-@@ -623,7 +622,7 @@
+@@ -611,6 +610,10 @@
+          return VK_SUCCESS;
+       }
+ 
++#ifdef _WIN32
++      if (image->vk.mip_levels > 1 || image->vk.array_layers > 1 || image->from_wsi)
++         return VK_SUCCESS;
++#endif
+       ok = isl_surf_get_ccs_surf(&device->isl_dev,
+                                  &image->planes[plane].primary_surface.isl,
+                                  &image->planes[plane].aux_surface.isl,
+@@ -623,7 +626,7 @@
        enum anv_image_memory_binding binding =
           ANV_IMAGE_MEMORY_BINDING_PLANE_0 + plane;
  
@@ -1486,7 +1497,7 @@
           binding = ANV_IMAGE_MEMORY_BINDING_PRIVATE;
  
        result = add_surface(device, image, &image->planes[plane].aux_surface,
-@@ -849,7 +848,7 @@
+@@ -849,7 +852,7 @@
            * buffer (ANV_IMAGE_MEMORY_BINDING_PRIVATE).
            */
           if (anv_image_is_externally_shared(image) &&
@@ -1495,7 +1506,7 @@
              binding = ANV_IMAGE_MEMORY_BINDING_PRIVATE;
           }
  
-@@ -913,14 +912,14 @@
+@@ -913,14 +916,14 @@
                       const struct anv_image *image)
  {
     /* Image must have a modifier if and only if it has modifier tiling. */
@@ -1513,7 +1524,7 @@
  
     /* Driver must support the modifier. */
     assert(isl_drm_modifier_get_score(device->info, isl_mod_info->modifier));
-@@ -1175,6 +1174,24 @@
+@@ -1175,6 +1178,24 @@
     const struct isl_drm_modifier_info *isl_mod_info = NULL;
     VkResult r;
  
@@ -1538,7 +1549,7 @@
     vk_image_init(&device->vk, &image->vk, pCreateInfo);
  
     image->vk.usage = anv_image_create_usage(pCreateInfo, image->vk.usage);
-@@ -1198,8 +1215,10 @@
+@@ -1198,8 +1219,10 @@
        }
  
        assert(isl_mod_info);
@@ -1550,7 +1561,7 @@
     }
  
     for (int i = 0; i < ANV_IMAGE_MEMORY_BINDING_END; ++i) {
-@@ -1769,7 +1788,7 @@
+@@ -1769,7 +1792,7 @@
           UNREACHABLE("bad VkImageAspectFlags");
        }
  
@@ -1559,7 +1570,7 @@
           assert(image->n_planes == 1);
           /* If the memory binding differs between primary and aux, then the
            * returned offset will be incorrect.
-@@ -1922,7 +1941,7 @@
+@@ -1922,7 +1945,7 @@
        assert(image->vk.aspects == VK_IMAGE_ASPECT_COLOR_BIT);
  
        enum isl_aux_state aux_state =
@@ -1568,7 +1579,7 @@
  
        switch (aux_state) {
        case ISL_AUX_STATE_AUX_INVALID:
-@@ -1971,7 +1990,7 @@
+@@ -1971,7 +1994,7 @@
         *
         * TODO: Should we be disabling this in more cases?
         */
@@ -1577,7 +1588,7 @@
           aux_supported = false;
           clear_supported = false;
        }
-@@ -2002,6 +2021,17 @@
+@@ -2002,6 +2025,17 @@
     }
  
     switch (aux_usage) {
@@ -1595,7 +1606,7 @@
     case ISL_AUX_USAGE_CCS_D:
        /* We only support clear in exactly one state */
        if (layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
-@@ -2125,7 +2155,7 @@
+@@ -2125,7 +2159,7 @@
     /* We don't support MSAA fast-clears on Ivybridge or Bay Trail because they
      * lack the MI ALU which we need to determine the predicates.
      */
@@ -1604,7 +1615,7 @@
        return ANV_FAST_CLEAR_NONE;
  
     enum isl_aux_state aux_state =
-@@ -2228,22 +2258,9 @@
+@@ -2228,22 +2262,9 @@
        surface = &image->planes[plane].shadow_surface;
     }
  
@@ -1627,7 +1638,7 @@
  
     /* If this is a HiZ buffer we can sample from with a programmable clear
      * value (SKL+), define the clear value to the optimal constant.
-@@ -2316,7 +2333,7 @@
+@@ -2316,7 +2337,7 @@
           assert(ok);
           isl_surf = &tmp_surf;
  
@@ -1636,7 +1647,7 @@
              assert(surface->isl.tiling == ISL_TILING_LINEAR);
              assert(tile_x_sa == 0);
              assert(tile_y_sa == 0);
-@@ -2331,7 +2348,7 @@
+@@ -2331,7 +2352,7 @@
        state_inout->aux_address = aux_address;
  
        struct anv_address clear_address = ANV_NULL_ADDRESS;
@@ -1645,7 +1656,7 @@
           clear_address = anv_image_get_clear_color_addr(device, image, aspect);
        }
        state_inout->clear_address = clear_address;
-@@ -2362,7 +2379,7 @@
+@@ -2362,7 +2383,7 @@
           state_inout->aux_address.offset |= *aux_addr_dw & 0xfff;
        }
  
@@ -1654,6 +1665,116 @@
           uint32_t *clear_addr_dw = state_inout->state.map +
                                     device->isl_dev.ss.clear_color_state_offset;
           assert((clear_address.offset & 0x3f) == 0);
+--- a/src/intel/common/intel_l3_config.c
++++ b/src/intel/common/intel_l3_config.c
+@@ -195,7 +195,7 @@
+           *       we have no way to identify them right now.
+           */
+          return &dg2_l3_list;
+-      } else if (devinfo->platform == INTEL_PLATFORM_DG1 || devinfo->verx10 == 125)
++      } else if (devinfo->platform == INTEL_PLATFORM_DG1 || false)
+          return &empty_l3_list;
+       else
+          return &tgl_l3_list;
+@@ -285,10 +285,10 @@
+ {
+    struct intel_l3_weights w = {{ 0 }};
+ 
+-   w.w[INTEL_L3P_SLM] = devinfo->ver < 11 && needs_slm;
+-   w.w[INTEL_L3P_URB] = devinfo->verx10 < 125 ? 1.0 : 0.0;
+-
+-   if (devinfo->ver >= 8) {
++   w.w[INTEL_L3P_SLM] = true && needs_slm;
++   w.w[INTEL_L3P_URB] = true ? 1.0 : 0.0;
++
++   if (true) {
+       w.w[INTEL_L3P_ALL] = 1.0;
+    } else {
+       w.w[INTEL_L3P_DC] = needs_dc ? 0.1 : 0;
+@@ -301,14 +301,35 @@
+ /**
+  * Get the default L3 configuration
+  */
++#ifdef _WIN32
++#include <stdlib.h>
++static const struct intel_l3_config *
++wddm_forced_l3_config(const struct intel_device_info *devinfo, bool slm)
++{
++   static int forced = -2;
++   if (forced == -2) {
++      const char *e = getenv("HASVK_WDDM_L3");
++      forced = e && *e ? atoi(e) : -1;
++   }
++   const struct intel_l3_list *const list = get_l3_list(devinfo);
++   if (forced < 0 || forced >= (int)list->length) return NULL;
++   const struct intel_l3_config *cfg = &list->configs[forced];
++   return (cfg->n[INTEL_L3P_SLM] > 0) == slm ? cfg : NULL;
++}
++#endif
++
+ const struct intel_l3_config *
+ intel_get_default_l3_config(const struct intel_device_info *devinfo)
+ {
++#ifdef _WIN32
++   const struct intel_l3_config *forced = wddm_forced_l3_config(devinfo, false);
++   if (forced) return forced;
++#endif
+    /* For efficiency assume that the first entry of the array matches the
+     * default configuration.
+     */
+    const struct intel_l3_list *const list = get_l3_list(devinfo);
+-   assert(list->length > 0 || devinfo->ver >= 12);
++   assert(list->length > 0 || false);
+    if (list->length > 0) {
+       const struct intel_l3_config *const cfg = &list->configs[0];
+       assert(cfg == intel_get_l3_config(devinfo,
+@@ -331,6 +352,10 @@
+    const struct intel_l3_config *const cfgs = list->configs;
+    const struct intel_l3_config *cfg_best = NULL;
+    float dw_best = HUGE_VALF;
++#ifdef _WIN32
++   const struct intel_l3_config *forced = wddm_forced_l3_config(devinfo, w0.w[INTEL_L3P_SLM] > 0);
++   if (forced) return forced;
++#endif
+ 
+    for (int i = 0; i < list->length; i++) {
+       const struct intel_l3_config *cfg = &cfgs[i];
+@@ -342,7 +367,7 @@
+       }
+    }
+ 
+-   assert(cfg_best || devinfo->ver >= 12);
++   assert(cfg_best || false);
+    return cfg_best;
+ }
+ 
+@@ -357,7 +382,7 @@
+     */
+    const unsigned way_size_per_bank =
+       devinfo->platform == INTEL_PLATFORM_MTL_U ? 8 :
+-      (devinfo->ver >= 9 && devinfo->l3_banks == 1) || devinfo->ver >= 11 ? 4 :
++      (false && devinfo->l3_banks == 1) || false ? 4 :
+       2;
+ 
+    assert(devinfo->l3_banks);
+@@ -371,7 +396,7 @@
+ static unsigned
+ get_urb_size_scale(const struct intel_device_info *devinfo)
+ {
+-   return (devinfo->ver >= 8 ? devinfo->num_slices : 1);
++   return (true ? devinfo->num_slices : 1);
+ }
+ 
+ unsigned
+@@ -402,7 +427,7 @@
+     * allocation of the L3 data array to provide 3*384KB=1152KB for URB, but
+     * only 1008KB of this will be used."
+     */
+-   const unsigned max = (devinfo->ver == 9 ? 1008 : ~0);
++   const unsigned max = (false ? 1008 : ~0);
+    return MIN2(max, urb_size) / get_urb_size_scale(devinfo);
+ }
+ 
 --- a/src/intel/blorp/blorp_clear.c
 +++ b/src/intel/blorp/blorp_clear.c
 @@ -29,7 +29,11 @@
@@ -4748,77 +4869,6 @@
        /* Spec give us a table with Throttle value | SIMD | MAX API threads(LWS).
         * HW threads = MAX API threads(LWS) / SIMD
         */
---- a/src/intel/common/intel_l3_config.c
-+++ b/src/intel/common/intel_l3_config.c
-@@ -195,7 +195,7 @@
-           *       we have no way to identify them right now.
-           */
-          return &dg2_l3_list;
--      } else if (devinfo->platform == INTEL_PLATFORM_DG1 || devinfo->verx10 == 125)
-+      } else if (devinfo->platform == INTEL_PLATFORM_DG1 || false)
-          return &empty_l3_list;
-       else
-          return &tgl_l3_list;
-@@ -285,10 +285,10 @@
- {
-    struct intel_l3_weights w = {{ 0 }};
- 
--   w.w[INTEL_L3P_SLM] = devinfo->ver < 11 && needs_slm;
--   w.w[INTEL_L3P_URB] = devinfo->verx10 < 125 ? 1.0 : 0.0;
--
--   if (devinfo->ver >= 8) {
-+   w.w[INTEL_L3P_SLM] = true && needs_slm;
-+   w.w[INTEL_L3P_URB] = true ? 1.0 : 0.0;
-+
-+   if (true) {
-       w.w[INTEL_L3P_ALL] = 1.0;
-    } else {
-       w.w[INTEL_L3P_DC] = needs_dc ? 0.1 : 0;
-@@ -308,7 +308,7 @@
-     * default configuration.
-     */
-    const struct intel_l3_list *const list = get_l3_list(devinfo);
--   assert(list->length > 0 || devinfo->ver >= 12);
-+   assert(list->length > 0 || false);
-    if (list->length > 0) {
-       const struct intel_l3_config *const cfg = &list->configs[0];
-       assert(cfg == intel_get_l3_config(devinfo,
-@@ -342,7 +342,7 @@
-       }
-    }
- 
--   assert(cfg_best || devinfo->ver >= 12);
-+   assert(cfg_best || false);
-    return cfg_best;
- }
- 
-@@ -357,7 +357,7 @@
-     */
-    const unsigned way_size_per_bank =
-       devinfo->platform == INTEL_PLATFORM_MTL_U ? 8 :
--      (devinfo->ver >= 9 && devinfo->l3_banks == 1) || devinfo->ver >= 11 ? 4 :
-+      (false && devinfo->l3_banks == 1) || false ? 4 :
-       2;
- 
-    assert(devinfo->l3_banks);
-@@ -371,7 +371,7 @@
- static unsigned
- get_urb_size_scale(const struct intel_device_info *devinfo)
- {
--   return (devinfo->ver >= 8 ? devinfo->num_slices : 1);
-+   return (true ? devinfo->num_slices : 1);
- }
- 
- unsigned
-@@ -402,7 +402,7 @@
-     * allocation of the L3 data array to provide 3*384KB=1152KB for URB, but
-     * only 1008KB of this will be used."
-     */
--   const unsigned max = (devinfo->ver == 9 ? 1008 : ~0);
-+   const unsigned max = (false ? 1008 : ~0);
-    return MIN2(max, urb_size) / get_urb_size_scale(devinfo);
- }
- 
 --- a/src/intel/common/intel_urb_config.c
 +++ b/src/intel/common/intel_urb_config.c
 @@ -83,7 +83,7 @@
@@ -10520,7 +10570,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,1258 @@
+@@ -0,0 +1,1261 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -11017,8 +11067,11 @@
 +   process_intel_debug_variable();
 +   /* No CCS_D: on this GPU it only speeds up colour fast clears, and with it a
 +    * multisample resolve into mip level 3 came out wrong (CTS renderpass1
-+    * multisample_resolve.*_resolve_level_3). HiZ and MCS stay on. */
-+   BITSET_SET(intel_debug, DEBUG_NO_CCS);
++    * multisample_resolve.*_resolve_level_3). HiZ and MCS stay on.
++    * HASVK_WDDM_CCS=1: CCS_D for single-level colour images that are not
++    * swapchain images (anv_image.c, apply-compiler-port.py). */
++   const char *ccs = getenv("HASVK_WDDM_CCS");
++   if (!ccs || atoi(ccs) <= 0) BITSET_SET(intel_debug, DEBUG_NO_CCS);
 +   /* A failed driver assert would otherwise open a modal CRT message box and
 +    * keep the application (a game, an unattended test) waiting for a click:
 +    * print it to stderr and end the process instead, without the abort()
@@ -12055,7 +12108,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_memory.c
-@@ -0,0 +1,704 @@
+@@ -0,0 +1,712 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -12255,6 +12308,14 @@
 +   if (!size || size > ANV_WDDM_MAX_BO_BYTES)
 +      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 +   size = align64(size, 4096);
++   /* HASVK_WDDM_BO_ALIGN_2M=1 (measurement): BOs of 2 MiB and more get a
++    * 2 MiB-aligned address and size, so the kernel driver could map them with
++    * 2 MiB GPU pages (fewer TLB misses), if it does that at all. */
++   static int align_2m = -1;
++   if (align_2m < 0) { const char *e = getenv("HASVK_WDDM_BO_ALIGN_2M"); align_2m = e && atoi(e) > 0; }
++   const uint64_t va_align = align_2m && !fixed && !low && size >= (2ull << 20) ? (2ull << 20) : 4096;
++   size = align64(size, va_align);
++   if (size > ANV_WDDM_MAX_BO_BYTES) return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 +   struct anv_bo *bo = calloc(1, sizeof(*bo));
 +   if (!bo) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 +   struct anv_wddm_device_state *w = device->wddm;
@@ -12271,7 +12332,7 @@
 +   }
 +   struct util_vma_heap *heap = fixed ? &w->state_heap : low ? &w->scratch_heap : &w->client_heap;
 +   uint64_t address = fixed ? (util_vma_heap_alloc_addr(heap, explicit_address, size) ? explicit_address : 0) :
-+      util_vma_heap_alloc(heap, size, 4096);
++      util_vma_heap_alloc(heap, size, va_align);
 +   if (!address) {
 +      mtx_unlock(&w->alloc_mutex); free(bo);
 +      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);

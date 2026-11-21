@@ -494,8 +494,11 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateInstance(const VkInstanceCreateInfo *in
    process_intel_debug_variable();
    /* No CCS_D: on this GPU it only speeds up colour fast clears, and with it a
     * multisample resolve into mip level 3 came out wrong (CTS renderpass1
-    * multisample_resolve.*_resolve_level_3). HiZ and MCS stay on. */
-   BITSET_SET(intel_debug, DEBUG_NO_CCS);
+    * multisample_resolve.*_resolve_level_3). HiZ and MCS stay on.
+    * HASVK_WDDM_CCS=1: CCS_D for single-level colour images that are not
+    * swapchain images (anv_image.c, apply-compiler-port.py). */
+   const char *ccs = getenv("HASVK_WDDM_CCS");
+   if (!ccs || atoi(ccs) <= 0) BITSET_SET(intel_debug, DEBUG_NO_CCS);
    /* A failed driver assert would otherwise open a modal CRT message box and
     * keep the application (a game, an unattended test) waiting for a click:
     * print it to stderr and end the process instead, without the abort()

@@ -1054,7 +1054,62 @@ image_after = gen8_only(image_after, [
       view.swizzle = ISL_SWIZZLE_IDENTITY;
 ''', ''),
 ])
+# CCS_D (colour fast clears) only where it was checked: single-level,
+# single-layer images (multisample resolves into mip level 3 and into array
+# layer 1 came out wrong with it: CTS multisample_resolve.*_resolve_level_3,
+# *_baseLayer1) that are not swapchain images (those are shown by DWM as they
+# are, without a resolve). It is off unless HASVK_WDDM_CCS=1 (anv_CreateInstance).
+ccs_old = '''      ok = isl_surf_get_ccs_surf(&device->isl_dev,
+'''
+assert image_after.count(ccs_old) == 1
+image_after = image_after.replace(ccs_old, '''#ifdef _WIN32
+      if (image->vk.mip_levels > 1 || image->vk.array_layers > 1 || image->from_wsi)
+         return VK_SUCCESS;
+#endif
+''' + ccs_old)
 edit(image_name, [(image_before, image_after)])
+# HASVK_WDDM_L3=<n> (measurements): entry n of the platform's validated L3
+# configurations (Broadwell: 0 = URB 48 + ALL 48, the default; 1 = URB 48, DC
+# 16, RO 32; 2 = URB 32, DC 16, RO 48; 3 = URB 32, RO 64; 4 = URB 32, ALL 64)
+# for every pipeline and the device default, as long as its SLM matches what
+# the pipeline needs. URB sizes follow the chosen configuration.
+edit('src/intel/common/intel_l3_config.c', [
+    ('''const struct intel_l3_config *
+intel_get_default_l3_config(const struct intel_device_info *devinfo)
+{''', '''#ifdef _WIN32
+#include <stdlib.h>
+static const struct intel_l3_config *
+wddm_forced_l3_config(const struct intel_device_info *devinfo, bool slm)
+{
+   static int forced = -2;
+   if (forced == -2) {
+      const char *e = getenv("HASVK_WDDM_L3");
+      forced = e && *e ? atoi(e) : -1;
+   }
+   const struct intel_l3_list *const list = get_l3_list(devinfo);
+   if (forced < 0 || forced >= (int)list->length) return NULL;
+   const struct intel_l3_config *cfg = &list->configs[forced];
+   return (cfg->n[INTEL_L3P_SLM] > 0) == slm ? cfg : NULL;
+}
+#endif
+
+const struct intel_l3_config *
+intel_get_default_l3_config(const struct intel_device_info *devinfo)
+{
+#ifdef _WIN32
+   const struct intel_l3_config *forced = wddm_forced_l3_config(devinfo, false);
+   if (forced) return forced;
+#endif'''),
+    ('''   const struct intel_l3_config *cfg_best = NULL;
+   float dw_best = HUGE_VALF;
+''', '''   const struct intel_l3_config *cfg_best = NULL;
+   float dw_best = HUGE_VALF;
+#ifdef _WIN32
+   const struct intel_l3_config *forced = wddm_forced_l3_config(devinfo, w0.w[INTEL_L3P_SLM] > 0);
+   if (forced) return forced;
+#endif
+'''),
+])
 # A shader upload that fails (out of memory) is returned to the caller, which
 # skips the operation; the driver marks the command buffer failed. Upstream
 # asserts, which ended the process in CTS simulate_oom tests.
