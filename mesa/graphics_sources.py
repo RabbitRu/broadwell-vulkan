@@ -235,6 +235,54 @@ def hiz_clear_value(hardware, blorp):
     return hardware, blorp
 
 
+def empty_descriptor_buffer(hardware):
+    """A set without a descriptor buffer (its layout has no buffer, storage
+    image or inline uniform binding: anv_descriptor_set_create leaves desc_addr
+    NULL and no surface state) can be bound where the shader's binding table
+    has the entry for that set's descriptor buffer. Upstream then dereferences
+    the NULL BO in add_surface_reloc; here the batch was refused and Dota 2 got
+    VK_ERROR_DEVICE_LOST in 3 of 9 replays. The null surface is bound instead,
+    as for any other missing descriptor: what the shader reads from it is 0
+    (A64 buffer address and size 0, so bounded buffer accesses do nothing)."""
+    old = '''         bt_map[s] = set->desc_surface_state.offset + state_offset;
+         add_surface_reloc(cmd_buffer, set->desc_surface_state,
+                           anv_descriptor_set_address(set));
+         break;'''
+    if hardware.count(old) != 1:
+        raise ValueError('emit_binding_table descriptor buffer case not found')
+    return hardware.replace(old, '''         if (set->desc_addr.bo == NULL) {
+            static int reported;
+            if (!reported++)
+               fprintf(stderr, "HasVK/WDDM: descriptor set %u is bound without a descriptor buffer the shader uses "
+                       "(set layout: %u bindings, descriptor buffer %u bytes; push set %d); the null surface is used\\n",
+                       binding->index, set->layout ? set->layout->binding_count : 0,
+                       set->layout ? set->layout->descriptor_buffer_size : 0, anv_descriptor_set_is_push(set));
+            bt_map[s] = cmd_buffer->device->null_surface_state.offset + state_offset;
+            break;
+         }
+         bt_map[s] = set->desc_surface_state.offset + state_offset;
+         add_surface_reloc(cmd_buffer, set->desc_surface_state,
+                           anv_descriptor_set_address(set));
+         break;''')
+
+
+def empty_descriptor_buffer_push(hardware):
+    """The same set pushed as constants (a push range of its descriptor
+    buffer): its bound size is 0, so no register is used, but the address
+    still went into 3DSTATE_CONSTANT_* as GPU address 0. As for a NULL UBO,
+    the zeroed upper part of the workaround BO is given instead."""
+    old = '''      struct anv_descriptor_set *set =
+         gfx_state->base.descriptors[range->index];
+      return anv_descriptor_set_address(set);'''
+    if hardware.count(old) != 1:
+        raise ValueError('get_push_range_address descriptor buffer case not found')
+    return hardware.replace(old, '''      struct anv_descriptor_set *set =
+         gfx_state->base.descriptors[range->index];
+      if (set->desc_addr.bo == NULL)
+         return (struct anv_address) { .bo = cmd_buffer->device->workaround_bo, .offset = 1024 };
+      return anv_descriptor_set_address(set);''')
+
+
 def dynamic_buffer_surface_state(hardware):
     """emit_binding_table writes a surface state for every dynamic uniform or
     storage buffer of every draw; the general ISL path was ~6 % of the
@@ -445,6 +493,8 @@ anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct
     hardware, blorp = hiz_clear_value(hardware, blorp)
     hardware = push_constants_active_stages(hardware)
     hardware = dynamic_buffer_surface_state(hardware)
+    hardware = empty_descriptor_buffer(hardware)
+    hardware = empty_descriptor_buffer_push(hardware)
     # A failed shader upload (out of memory) marks the command buffer failed:
     # vkEndCommandBuffer then reports it instead of BLORP asserting.
     marker = '''                               NULL, 0, NULL, &bind_map);

@@ -11373,7 +11373,7 @@
 +#ifdef HASVK_WDDM_GRAPHICS
 +/* Compiled shaders persist across processes. Mesa's disk cache is not built
 + * for Windows, so every process compiled again, on first use and in the
-+ * middle of a frame (frame-time spikes, roadmap stage 7 item 2):
++ * middle of a frame (frame-time spikes, Talos):
 + *  - internal-cache.bin: the driver's own shaders (BLORP copies, clears,
 + *    blits), device->internal_cache;
 + *  - default-cache.bin: every pipeline an application creates, with or
@@ -12922,7 +12922,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_batch.c
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,85 @@
 +/* Pinned-VA batch bookkeeping for the Windows transport. No Linux relocations
 + * or ioctl submission: every BO already has its final WDDM GPU address. */
 +#include "anv_wddm.h"
@@ -12937,8 +12937,25 @@
 +}
 +VkResult anv_reloc_list_add_bo(struct anv_reloc_list *list, const VkAllocationCallbacks *alloc, struct anv_bo *bo)
 +{
-+   if (!bo || bo->is_wrapper || !anv_bo_is_pinned(bo) || !bo->gem_handle)
++   if (!bo || bo->is_wrapper || !anv_bo_is_pinned(bo) || !bo->gem_handle) {
++      static int reports;
++      if (reports++ < 8) {   /* a BO no submission can use: say which and from where */
++         HMODULE self = NULL;
++         GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                            (LPCSTR)(void *)anv_reloc_list_add_bo, &self);
++         const uintptr_t base = (uintptr_t)self;
++         void *frames[8] = {0};
++         const USHORT n = RtlCaptureStackBackTrace(0, 8, frames, NULL);
++         fprintf(stderr, "HasVK/WDDM batch: unusable BO %p", (void *)bo);
++         /* The BO may be freed: its name pointer is printed, not followed. */
++         if (bo) fprintf(stderr, " (name at rva %llx, handle %u, size %llu, flags 0x%x, wrapper %d, refcount %u)",
++                         (unsigned long long)((uintptr_t)bo->name - base), bo->gem_handle, (unsigned long long)bo->size, (unsigned)bo->flags, bo->is_wrapper, (unsigned)bo->refcount);
++         fprintf(stderr, "; stack (module rva):");
++         for (USHORT i = 0; i < n; ++i) fprintf(stderr, " %llx", (unsigned long long)((uintptr_t)frames[i] - base));
++         fprintf(stderr, "\n");
++      }
 +      return VK_ERROR_FEATURE_NOT_PRESENT;
++   }
 +   uint32_t needed = bo->gem_handle / BITSET_WORDBITS + 1;
 +   if (needed > list->dep_words) {
 +      uint32_t length = MAX2(needed, MAX2(32, list->dep_words * 2));
@@ -18812,7 +18829,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_command_gen8.c
-@@ -0,0 +1,1340 @@
+@@ -0,0 +1,1350 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -19590,6 +19607,16 @@
 +            pipe_state->descriptors[binding->index];
 +         assert(set->desc_mem.alloc_size);
 +         assert(set->desc_surface_state.alloc_size);
++         if (set->desc_addr.bo == NULL) {
++            static int reported;
++            if (!reported++)
++               fprintf(stderr, "HasVK/WDDM: descriptor set %u is bound without a descriptor buffer the shader uses "
++                       "(set layout: %u bindings, descriptor buffer %u bytes; push set %d); the null surface is used\n",
++                       binding->index, set->layout ? set->layout->binding_count : 0,
++                       set->layout ? set->layout->descriptor_buffer_size : 0, anv_descriptor_set_is_push(set));
++            bt_map[s] = cmd_buffer->device->null_surface_state.offset + state_offset;
++            break;
++         }
 +         bt_map[s] = set->desc_surface_state.offset + state_offset;
 +         add_surface_reloc(cmd_buffer, set->desc_surface_state,
 +                           anv_descriptor_set_address(set));
@@ -23948,7 +23975,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_gen8.c
-@@ -0,0 +1,5623 @@
+@@ -0,0 +1,5635 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -26080,6 +26107,16 @@
 +            pipe_state->descriptors[binding->index];
 +         assert(set->desc_mem.alloc_size);
 +         assert(set->desc_surface_state.alloc_size);
++         if (set->desc_addr.bo == NULL) {
++            static int reported;
++            if (!reported++)
++               fprintf(stderr, "HasVK/WDDM: descriptor set %u is bound without a descriptor buffer the shader uses "
++                       "(set layout: %u bindings, descriptor buffer %u bytes; push set %d); the null surface is used\n",
++                       binding->index, set->layout ? set->layout->binding_count : 0,
++                       set->layout ? set->layout->descriptor_buffer_size : 0, anv_descriptor_set_is_push(set));
++            bt_map[s] = cmd_buffer->device->null_surface_state.offset + state_offset;
++            break;
++         }
 +         bt_map[s] = set->desc_surface_state.offset + state_offset;
 +         add_surface_reloc(cmd_buffer, set->desc_surface_state,
 +                           anv_descriptor_set_address(set));
@@ -26433,6 +26470,8 @@
 +       */
 +      struct anv_descriptor_set *set =
 +         gfx_state->base.descriptors[range->index];
++      if (set->desc_addr.bo == NULL)
++         return (struct anv_address) { .bo = cmd_buffer->device->workaround_bo, .offset = 1024 };
 +      return anv_descriptor_set_address(set);
 +   }
 +

@@ -46,6 +46,7 @@ function Build([string]$name, [string[]]$libs, [string[]]$extra = @()) {
 foreach ($name in 'replay_pass_probe', 'replay_probe', 'depth_fill_probe', 'flops_probe', 'sample_probe', 'vs_fetch_probe', 'bandwidth_probe') {
    Build $name @('user32.lib')
 }
+Build 'cpu_map_probe' @('d3d11.lib', 'user32.lib')
 foreach ($name in 'd3d11_depth_fill_probe', 'd3d11_flops_probe', 'd3d11_sample_probe', 'd3d11_vs_fetch_probe', 'd3d11_replay_probe') {
    Build $name @('d3d11.lib', 'dxgi.lib', 'd3dcompiler.lib', 'user32.lib')
 }

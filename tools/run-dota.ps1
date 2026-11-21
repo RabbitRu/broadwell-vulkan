@@ -19,6 +19,13 @@ run (the process is killed) and it is reported as failed.
   -Env NAME=v,...    extra environment variables
   -Extra '...'       extra command line (+cvar value, -switch ...)
   -Tag name          output name in build\dota
+  -Sample            per-thread CPU, CPU frequency and GPU load for -SampleSeconds,
+                     starting -SampleDelay s after the map has spawned (the replay
+                     then still fast-forwards to -Start for a few seconds; the
+                     measured window follows); report build\dota\<Tag>.sample.txt
+  -RipModule dll     instead, stacks with build\probes\rip_sampler.exe (with that
+                     module on the stack; vulkan_hasvk_wddm.dll, igd10iumd64.dll for
+                     Intel's DX11 driver); report build\dota\<Tag>.rip.txt
 #>
 param(
    [ValidateSet('Vulkan', 'Direct3D11')][string]$Api = 'Vulkan',
@@ -30,7 +37,11 @@ param(
    [string]$Extra = '',
    [string]$Tag = '',
    [int]$TimeoutSeconds = 600,
-   [string]$Game = 'C:\Program Files (x86)\Steam\steamapps\common\dota 2 beta'
+   [switch]$Sample,
+   [string]$RipModule = '',
+   [int]$SampleDelay = 25,
+   [int]$SampleSeconds = 30,
+   [string]$Game ='C:\Program Files (x86)\Steam\steamapps\common\dota 2 beta'
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -105,6 +116,17 @@ foreach ($pair in ($Env | ForEach-Object { $_ -split ',' } | Where-Object { $_ }
    "  env $name=$value"
 }
 
+$sampler = $null; $sampleOut = $null
+if ($Sample -or $RipModule) {
+   $mode = if ($RipModule) { 'rip' } else { 'counters' }
+   $sampleOut = Join-Path $out ("$Tag." + $(if ($RipModule) { 'rip' } else { 'sample' }) + '.txt')
+   if (Test-Path -LiteralPath $sampleOut) { Remove-Item -LiteralPath $sampleOut -Force }
+   $samplerArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$(Join-Path $PSScriptRoot 'talos-window.ps1')`"",
+                    '-Out', "`"$sampleOut`"", '-Mode', $mode, '-NotBefore', (Get-Date).ToFileTimeUtc(), '-Process', 'dota2',
+                    '-Log', "`"$console`"", '-Marker', 'DOTABaseGameMode::Spawn()', '-Delay', $SampleDelay, '-Seconds', $SampleSeconds)
+   if ($RipModule) { $samplerArgs += @('-Module', $RipModule, '-Symbols', "`"$(Join-Path $root 'build\icd')`"") }
+   $sampler = Start-Process powershell.exe -ArgumentList $samplerArgs -WindowStyle Hidden -PassThru -RedirectStandardError "$sampleOut.err"
+}
 $verdict = ''
 try {
    $watch = [Diagnostics.Stopwatch]::StartNew()
@@ -132,4 +154,11 @@ if (Test-Path -LiteralPath $profile) { Copy-Item -LiteralPath $profile (Join-Pat
 $result = Get-Content -LiteralPath $console -ErrorAction SilentlyContinue | Select-String '\[Demo\] \d+ frames .* fps' | Select-Object -Last 1
 if ($result) { '  ' + ($result.Line -replace '^.*\[Demo\]\s*', '') }
 else { '  no timedemo result in console.log'; if (-not $verdict) { $verdict = 'no result' } }
+if ($sampler) {
+   if (-not $sampler.WaitForExit(120000)) { try { $sampler.Kill() } catch {} }
+   if (Test-Path -LiteralPath $sampleOut) {
+      "  measurement: $sampleOut"
+      if (-not $RipModule) { Get-Content -LiteralPath $sampleOut | ForEach-Object { "    $_" } }
+   } else { '  measurement: no report' }
+}
 if ($verdict -or $p.ExitCode) { exit 1 }

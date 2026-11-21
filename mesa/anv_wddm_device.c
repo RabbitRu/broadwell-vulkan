@@ -890,7 +890,7 @@ VkResult anv_queue_submit_simple_batch(struct anv_queue *queue, struct anv_batch
 #ifdef HASVK_WDDM_GRAPHICS
 /* Compiled shaders persist across processes. Mesa's disk cache is not built
  * for Windows, so every process compiled again, on first use and in the
- * middle of a frame (frame-time spikes, roadmap stage 7 item 2):
+ * middle of a frame (frame-time spikes, Talos):
  *  - internal-cache.bin: the driver's own shaders (BLORP copies, clears,
  *    blits), device->internal_cache;
  *  - default-cache.bin: every pipeline an application creates, with or

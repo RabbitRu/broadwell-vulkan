@@ -12,8 +12,25 @@ void anv_reloc_list_finish(struct anv_reloc_list *list, const VkAllocationCallba
 }
 VkResult anv_reloc_list_add_bo(struct anv_reloc_list *list, const VkAllocationCallbacks *alloc, struct anv_bo *bo)
 {
-   if (!bo || bo->is_wrapper || !anv_bo_is_pinned(bo) || !bo->gem_handle)
+   if (!bo || bo->is_wrapper || !anv_bo_is_pinned(bo) || !bo->gem_handle) {
+      static int reports;
+      if (reports++ < 8) {   /* a BO no submission can use: say which and from where */
+         HMODULE self = NULL;
+         GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCSTR)(void *)anv_reloc_list_add_bo, &self);
+         const uintptr_t base = (uintptr_t)self;
+         void *frames[8] = {0};
+         const USHORT n = RtlCaptureStackBackTrace(0, 8, frames, NULL);
+         fprintf(stderr, "HasVK/WDDM batch: unusable BO %p", (void *)bo);
+         /* The BO may be freed: its name pointer is printed, not followed. */
+         if (bo) fprintf(stderr, " (name at rva %llx, handle %u, size %llu, flags 0x%x, wrapper %d, refcount %u)",
+                         (unsigned long long)((uintptr_t)bo->name - base), bo->gem_handle, (unsigned long long)bo->size, (unsigned)bo->flags, bo->is_wrapper, (unsigned)bo->refcount);
+         fprintf(stderr, "; stack (module rva):");
+         for (USHORT i = 0; i < n; ++i) fprintf(stderr, " %llx", (unsigned long long)((uintptr_t)frames[i] - base));
+         fprintf(stderr, "\n");
+      }
       return VK_ERROR_FEATURE_NOT_PRESENT;
+   }
    uint32_t needed = bo->gem_handle / BITSET_WORDBITS + 1;
    if (needed > list->dep_words) {
       uint32_t length = MAX2(needed, MAX2(32, list->dep_words * 2));
