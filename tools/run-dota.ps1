@@ -17,8 +17,7 @@ run (the process is killed) and it is reported as failed.
   -Demo name         replay in game\dota\replays (default 9093360730)
   -Start/-End tick   timedemo window (timedemo_start/timedemo_end); 30 ticks a second
   -Env NAME=v,...    extra environment variables
-  -Extra '...'       extra command line (+cvar value, -switch ...)
-  -Tag name          output name in build\dota
+  -Extra '...'       extra command line (+cvar value, -switch ...)  -Tag name          output name in build\dota
   -Sample            per-thread CPU, CPU frequency and GPU load for -SampleSeconds,
                      starting -SampleDelay s after the map has spawned (the replay
                      then still fast-forwards to -Start for a few seconds; the
