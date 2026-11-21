@@ -237,7 +237,7 @@
  
     caps->surfaceCapabilities.supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
     caps->surfaceCapabilities.currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-@@ -318,6 +333,9 @@
+@@ -318,7 +333,27 @@
     { VK_FORMAT_B8G8R8A8_UNORM },
     { VK_FORMAT_R8G8B8A8_UNORM },
     { VK_FORMAT_B8G8R8A8_SRGB },
@@ -245,9 +245,49 @@
 +   { VK_FORMAT_R8G8B8A8_SRGB },
 +#endif
  };
++#ifdef HASVK_WDDM_GDI
++/* Present without a copy (anv_wddm_present.c): DWM reads a window surface
++ * as B8G8R8A8 whatever it is declared as, so only B8G8R8A8 swapchain images
++ * can be shown as they are. R8G8B8A8 formats are not reported (as on other
++ * Windows drivers); a swapchain created with one still works through the
++ * copy. HASVK_WDDM_PRESENT_DIRECT=0 reports them again. */
++static bool
++wsi_win32_format_hidden(VkFormat format)
++{
++   static int direct = -1;
++   if (direct < 0) {
++      const char *e = getenv("HASVK_WDDM_PRESENT_DIRECT");
++      direct = !e || atoi(e) > 0;
++   }
++   return direct > 0 && (format == VK_FORMAT_R8G8B8A8_UNORM || format == VK_FORMAT_R8G8B8A8_SRGB);
++}
++#endif
  
  
-@@ -384,6 +402,10 @@
+ static void
+@@ -350,6 +385,10 @@
+    get_sorted_vk_formats(wsi_device, sorted_formats);
+ 
+    for (unsigned i = 0; i < ARRAY_SIZE(sorted_formats); i++) {
++#ifdef HASVK_WDDM_GDI
++      if (wsi_win32_format_hidden(sorted_formats[i]))
++         continue;
++#endif
+       vk_outarray_append_typed(VkSurfaceFormatKHR, &out, f) {
+          f->format = sorted_formats[i];
+          f->colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+@@ -372,6 +411,10 @@
+    get_sorted_vk_formats(wsi_device, sorted_formats);
+ 
+    for (unsigned i = 0; i < ARRAY_SIZE(sorted_formats); i++) {
++#ifdef HASVK_WDDM_GDI
++      if (wsi_win32_format_hidden(sorted_formats[i]))
++         continue;
++#endif
+       vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, f) {
+          assert(f->sType == VK_STRUCTURE_TYPE_SURFACE_FORMAT_2_KHR);
+          f->surfaceFormat.format = sorted_formats[i];
+@@ -384,6 +427,10 @@
  
  static const VkPresentModeKHR present_modes_gdi[] = {
     VK_PRESENT_MODE_FIFO_KHR,
@@ -258,7 +298,7 @@
  };
  static const VkPresentModeKHR present_modes_dxgi[] = {
     VK_PRESENT_MODE_IMMEDIATE_KHR,
-@@ -559,7 +581,8 @@
+@@ -559,7 +606,8 @@
     if (chain->dxgi)
        return VK_SUCCESS;
  
@@ -268,7 +308,7 @@
     image->sw.dc = CreateCompatibleDC(chain->chain_dc);
     HBITMAP bmp = NULL;
  
-@@ -607,10 +630,19 @@
+@@ -607,10 +655,19 @@
     struct wsi_win32_swapchain *chain =
        (struct wsi_win32_swapchain *) drv_chain;
  
@@ -289,7 +329,7 @@
  
     if (chain->surface->current_swapchain == chain)
        chain->surface->current_swapchain = NULL;
-@@ -672,10 +704,99 @@
+@@ -672,10 +729,99 @@
     return VK_SUCCESS;
  }
  
@@ -389,7 +429,7 @@
     for (uint32_t i = 0; i < chain->base.image_count; i++) {
        if (chain->images[i].state == WSI_IMAGE_IDLE) {
           *out_image_index = i;
-@@ -683,6 +804,7 @@
+@@ -683,6 +829,7 @@
           return true;
        }
     }
@@ -397,7 +437,7 @@
     return false;
  }
  
-@@ -737,8 +859,13 @@
+@@ -737,8 +884,13 @@
        return chain->status;
  
     /* acquire timeout has to be explicitly handled for sw wsi */
@@ -412,7 +452,7 @@
  
     if (wsi_win32_find_idle_image(chain, image_index))
        return VK_SUCCESS;
-@@ -820,10 +947,35 @@
+@@ -820,10 +972,35 @@
     if (chain->dxgi)
        return wsi_win32_queue_present_dxgi(chain, image, damage);
  
@@ -448,7 +488,7 @@
        memcpy(dptr, ptr, chain->extent.width * 4);
        dptr += image->sw.bmp_row_pitch;
        ptr += image->base.row_pitches[0];
-@@ -832,6 +984,13 @@
+@@ -832,6 +1009,13 @@
        chain->status = VK_ERROR_MEMORY_MAP_FAILED;
  
     wsi_win32_set_image_idle(chain, image);
@@ -462,7 +502,7 @@
  
     return chain->status;
  }
-@@ -925,6 +1084,10 @@
+@@ -925,6 +1109,10 @@
  
     assert(create_info->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR);
  
@@ -473,7 +513,7 @@
     const unsigned num_images = create_info->minImageCount;
     struct wsi_win32_swapchain *chain;
     size_t size = sizeof(*chain) + num_images * sizeof(chain->images[0]);
-@@ -982,6 +1145,11 @@
+@@ -982,6 +1170,11 @@
     chain->base.queue_present = wsi_win32_queue_present;
     chain->base.present_mode = wsi_swapchain_get_present_mode(wsi_device, create_info);
     chain->extent = create_info->imageExtent;
@@ -485,7 +525,7 @@
  
     chain->wsi = wsi;
     chain->status = VK_SUCCESS;
-@@ -1091,7 +1259,7 @@
+@@ -1091,7 +1284,7 @@
     wsi->alloc = alloc;
     wsi->wsi = wsi_device;
  
@@ -11741,7 +11781,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm.h
-@@ -0,0 +1,268 @@
+@@ -0,0 +1,271 @@
 +/* Private Windows platform state for the HasVK port. */
 +#pragma once
 +#include "anv_private.h"
@@ -11952,6 +11992,9 @@
 +VkCommandBuffer anv_wddm_present_redirected_record(VkDevice device, VkQueue queue, VkImage image, uint32_t index,
 +                                                   void *hwnd, VkExtent2D extent, void **state);
 +void anv_wddm_present_redirected_finish(VkDevice device, void *state);
++/* Swapchain image whose memory can be a window surface itself, so its present
++ * needs no copy (anv_wddm_present.c, HASVK_WDDM_PRESENT_DIRECT). */
++bool anv_wddm_window_image(struct anv_device *device, const struct anv_image *image, uint64_t size);
 +#endif
 +#ifdef HASVK_WDDM_GRAPHICS
 +void anv_wddm_profile_install(struct vk_device_dispatch_table *dispatch);
@@ -12012,7 +12055,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_memory.c
-@@ -0,0 +1,669 @@
+@@ -0,0 +1,704 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -12360,7 +12403,9 @@
 +      vk_device_set_lost(&device->vk, "WDDM BO destruction failed");
 +   } else {
 +      mtx_lock(&w->alloc_mutex);
-+      if (!bo->is_external) {   /* window surfaces: the kernel chose and frees the address */
++      /* Window surfaces (and swapchain images that are one): the kernel chose
++       * and frees the address. */
++      if (!bo->is_external && (!bo->name || strcmp(bo->name, "window image"))) {
 +         const uint64_t address = intel_48b_address(bo->offset);
 +         const bool scratch = !bo->has_fixed_address && address >= w->origin + ANV_WDDM_SCRATCH_START &&
 +            address < w->origin + ANV_WDDM_SCRATCH_START + ANV_WDDM_SCRATCH_BYTES;
@@ -12407,19 +12452,52 @@
 +   }
 +   struct anv_device_memory *mem = vk_object_zalloc(&device->vk, allocator, sizeof(*mem), VK_OBJECT_TYPE_DEVICE_MEMORY);
 +   if (!mem) return VK_ERROR_OUT_OF_HOST_MEMORY;
-+   VkResult result = alloc_bo(device, "user", info->allocationSize, host_visible ? ANV_BO_ALLOC_MAPPED : 0, 0,
-+                              host_visible, &mem->bo);
-+   if (result != VK_SUCCESS) { vk_object_free(&device->vk, allocator, mem); return result; }
-+   /* The CPU reaches application memory only through vkMapMemory: while it is
-+    * not mapped, submissions do not need to flush its cache lines. */
-+   if (hasvk_wddm_bo_set_cpu_tracking(mem->bo->wddm_bo, 0)) {
-+      anv_device_release_bo(device, mem->bo); vk_object_free(&device->vk, allocator, mem);
-+      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++   const VkMemoryDedicatedAllocateInfo *dedicated = vk_find_struct_const(info->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
++   if (dedicated && dedicated->image) mem->dedicated_image = anv_image_from_handle(dedicated->image);
++   VkResult result = VK_ERROR_FEATURE_NOT_PRESENT;
++#ifdef HASVK_WDDM_GRAPHICS
++   /* A swapchain image that DWM can show as it is: its memory is a window
++    * surface of the image's size (anv_wddm_present.c). Any mismatch with the
++    * surface the kernel creates falls back to ordinary memory and the copy.
++    * Such memory has no CPU mapping (vkMapMemory fails); nothing maps a
++    * swapchain image's memory (WSI's GDI fallback reads its own buffer). */
++   if (mem->dedicated_image && anv_wddm_window_image(device, mem->dedicated_image, info->allocationSize)) {
++      const struct isl_surf *surf = &mem->dedicated_image->planes[0].primary_surface.isl;
++      uint32_t share = 0; uint64_t pitch = 0;
++      result = anv_wddm_alloc_window_surface_bo(device, mem->dedicated_image->vk.extent.width,
++                                                mem->dedicated_image->vk.extent.height, &mem->bo, &share, &pitch);
++      if (result == VK_SUCCESS && (pitch != surf->row_pitch_B || mem->bo->size < info->allocationSize)) {
++         fprintf(stderr, "HasVK/WDDM: window surface for a swapchain image differs (pitch %llu vs %u, %llu of %llu bytes); "
++                 "presents copy\n", (unsigned long long)pitch, surf->row_pitch_B, (unsigned long long)mem->bo->size,
++                 (unsigned long long)info->allocationSize);
++         anv_device_release_bo(device, mem->bo); mem->bo = NULL;
++         result = VK_ERROR_FEATURE_NOT_PRESENT;
++      }
++      if (result == VK_SUCCESS) {
++         /* The application renders the whole frame's last passes into it, and
++          * only DWM reads it, through the GPU and the LLC (never the display
++          * engine): it keeps the internal (LLC write-back) MOCS like ordinary
++          * images. HASVK_WDDM_PRESENT_DIRECT_MOCS=external: the window
++          * surface's external MOCS (Dota 2: 22.7-25.9 FPS, internal 25.5-25.7). */
++         static int external = -1;
++         if (external < 0) { const char *e = getenv("HASVK_WDDM_PRESENT_DIRECT_MOCS"); external = e && !strcmp(e, "external"); }
++         mem->bo->name = "window image";
++         mem->bo->is_external = external > 0;
++      }
++   }
++#endif
++   if (result != VK_SUCCESS) {
++      result = alloc_bo(device, "user", info->allocationSize, host_visible ? ANV_BO_ALLOC_MAPPED : 0, 0, host_visible, &mem->bo);
++      if (result != VK_SUCCESS) { vk_object_free(&device->vk, allocator, mem); return result; }
++      /* The CPU reaches application memory only through vkMapMemory: while it is
++       * not mapped, submissions do not need to flush its cache lines. */
++      if (hasvk_wddm_bo_set_cpu_tracking(mem->bo->wddm_bo, 0)) {
++         anv_device_release_bo(device, mem->bo); vk_object_free(&device->vk, allocator, mem);
++         return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++      }
 +   }
 +   mem->type = type;
 +   mem->wddm_allocation_size = info->allocationSize;
-+   const VkMemoryDedicatedAllocateInfo *dedicated = vk_find_struct_const(info->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
-+   if (dedicated && dedicated->image) mem->dedicated_image = anv_image_from_handle(dedicated->image);
 +   *out = anv_device_memory_to_handle(mem);
 +   return VK_SUCCESS;
 +}
@@ -13614,7 +13692,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_present.c
-@@ -0,0 +1,204 @@
+@@ -0,0 +1,272 @@
 +/* Windowed present without a CPU copy and without D3D.
 + *
 + * As the Intel OpenGL ICD of the same driver package does (traced with
@@ -13655,7 +13733,51 @@
 +    * index (its throttle fence) before recording it again. */
 +   VkCommandBuffer cmds[ANV_WDDM_PRESENT_CMDS];
 +   int refused;            /* set by the queue when the kernel refused a present */
++   uint64_t direct, copied;   /* presents of the image itself / of a copy (HASVK_WDDM_PRESENT_STATS) */
 +};
++
++/* Swapchain images of the window surface layout get window surfaces as their
++ * memory (anv_AllocateMemory), and a present of such an image to a window of
++ * exactly its size (no frame, e.g. a borderless full-screen game) hands DWM
++ * the image itself: no copy, 2 x 4 bytes per pixel less memory traffic per
++ * frame (Dota 2 at 2560x1600: 25.5-25.7 FPS against 23.4-24.7 with the copy).
++ * Every swapchain image is then a surface of its own; DWM opens the one named
++ * by each present's token. DWM reads them as B8G8R8A8, so R8G8B8A8 surface
++ * formats are not reported (wsi_win32_format_hidden). Windows with a frame,
++ * child windows and size mismatches still copy. HASVK_WDDM_PRESENT_DIRECT=0
++ * turns it off (every present copies, all four formats are reported). */
++static bool present_direct(void)
++{
++   static int enabled = -1;
++   if (enabled < 0) { const char *e = getenv("HASVK_WDDM_PRESENT_DIRECT"); enabled = !e || atoi(e) > 0; }
++   return enabled > 0;
++}
++bool anv_wddm_window_image(struct anv_device *device, const struct anv_image *image, uint64_t size)
++{
++   (void)device; (void)size;
++   if (!present_direct() || !image->from_wsi) return false;
++   if (image->n_planes != 1 || image->vk.samples != VK_SAMPLE_COUNT_1_BIT ||
++       image->vk.mip_levels != 1 || image->vk.array_layers != 1 || image->vk.extent.depth != 1 ||
++       (image->vk.format != VK_FORMAT_B8G8R8A8_UNORM && image->vk.format != VK_FORMAT_B8G8R8A8_SRGB)) {
++      if (getenv("HASVK_WDDM_PRESENT_DEBUG"))
++         fprintf(stderr, "HasVK/WDDM present: swapchain image %ux%u format %d, %u layers, usage %#x, flags %#x: presents copy\n",
++                 image->vk.extent.width, image->vk.extent.height, image->vk.format, image->vk.array_layers,
++                 image->vk.usage, image->vk.create_flags);
++      return false;
++   }
++   const struct anv_image_plane *plane = &image->planes[0];
++   const bool fits = plane->primary_surface.isl.tiling == ISL_TILING_Y0 && plane->aux_usage == ISL_AUX_USAGE_NONE &&
++                     plane->primary_surface.memory_range.binding == ANV_IMAGE_MEMORY_BINDING_MAIN &&
++                     plane->primary_surface.memory_range.offset == 0 &&
++                     image->bindings[ANV_IMAGE_MEMORY_BINDING_PRIVATE].memory_range.size == 0;
++   if (!fits && getenv("HASVK_WDDM_PRESENT_DEBUG"))
++      fprintf(stderr, "HasVK/WDDM present: swapchain image %ux%u not of the window surface layout (tiling %u, aux %u, "
++              "binding %u offset %llu, private %llu bytes); presents copy\n", image->vk.extent.width, image->vk.extent.height,
++              plane->primary_surface.isl.tiling, plane->aux_usage, plane->primary_surface.memory_range.binding,
++              (unsigned long long)plane->primary_surface.memory_range.offset,
++              (unsigned long long)image->bindings[ANV_IMAGE_MEMORY_BINDING_PRIVATE].memory_range.size);
++   return fits;
++}
 +
 +/* Waits until every copy submitted for this window has executed. */
 +static void window_idle(struct anv_device *device, struct anv_wddm_window *w)
@@ -13734,7 +13856,12 @@
 +   const VkOffset3D offset = {origin.x - outer.left, origin.y - outer.top, 0};
 +   if (offset.x < 0 || offset.y < 0 || (uint32_t)offset.x >= window.width || (uint32_t)offset.y >= window.height)
 +      return VK_NULL_HANDLE;   /* minimized or unusual geometry: GDI takes the frame */
-+   const VkExtent3D copied = {MIN2(extent.width, window.width - offset.x), MIN2(extent.height, window.height - offset.y), 1};
++   VkExtent3D copied = {MIN2(extent.width, window.width - offset.x), MIN2(extent.height, window.height - offset.y), 1};
++   /* Measurement only: HASVK_WDDM_PRESENT_COPY=<n> copies just an n x n corner
++    * (the window shows a wrong image), to bound what the full copy costs. */
++   static int limit = -1;   /* Dota 2: 16 gave +4.5 % (24.3 -> 25.4 FPS), the bound for G7 */
++   if (limit < 0) { const char *e = getenv("HASVK_WDDM_PRESENT_COPY"); limit = e ? MAX2(atoi(e), 1) : 0; }
++   if (limit > 0) { copied.width = MIN2(copied.width, (uint32_t)limit); copied.height = MIN2(copied.height, (uint32_t)limit); }
 +   /* DWM reads the surface as B8G8R8A8 bytes in the sRGB encoding. An sRGB
 +    * swapchain already holds encoded bytes: the surface takes the _SRGB view so
 +    * nothing is decoded on the way. R8G8B8A8 needs its channels swapped (blit). */
@@ -13743,11 +13870,24 @@
 +   const bool swap = source == VK_FORMAT_R8G8B8A8_UNORM || source == VK_FORMAT_R8G8B8A8_SRGB;
 +   if (!swap && source != VK_FORMAT_B8G8R8A8_UNORM && source != VK_FORMAT_B8G8R8A8_SRGB) return VK_NULL_HANDLE;
 +   const VkFormat format = srgb ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8A8_UNORM;
-+   if (w->bo && (w->hwnd != hwnd || w->extent.width != window.width || w->extent.height != window.height || w->format != format)) {
++
++   /* The image is a window surface of the window's size: present it as it is.
++    * The application's own command buffer already flushed the render caches
++    * (anv_cmd_buffer_end_batch_buffer), so the present's command buffer is
++    * empty; it only carries the token, behind the frame on the same queue. */
++   const struct anv_image *image = anv_image_from_handle(src);
++   const struct anv_address own = image->bindings[ANV_IMAGE_MEMORY_BINDING_MAIN].address;
++   uint32_t own_share = 0; uint64_t own_pitch = 0;
++   const bool direct = own.bo && own.bo->name && !strcmp(own.bo->name, "window image") && own.offset == 0 && !swap &&
++      offset.x == 0 && offset.y == 0 &&
++      image->vk.extent.width == window.width && image->vk.extent.height == window.height &&
++      !hasvk_wddm_bo_window_surface_info(own.bo->wddm_bo, &own_share, &own_pitch);
++
++   if (!direct && w->bo && (w->hwnd != hwnd || w->extent.width != window.width || w->extent.height != window.height || w->format != format)) {
 +      window_idle(device, w);   /* earlier copies still target the old surface */
 +      surface_release(device, w);
 +   }
-+   if (!w->bo && surface_create(device, w, hwnd, window, format) != VK_SUCCESS) { surface_release(device, w); return VK_NULL_HANDLE; }
++   if (!direct && !w->bo && surface_create(device, w, hwnd, window, format) != VK_SUCCESS) { surface_release(device, w); return VK_NULL_HANDLE; }
 +
 +   if (!w->pool) {
 +      const VkCommandPoolCreateInfo pool_info = {
@@ -13769,7 +13909,9 @@
 +   };
 +   if (d->ResetCommandBuffer(cmd, 0) != VK_SUCCESS || d->BeginCommandBuffer(cmd, &begin) != VK_SUCCESS) return VK_NULL_HANDLE;
 +   const VkImageSubresourceLayers layers = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-+   if (swap) {
++   if (direct) {
++      ++w->direct;
++   } else if (swap) {
 +      /* 1:1 nearest blit: per-texel format conversion, values unchanged (the
 +       * sRGB decode/encode round trip of 8-bit values is exact). */
 +      const VkImageBlit2 region = {
@@ -13794,10 +13936,11 @@
 +      };
 +      anv_CmdCopyImage2(cmd, &copy);
 +   }
++   if (!direct) ++w->copied;
 +   if (d->EndCommandBuffer(cmd) != VK_SUCCESS) return VK_NULL_HANDLE;
 +
 +   struct anv_cmd_buffer *recorded = anv_cmd_buffer_from_handle(cmd);
-+   recorded->wddm->present_token = (uint64_t)(0x80000000u | (uint32_t)(uintptr_t)hwnd) << 32 | w->share;
++   recorded->wddm->present_token = (uint64_t)(0x80000000u | (uint32_t)(uintptr_t)hwnd) << 32 | (direct ? own_share : w->share);
 +   recorded->wddm->present_refused = &w->refused;
 +   static int debug = -1;
 +   if (debug < 0) debug = getenv("HASVK_WDDM_PRESENT_DEBUG") != NULL;
@@ -13813,6 +13956,9 @@
 +   ANV_FROM_HANDLE(anv_device, device, handle);
 +   struct anv_wddm_window *w = state;
 +   if (!w) return;
++   if (getenv("HASVK_WDDM_PRESENT_STATS"))
++      fprintf(stderr, "HasVK/WDDM present stats: %llu of the image itself, %llu copied\n",
++              (unsigned long long)w->direct, (unsigned long long)w->copied);
 +   window_idle(device, w);
 +   if (w->pool) device->vk.dispatch_table.DestroyCommandPool(handle, w->pool, NULL);
 +   surface_release(device, w);
@@ -35858,7 +36004,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/wddm/intel_2019_profile.cpp
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,63 @@
 +#include "hasvk_wddm.hpp"
 +#include <cstring>
 +
@@ -35896,7 +36042,10 @@
 +   for (const auto &field : fields) memcpy(metadata.data() + field[0], &field[1], 4);
 +   return metadata;
 +}
-+/* D3D runtime data of that resource (DXGI_FORMAT_B8G8R8A8_UNORM = 0x57). */
++/* D3D runtime data of that resource (DXGI_FORMAT_B8G8R8A8_UNORM = 0x57).
++ * DWM reads the surface as B8G8R8A8 whatever is declared: with
++ * DXGI_FORMAT_R8G8B8A8_UNORM here and D3DFMT_A8B8G8R8 at 0x194 an R8G8B8A8
++ * image still showed R and B swapped (tools/test-wsi.ps1, 2026-11-21). */
 +std::vector<uint8_t> window_surface_runtime_data(uint32_t width, uint32_t height)
 +{
 +   std::vector<uint8_t> data(104, 0);

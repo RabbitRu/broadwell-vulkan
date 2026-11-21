@@ -345,7 +345,9 @@ anv_device_release_bo(struct anv_device *device, struct anv_bo *bo)
       vk_device_set_lost(&device->vk, "WDDM BO destruction failed");
    } else {
       mtx_lock(&w->alloc_mutex);
-      if (!bo->is_external) {   /* window surfaces: the kernel chose and frees the address */
+      /* Window surfaces (and swapchain images that are one): the kernel chose
+       * and frees the address. */
+      if (!bo->is_external && (!bo->name || strcmp(bo->name, "window image"))) {
          const uint64_t address = intel_48b_address(bo->offset);
          const bool scratch = !bo->has_fixed_address && address >= w->origin + ANV_WDDM_SCRATCH_START &&
             address < w->origin + ANV_WDDM_SCRATCH_START + ANV_WDDM_SCRATCH_BYTES;
@@ -392,19 +394,52 @@ anv_AllocateMemory(VkDevice handle, const VkMemoryAllocateInfo *info,
    }
    struct anv_device_memory *mem = vk_object_zalloc(&device->vk, allocator, sizeof(*mem), VK_OBJECT_TYPE_DEVICE_MEMORY);
    if (!mem) return VK_ERROR_OUT_OF_HOST_MEMORY;
-   VkResult result = alloc_bo(device, "user", info->allocationSize, host_visible ? ANV_BO_ALLOC_MAPPED : 0, 0,
-                              host_visible, &mem->bo);
-   if (result != VK_SUCCESS) { vk_object_free(&device->vk, allocator, mem); return result; }
-   /* The CPU reaches application memory only through vkMapMemory: while it is
-    * not mapped, submissions do not need to flush its cache lines. */
-   if (hasvk_wddm_bo_set_cpu_tracking(mem->bo->wddm_bo, 0)) {
-      anv_device_release_bo(device, mem->bo); vk_object_free(&device->vk, allocator, mem);
-      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+   const VkMemoryDedicatedAllocateInfo *dedicated = vk_find_struct_const(info->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
+   if (dedicated && dedicated->image) mem->dedicated_image = anv_image_from_handle(dedicated->image);
+   VkResult result = VK_ERROR_FEATURE_NOT_PRESENT;
+#ifdef HASVK_WDDM_GRAPHICS
+   /* A swapchain image that DWM can show as it is: its memory is a window
+    * surface of the image's size (anv_wddm_present.c). Any mismatch with the
+    * surface the kernel creates falls back to ordinary memory and the copy.
+    * Such memory has no CPU mapping (vkMapMemory fails); nothing maps a
+    * swapchain image's memory (WSI's GDI fallback reads its own buffer). */
+   if (mem->dedicated_image && anv_wddm_window_image(device, mem->dedicated_image, info->allocationSize)) {
+      const struct isl_surf *surf = &mem->dedicated_image->planes[0].primary_surface.isl;
+      uint32_t share = 0; uint64_t pitch = 0;
+      result = anv_wddm_alloc_window_surface_bo(device, mem->dedicated_image->vk.extent.width,
+                                                mem->dedicated_image->vk.extent.height, &mem->bo, &share, &pitch);
+      if (result == VK_SUCCESS && (pitch != surf->row_pitch_B || mem->bo->size < info->allocationSize)) {
+         fprintf(stderr, "HasVK/WDDM: window surface for a swapchain image differs (pitch %llu vs %u, %llu of %llu bytes); "
+                 "presents copy\n", (unsigned long long)pitch, surf->row_pitch_B, (unsigned long long)mem->bo->size,
+                 (unsigned long long)info->allocationSize);
+         anv_device_release_bo(device, mem->bo); mem->bo = NULL;
+         result = VK_ERROR_FEATURE_NOT_PRESENT;
+      }
+      if (result == VK_SUCCESS) {
+         /* The application renders the whole frame's last passes into it, and
+          * only DWM reads it, through the GPU and the LLC (never the display
+          * engine): it keeps the internal (LLC write-back) MOCS like ordinary
+          * images. HASVK_WDDM_PRESENT_DIRECT_MOCS=external: the window
+          * surface's external MOCS (Dota 2: 22.7-25.9 FPS, internal 25.5-25.7). */
+         static int external = -1;
+         if (external < 0) { const char *e = getenv("HASVK_WDDM_PRESENT_DIRECT_MOCS"); external = e && !strcmp(e, "external"); }
+         mem->bo->name = "window image";
+         mem->bo->is_external = external > 0;
+      }
+   }
+#endif
+   if (result != VK_SUCCESS) {
+      result = alloc_bo(device, "user", info->allocationSize, host_visible ? ANV_BO_ALLOC_MAPPED : 0, 0, host_visible, &mem->bo);
+      if (result != VK_SUCCESS) { vk_object_free(&device->vk, allocator, mem); return result; }
+      /* The CPU reaches application memory only through vkMapMemory: while it is
+       * not mapped, submissions do not need to flush its cache lines. */
+      if (hasvk_wddm_bo_set_cpu_tracking(mem->bo->wddm_bo, 0)) {
+         anv_device_release_bo(device, mem->bo); vk_object_free(&device->vk, allocator, mem);
+         return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      }
    }
    mem->type = type;
    mem->wddm_allocation_size = info->allocationSize;
-   const VkMemoryDedicatedAllocateInfo *dedicated = vk_find_struct_const(info->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
-   if (dedicated && dedicated->image) mem->dedicated_image = anv_image_from_handle(dedicated->image);
    *out = anv_device_memory_to_handle(mem);
    return VK_SUCCESS;
 }

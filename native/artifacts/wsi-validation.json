@@ -29,20 +29,6 @@
       "height": 192,
       "mismatches": 0,
       "width": 256
-    },
-    {
-      "expected": "4080bf",
-      "format": "R8G8B8A8_UNORM",
-      "height": 192,
-      "mismatches": 0,
-      "width": 256
-    },
-    {
-      "expected": "89bce1",
-      "format": "R8G8B8A8_SRGB",
-      "height": 192,
-      "mismatches": 0,
-      "width": 256
     }
   ],
   "geometry": [
@@ -62,15 +48,101 @@
     }
   ],
   "passed": true,
+  "popupSequence": [
+    {
+      "expected": "20df00",
+      "format": "B8G8R8A8_UNORM",
+      "height": 150,
+      "mismatches": 0,
+      "width": 200
+    },
+    {
+      "expected": "606020",
+      "format": "B8G8R8A8_UNORM",
+      "height": 150,
+      "mismatches": 0,
+      "width": 200
+    },
+    {
+      "expected": "9fdf40",
+      "format": "B8G8R8A8_UNORM",
+      "height": 150,
+      "mismatches": 0,
+      "width": 200
+    },
+    {
+      "expected": "206060",
+      "format": "B8G8R8A8_UNORM",
+      "height": 150,
+      "mismatches": 0,
+      "width": 200
+    },
+    {
+      "expected": "60df80",
+      "format": "B8G8R8A8_UNORM",
+      "height": 150,
+      "mismatches": 0,
+      "width": 200
+    },
+    {
+      "expected": "9f609f",
+      "format": "B8G8R8A8_UNORM",
+      "height": 150,
+      "mismatches": 0,
+      "width": 200
+    },
+    {
+      "expected": "63f000",
+      "format": "B8G8R8A8_SRGB",
+      "height": 150,
+      "mismatches": 0,
+      "width": 200
+    },
+    {
+      "expected": "a5a563",
+      "format": "B8G8R8A8_SRGB",
+      "height": 150,
+      "mismatches": 0,
+      "width": 200
+    },
+    {
+      "expected": "cff089",
+      "format": "B8G8R8A8_SRGB",
+      "height": 150,
+      "mismatches": 0,
+      "width": 200
+    },
+    {
+      "expected": "63a5a5",
+      "format": "B8G8R8A8_SRGB",
+      "height": 150,
+      "mismatches": 0,
+      "width": 200
+    },
+    {
+      "expected": "a5f0bc",
+      "format": "B8G8R8A8_SRGB",
+      "height": 150,
+      "mismatches": 0,
+      "width": 200
+    },
+    {
+      "expected": "cfa5cf",
+      "format": "B8G8R8A8_SRGB",
+      "height": 150,
+      "mismatches": 0,
+      "width": 200
+    }
+  ],
   "presentModes": [
     2,
     1,
     0
   ],
   "presentTiming": {
-    "fifoMsPerFrame": 16.684684999999998,
-    "immediateMsPerFrame": 0.6567266666666666,
-    "mailboxMsPerFrame": 0.6637966666666667,
+    "fifoMsPerFrame": 16.688686666666666,
+    "immediateMsPerFrame": 0.6556033333333333,
+    "mailboxMsPerFrame": 0.6641133333333333,
     "observable": true
   },
   "resize": {
@@ -93,8 +165,6 @@
   },
   "surfaceFormats": [
     "B8G8R8A8_UNORM",
-    "R8G8B8A8_UNORM",
-    "B8G8R8A8_SRGB",
-    "R8G8B8A8_SRGB"
+    "B8G8R8A8_SRGB"
   ]
 }

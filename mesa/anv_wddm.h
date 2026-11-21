@@ -208,6 +208,9 @@ void anv_wddm_init_buffer_state_templates(struct anv_device *device);
 VkCommandBuffer anv_wddm_present_redirected_record(VkDevice device, VkQueue queue, VkImage image, uint32_t index,
                                                    void *hwnd, VkExtent2D extent, void **state);
 void anv_wddm_present_redirected_finish(VkDevice device, void *state);
+/* Swapchain image whose memory can be a window surface itself, so its present
+ * needs no copy (anv_wddm_present.c, HASVK_WDDM_PRESENT_DIRECT). */
+bool anv_wddm_window_image(struct anv_device *device, const struct anv_image *image, uint64_t size);
 #endif
 #ifdef HASVK_WDDM_GRAPHICS
 void anv_wddm_profile_install(struct vk_device_dispatch_table *dispatch);

@@ -183,8 +183,39 @@ edit('src/vulkan/wsi/wsi_common_win32.cpp', [
      '   if (!wsi_device->sw && wsi_device->win32.get_d3d12_command_queue) {\n      wsi->dxgi.factory = dxgi_get_factory'),
     # The WDDM port's redirected present converts any of these into the
     # window's B8G8R8A8 surface (copy or channel-swapping blit, sRGB bytes kept).
-    ('   { VK_FORMAT_R8G8B8A8_UNORM },\n   { VK_FORMAT_B8G8R8A8_SRGB },',
-     '   { VK_FORMAT_R8G8B8A8_UNORM },\n   { VK_FORMAT_B8G8R8A8_SRGB },\n#ifdef HASVK_WDDM_GDI\n   { VK_FORMAT_R8G8B8A8_SRGB },\n#endif'),
+    ('   { VK_FORMAT_R8G8B8A8_UNORM },\n   { VK_FORMAT_B8G8R8A8_SRGB },\n};\n',
+     '   { VK_FORMAT_R8G8B8A8_UNORM },\n   { VK_FORMAT_B8G8R8A8_SRGB },\n#ifdef HASVK_WDDM_GDI\n   { VK_FORMAT_R8G8B8A8_SRGB },\n#endif\n};\n'
+     '#ifdef HASVK_WDDM_GDI\n'
+     '/* Present without a copy (anv_wddm_present.c): DWM reads a window surface\n'
+     ' * as B8G8R8A8 whatever it is declared as, so only B8G8R8A8 swapchain images\n'
+     ' * can be shown as they are. R8G8B8A8 formats are not reported (as on other\n'
+     ' * Windows drivers); a swapchain created with one still works through the\n'
+     ' * copy. HASVK_WDDM_PRESENT_DIRECT=0 reports them again. */\n'
+     'static bool\n'
+     'wsi_win32_format_hidden(VkFormat format)\n'
+     '{\n'
+     '   static int direct = -1;\n'
+     '   if (direct < 0) {\n'
+     '      const char *e = getenv("HASVK_WDDM_PRESENT_DIRECT");\n'
+     '      direct = !e || atoi(e) > 0;\n'
+     '   }\n'
+     '   return direct > 0 && (format == VK_FORMAT_R8G8B8A8_UNORM || format == VK_FORMAT_R8G8B8A8_SRGB);\n'
+     '}\n'
+     '#endif\n'),
+    ('''   for (unsigned i = 0; i < ARRAY_SIZE(sorted_formats); i++) {
+      vk_outarray_append_typed(VkSurfaceFormatKHR, &out, f) {''', '''   for (unsigned i = 0; i < ARRAY_SIZE(sorted_formats); i++) {
+#ifdef HASVK_WDDM_GDI
+      if (wsi_win32_format_hidden(sorted_formats[i]))
+         continue;
+#endif
+      vk_outarray_append_typed(VkSurfaceFormatKHR, &out, f) {'''),
+    ('''   for (unsigned i = 0; i < ARRAY_SIZE(sorted_formats); i++) {
+      vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, f) {''', '''   for (unsigned i = 0; i < ARRAY_SIZE(sorted_formats); i++) {
+#ifdef HASVK_WDDM_GDI
+      if (wsi_win32_format_hidden(sorted_formats[i]))
+         continue;
+#endif
+      vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, f) {'''),
     # FIFO is paced by DWM composition (DwmFlush after each present); MAILBOX
     # and IMMEDIATE are not: DWM shows the latest surface content.
     ('static const VkPresentModeKHR present_modes_gdi[] = {\n   VK_PRESENT_MODE_FIFO_KHR,\n};',

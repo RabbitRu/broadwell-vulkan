@@ -35,7 +35,10 @@ std::vector<uint8_t> window_surface_metadata(uint32_t width, uint32_t height)
    for (const auto &field : fields) memcpy(metadata.data() + field[0], &field[1], 4);
    return metadata;
 }
-/* D3D runtime data of that resource (DXGI_FORMAT_B8G8R8A8_UNORM = 0x57). */
+/* D3D runtime data of that resource (DXGI_FORMAT_B8G8R8A8_UNORM = 0x57).
+ * DWM reads the surface as B8G8R8A8 whatever is declared: with
+ * DXGI_FORMAT_R8G8B8A8_UNORM here and D3DFMT_A8B8G8R8 at 0x194 an R8G8B8A8
+ * image still showed R and B swapped (tools/test-wsi.ps1, 2026-11-21). */
 std::vector<uint8_t> window_surface_runtime_data(uint32_t width, uint32_t height)
 {
    std::vector<uint8_t> data(104, 0);

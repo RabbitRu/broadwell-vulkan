@@ -249,7 +249,9 @@ int wmain(int argc, wchar_t **argv)
       std::vector<VkPresentModeKHR> modes(count); check(vk.vkGetPhysicalDeviceSurfacePresentModesKHR(vk.physical, vk.surface, &count, modes.data()), "Present modes");
       json listed = json::array(); for (const auto &f : formats) listed.push_back(format_name(f.format));
       report["surfaceFormats"] = listed; report["presentModes"] = modes;
-      const VkFormat wanted[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB};
+      /* R8G8B8A8 formats are not listed unless HASVK_WDDM_PRESENT_DIRECT=0; their
+       * swapchains are still created and checked below (presented by copy). */
+      const VkFormat wanted[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SRGB};
       for (VkFormat f : wanted)
          require(std::any_of(formats.begin(), formats.end(), [f](const VkSurfaceFormatKHR &s) { return s.format == f; }), std::string("Missing surface format ") + format_name(f));
       for (VkPresentModeKHR m : {VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR})
@@ -395,6 +397,36 @@ int wmain(int argc, wchar_t **argv)
          Chain c = create_chain(vk, VK_FORMAT_B8G8R8A8_UNORM, VK_PRESENT_MODE_FIFO_KHR, VK_NULL_HANDLE);
          require(c.extent.width == static_cast<uint32_t>(shape.w) && c.extent.height == static_cast<uint32_t>(shape.h),
                  std::string("Surface extent of ") + shape.name);
+         /* The borderless popup is a window of exactly the swapchain's size: each
+          * image is a window surface of its own, presented without a copy.
+          * Every frame gets its own colour and must be the one shown, so a
+          * present that left DWM on an older surface fails. */
+         if (!shape.parent) {
+            /* Both B8G8R8A8 encodings (R8G8B8A8 images are always copied:
+             * DWM reads window surfaces as B8G8R8A8). */
+            json sequence = json::array();
+            for (VkFormat format : {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SRGB}) {
+               vk.vkDeviceWaitIdle(vk.device);
+               vk.vkDestroySwapchainKHR(vk.device, c.handle, nullptr);
+               c = create_chain(vk, format, VK_PRESENT_MODE_FIFO_KHR, VK_NULL_HANDLE);
+               const bool encoded = format == VK_FORMAT_R8G8B8A8_SRGB || format == VK_FORMAT_B8G8R8A8_SRGB;
+               bool wrong = false;
+               for (int i = 0; i < 6 && !wrong; ++i) {
+                  const float red = (i % 3) * 0.25f + 0.125f, green = 0.875f - (i % 2) * 0.5f, blue = i * 0.125f;
+                  check(frame(vk, c, VkClearColorValue{{red, green, blue, 1.0f}}), std::string("Present to ") + shape.name);
+                  auto enc = [&](float v) { return static_cast<uint32_t>(encoded ? srgb(v) : unorm(v)); };
+                  json step = verify(other, c, enc(red) << 16 | enc(green) << 8 | enc(blue));
+                  step["format"] = format_name(format);
+                  wrong = step["mismatches"] != 0;
+                  sequence.push_back(step);
+               }
+            }
+            report["popupSequence"] = sequence;
+            for (const json &step : sequence) require(step["mismatches"] == 0, std::string("Stale or wrong frame in ") + shape.name);
+            vk.vkDeviceWaitIdle(vk.device);
+            vk.vkDestroySwapchainKHR(vk.device, c.handle, nullptr);
+            c = create_chain(vk, VK_FORMAT_B8G8R8A8_UNORM, VK_PRESENT_MODE_FIFO_KHR, VK_NULL_HANDLE);
+         }
          const VkClearColorValue other_colour{{0.75f, 0.25f, 0.5f, 1.0f}};
          for (int i = 0; i < 3; ++i) check(frame(vk, c, other_colour), std::string("Present to ") + shape.name);
          json seen = verify(other, c, static_cast<uint32_t>(unorm(0.75f)) << 16 | static_cast<uint32_t>(unorm(0.25f)) << 8 | unorm(0.5f));

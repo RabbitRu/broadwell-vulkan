@@ -2,31 +2,31 @@
   "devices": {
     "after": {
       "gdiObjects": 0,
-      "handles": 155,
-      "privateBytes": 7278592
+      "handles": 156,
+      "privateBytes": 7634944
     },
     "before": {
       "gdiObjects": 0,
-      "handles": 155,
-      "privateBytes": 6918144
+      "handles": 156,
+      "privateBytes": 7630848
     },
     "cycles": 150,
-    "seconds": 1.4178891
+    "seconds": 1.345599
   },
   "passed": true,
   "swapchains": {
     "after": {
       "gdiObjects": 2,
-      "handles": 174,
-      "privateBytes": 8937472
+      "handles": 175,
+      "privateBytes": 9150464
     },
     "before": {
       "gdiObjects": 2,
-      "handles": 173,
-      "privateBytes": 8880128
+      "handles": 174,
+      "privateBytes": 9097216
     },
     "cycles": 60,
     "framesPerCycle": 4,
-    "seconds": 0.3459043
+    "seconds": 0.501152
   }
 }

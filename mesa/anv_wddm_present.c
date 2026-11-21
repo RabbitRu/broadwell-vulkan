@@ -38,7 +38,51 @@ struct anv_wddm_window {
     * index (its throttle fence) before recording it again. */
    VkCommandBuffer cmds[ANV_WDDM_PRESENT_CMDS];
    int refused;            /* set by the queue when the kernel refused a present */
+   uint64_t direct, copied;   /* presents of the image itself / of a copy (HASVK_WDDM_PRESENT_STATS) */
 };
+
+/* Swapchain images of the window surface layout get window surfaces as their
+ * memory (anv_AllocateMemory), and a present of such an image to a window of
+ * exactly its size (no frame, e.g. a borderless full-screen game) hands DWM
+ * the image itself: no copy, 2 x 4 bytes per pixel less memory traffic per
+ * frame (Dota 2 at 2560x1600: 25.5-25.7 FPS against 23.4-24.7 with the copy).
+ * Every swapchain image is then a surface of its own; DWM opens the one named
+ * by each present's token. DWM reads them as B8G8R8A8, so R8G8B8A8 surface
+ * formats are not reported (wsi_win32_format_hidden). Windows with a frame,
+ * child windows and size mismatches still copy. HASVK_WDDM_PRESENT_DIRECT=0
+ * turns it off (every present copies, all four formats are reported). */
+static bool present_direct(void)
+{
+   static int enabled = -1;
+   if (enabled < 0) { const char *e = getenv("HASVK_WDDM_PRESENT_DIRECT"); enabled = !e || atoi(e) > 0; }
+   return enabled > 0;
+}
+bool anv_wddm_window_image(struct anv_device *device, const struct anv_image *image, uint64_t size)
+{
+   (void)device; (void)size;
+   if (!present_direct() || !image->from_wsi) return false;
+   if (image->n_planes != 1 || image->vk.samples != VK_SAMPLE_COUNT_1_BIT ||
+       image->vk.mip_levels != 1 || image->vk.array_layers != 1 || image->vk.extent.depth != 1 ||
+       (image->vk.format != VK_FORMAT_B8G8R8A8_UNORM && image->vk.format != VK_FORMAT_B8G8R8A8_SRGB)) {
+      if (getenv("HASVK_WDDM_PRESENT_DEBUG"))
+         fprintf(stderr, "HasVK/WDDM present: swapchain image %ux%u format %d, %u layers, usage %#x, flags %#x: presents copy\n",
+                 image->vk.extent.width, image->vk.extent.height, image->vk.format, image->vk.array_layers,
+                 image->vk.usage, image->vk.create_flags);
+      return false;
+   }
+   const struct anv_image_plane *plane = &image->planes[0];
+   const bool fits = plane->primary_surface.isl.tiling == ISL_TILING_Y0 && plane->aux_usage == ISL_AUX_USAGE_NONE &&
+                     plane->primary_surface.memory_range.binding == ANV_IMAGE_MEMORY_BINDING_MAIN &&
+                     plane->primary_surface.memory_range.offset == 0 &&
+                     image->bindings[ANV_IMAGE_MEMORY_BINDING_PRIVATE].memory_range.size == 0;
+   if (!fits && getenv("HASVK_WDDM_PRESENT_DEBUG"))
+      fprintf(stderr, "HasVK/WDDM present: swapchain image %ux%u not of the window surface layout (tiling %u, aux %u, "
+              "binding %u offset %llu, private %llu bytes); presents copy\n", image->vk.extent.width, image->vk.extent.height,
+              plane->primary_surface.isl.tiling, plane->aux_usage, plane->primary_surface.memory_range.binding,
+              (unsigned long long)plane->primary_surface.memory_range.offset,
+              (unsigned long long)image->bindings[ANV_IMAGE_MEMORY_BINDING_PRIVATE].memory_range.size);
+   return fits;
+}
 
 /* Waits until every copy submitted for this window has executed. */
 static void window_idle(struct anv_device *device, struct anv_wddm_window *w)
@@ -117,7 +161,12 @@ VkCommandBuffer anv_wddm_present_redirected_record(VkDevice handle, VkQueue queu
    const VkOffset3D offset = {origin.x - outer.left, origin.y - outer.top, 0};
    if (offset.x < 0 || offset.y < 0 || (uint32_t)offset.x >= window.width || (uint32_t)offset.y >= window.height)
       return VK_NULL_HANDLE;   /* minimized or unusual geometry: GDI takes the frame */
-   const VkExtent3D copied = {MIN2(extent.width, window.width - offset.x), MIN2(extent.height, window.height - offset.y), 1};
+   VkExtent3D copied = {MIN2(extent.width, window.width - offset.x), MIN2(extent.height, window.height - offset.y), 1};
+   /* Measurement only: HASVK_WDDM_PRESENT_COPY=<n> copies just an n x n corner
+    * (the window shows a wrong image), to bound what the full copy costs. */
+   static int limit = -1;   /* Dota 2: 16 gave +4.5 % (24.3 -> 25.4 FPS), the bound for G7 */
+   if (limit < 0) { const char *e = getenv("HASVK_WDDM_PRESENT_COPY"); limit = e ? MAX2(atoi(e), 1) : 0; }
+   if (limit > 0) { copied.width = MIN2(copied.width, (uint32_t)limit); copied.height = MIN2(copied.height, (uint32_t)limit); }
    /* DWM reads the surface as B8G8R8A8 bytes in the sRGB encoding. An sRGB
     * swapchain already holds encoded bytes: the surface takes the _SRGB view so
     * nothing is decoded on the way. R8G8B8A8 needs its channels swapped (blit). */
@@ -126,11 +175,24 @@ VkCommandBuffer anv_wddm_present_redirected_record(VkDevice handle, VkQueue queu
    const bool swap = source == VK_FORMAT_R8G8B8A8_UNORM || source == VK_FORMAT_R8G8B8A8_SRGB;
    if (!swap && source != VK_FORMAT_B8G8R8A8_UNORM && source != VK_FORMAT_B8G8R8A8_SRGB) return VK_NULL_HANDLE;
    const VkFormat format = srgb ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8A8_UNORM;
-   if (w->bo && (w->hwnd != hwnd || w->extent.width != window.width || w->extent.height != window.height || w->format != format)) {
+
+   /* The image is a window surface of the window's size: present it as it is.
+    * The application's own command buffer already flushed the render caches
+    * (anv_cmd_buffer_end_batch_buffer), so the present's command buffer is
+    * empty; it only carries the token, behind the frame on the same queue. */
+   const struct anv_image *image = anv_image_from_handle(src);
+   const struct anv_address own = image->bindings[ANV_IMAGE_MEMORY_BINDING_MAIN].address;
+   uint32_t own_share = 0; uint64_t own_pitch = 0;
+   const bool direct = own.bo && own.bo->name && !strcmp(own.bo->name, "window image") && own.offset == 0 && !swap &&
+      offset.x == 0 && offset.y == 0 &&
+      image->vk.extent.width == window.width && image->vk.extent.height == window.height &&
+      !hasvk_wddm_bo_window_surface_info(own.bo->wddm_bo, &own_share, &own_pitch);
+
+   if (!direct && w->bo && (w->hwnd != hwnd || w->extent.width != window.width || w->extent.height != window.height || w->format != format)) {
       window_idle(device, w);   /* earlier copies still target the old surface */
       surface_release(device, w);
    }
-   if (!w->bo && surface_create(device, w, hwnd, window, format) != VK_SUCCESS) { surface_release(device, w); return VK_NULL_HANDLE; }
+   if (!direct && !w->bo && surface_create(device, w, hwnd, window, format) != VK_SUCCESS) { surface_release(device, w); return VK_NULL_HANDLE; }
 
    if (!w->pool) {
       const VkCommandPoolCreateInfo pool_info = {
@@ -152,7 +214,9 @@ VkCommandBuffer anv_wddm_present_redirected_record(VkDevice handle, VkQueue queu
    };
    if (d->ResetCommandBuffer(cmd, 0) != VK_SUCCESS || d->BeginCommandBuffer(cmd, &begin) != VK_SUCCESS) return VK_NULL_HANDLE;
    const VkImageSubresourceLayers layers = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-   if (swap) {
+   if (direct) {
+      ++w->direct;
+   } else if (swap) {
       /* 1:1 nearest blit: per-texel format conversion, values unchanged (the
        * sRGB decode/encode round trip of 8-bit values is exact). */
       const VkImageBlit2 region = {
@@ -177,10 +241,11 @@ VkCommandBuffer anv_wddm_present_redirected_record(VkDevice handle, VkQueue queu
       };
       anv_CmdCopyImage2(cmd, &copy);
    }
+   if (!direct) ++w->copied;
    if (d->EndCommandBuffer(cmd) != VK_SUCCESS) return VK_NULL_HANDLE;
 
    struct anv_cmd_buffer *recorded = anv_cmd_buffer_from_handle(cmd);
-   recorded->wddm->present_token = (uint64_t)(0x80000000u | (uint32_t)(uintptr_t)hwnd) << 32 | w->share;
+   recorded->wddm->present_token = (uint64_t)(0x80000000u | (uint32_t)(uintptr_t)hwnd) << 32 | (direct ? own_share : w->share);
    recorded->wddm->present_refused = &w->refused;
    static int debug = -1;
    if (debug < 0) debug = getenv("HASVK_WDDM_PRESENT_DEBUG") != NULL;
@@ -196,6 +261,9 @@ void anv_wddm_present_redirected_finish(VkDevice handle, void *state)
    ANV_FROM_HANDLE(anv_device, device, handle);
    struct anv_wddm_window *w = state;
    if (!w) return;
+   if (getenv("HASVK_WDDM_PRESENT_STATS"))
+      fprintf(stderr, "HasVK/WDDM present stats: %llu of the image itself, %llu copied\n",
+              (unsigned long long)w->direct, (unsigned long long)w->copied);
    window_idle(device, w);
    if (w->pool) device->vk.dispatch_table.DestroyCommandPool(handle, w->pool, NULL);
    surface_release(device, w);
