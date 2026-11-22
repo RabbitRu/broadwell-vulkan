@@ -151,3 +151,14 @@ $env:VK_DRIVER_FILES = "<корень проекта>\build\icd\intel_hasvk_wddm
 ISA/описатели контрольного C# и раннего raw-теста в репозиторий не входят:
 для `test-all.ps1` нужны локальные контрольные fixtures. Самостоятельные Vulkan
 compute/graphics тесты (`test-icd.ps1`, `test-graphics.ps1`) их не используют.
+
+## Лицензия
+
+Собственный код проекта — под лицензией MIT ([LICENSE](LICENSE)). Части,
+производные от Mesa, остаются под её лицензией (тоже MIT) со своими
+уведомлениями об авторских правах; подробности — в [NOTICE.md](NOTICE.md).
+Уведомления о стороннем коде, который попадает в бинарный пакет (Mesa, zlib и
+др.), собраны в [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md): его строит
+`tools/gen-third-party-notices.py` по списку исходников, реально вошедших в
+DLL, и после смены версии Mesa или состава сборки его надо перестроить.
+Релизный пакет включает `LICENSE` и `THIRD-PARTY-NOTICES.md`.

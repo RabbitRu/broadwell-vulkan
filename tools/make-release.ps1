@@ -1,6 +1,7 @@
 # Release package: build\release\HasVK-WDDM-<date>-<commit>.zip with the ICD
 # (vulkan_hasvk_wddm.dll, z-1.dll, manifest), the install script and the
-# installation guide, plus SHA-256 sums. Test executables are not included.
+# installation guide, the license and third-party notices, plus SHA-256 sums.
+# Test executables are not included.
 #   .\tools\make-release.ps1            # package the current build\icd
 param([switch]$Build)
 $ErrorActionPreference = 'Stop'
@@ -21,6 +22,11 @@ Copy-Item -LiteralPath (Join-Path $taskPackage 'shaders') -Destination (Join-Pat
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'install-icd.ps1') -Destination (Join-Path $stage 'tools')
 Copy-Item -LiteralPath (Join-Path $taskRoot 'docs\install.md') -Destination (Join-Path $stage 'README.md')
 Copy-Item -LiteralPath (Join-Path $taskRoot 'docs\cts-expected-failures.md') -Destination $stage
+# The DLLs are built from Mesa and zlib: their licenses require the notices to
+# travel with every binary copy (tools\gen-third-party-notices.py writes them).
+foreach ($file in @('LICENSE', 'THIRD-PARTY-NOTICES.md')) {
+    Copy-Item -LiteralPath (Join-Path $taskRoot $file) -Destination $stage
+}
 $sums = Get-ChildItem -LiteralPath $stage -Recurse -File | ForEach-Object {
     (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + $_.FullName.Substring($stage.Length + 1).Replace('\', '/')
 }
