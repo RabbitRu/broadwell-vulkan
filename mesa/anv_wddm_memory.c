@@ -197,14 +197,6 @@ alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo
    if (!size || size > ANV_WDDM_MAX_BO_BYTES)
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    size = align64(size, 4096);
-   /* HASVK_WDDM_BO_ALIGN_2M=1 (measurement): BOs of 2 MiB and more get a
-    * 2 MiB-aligned address and size, so the kernel driver could map them with
-    * 2 MiB GPU pages (fewer TLB misses), if it does that at all. */
-   static int align_2m = -1;
-   if (align_2m < 0) { const char *e = getenv("HASVK_WDDM_BO_ALIGN_2M"); align_2m = e && atoi(e) > 0; }
-   const uint64_t va_align = align_2m && !fixed && !low && size >= (2ull << 20) ? (2ull << 20) : 4096;
-   size = align64(size, va_align);
-   if (size > ANV_WDDM_MAX_BO_BYTES) return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    struct anv_bo *bo = calloc(1, sizeof(*bo));
    if (!bo) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    struct anv_wddm_device_state *w = device->wddm;
@@ -221,7 +213,7 @@ alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo
    }
    struct util_vma_heap *heap = fixed ? &w->state_heap : low ? &w->scratch_heap : &w->client_heap;
    uint64_t address = fixed ? (util_vma_heap_alloc_addr(heap, explicit_address, size) ? explicit_address : 0) :
-      util_vma_heap_alloc(heap, size, va_align);
+      util_vma_heap_alloc(heap, size, 4096);
    if (!address) {
       mtx_unlock(&w->alloc_mutex); free(bo);
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
@@ -260,29 +252,6 @@ alloc_bo(struct anv_device *device, const char *name, uint64_t size, enum anv_bo
    bo->has_fixed_address = fixed;
    bo->map = hasvk_wddm_bo_map(bo->wddm_bo);
    bo->has_client_visible_address = (flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0;
-   { static int profile = -1; if (profile < 0) profile = getenv("HASVK_WDDM_PROFILE") != NULL;
-     if (profile) fprintf(stderr, "WDDM BO alloc %s %llu\n", name, (unsigned long long)size); }
-   /* HASVK_WDDM_PROFILE_PASSES: where creating allocations spends its time,
-    * every 5 s (differences of the transport's cumulative counters). */
-   {
-      static int passes = -1;
-      static struct hasvk_wddm_alloc_profile last;
-      static uint64_t last_ns;
-      if (passes < 0) passes = getenv("HASVK_WDDM_PROFILE_PASSES") != NULL;
-      struct hasvk_wddm_alloc_profile now;
-      const uint64_t now_ns = passes ? os_time_get_nano() : 0;
-      if (passes && !last_ns) last_ns = now_ns;
-      if (passes && now_ns - last_ns >= 5000000000ull && !hasvk_wddm_get_alloc_profile(w->transport, &now)) {
-         const uint64_t n = now.count - last.count;
-         fprintf(stderr, "HasVK/WDDM allocations: %llu (%.1f MiB) in 5 s: create %.1f ms, map %.1f + paging wait %.1f ms, "
-                 "resident %.1f + paging wait %.1f ms; %llu destroyed in %.1f ms\n",
-                 (unsigned long long)n, (now.bytes - last.bytes) / 1048576.0, (now.create_us - last.create_us) / 1e3,
-                 (now.map_us - last.map_us) / 1e3, (now.map_wait_us - last.map_wait_us) / 1e3,
-                 (now.resident_us - last.resident_us) / 1e3, (now.resident_wait_us - last.resident_wait_us) / 1e3,
-                 (unsigned long long)(now.destroys - last.destroys), (now.destroy_us - last.destroy_us) / 1e3);
-         last = now; last_ns = now_ns;
-      }
-   }
    *out = bo;
    return VK_SUCCESS;
 }
@@ -427,12 +396,10 @@ anv_AllocateMemory(VkDevice handle, const VkMemoryAllocateInfo *info,
          /* The application renders the whole frame's last passes into it, and
           * only DWM reads it, through the GPU and the LLC (never the display
           * engine): it keeps the internal (LLC write-back) MOCS like ordinary
-          * images. HASVK_WDDM_PRESENT_DIRECT_MOCS=external: the window
-          * surface's external MOCS (Dota 2: 22.7-25.9 FPS, internal 25.5-25.7). */
-         static int external = -1;
-         if (external < 0) { const char *e = getenv("HASVK_WDDM_PRESENT_DIRECT_MOCS"); external = e && !strcmp(e, "external"); }
+          * images (the external MOCS measured less steady in Dota 2: 22.7-25.9
+          * FPS against 25.5-25.7). */
          mem->bo->name = "window image";
-         mem->bo->is_external = external > 0;
+         mem->bo->is_external = false;
       }
    }
 #endif

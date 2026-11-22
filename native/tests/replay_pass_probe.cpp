@@ -1,5 +1,5 @@
 /* Replays a whole render pass captured by the driver (HASVK_WDDM_CAPTURE_PASS,
- * see mesa/anv_wddm_capture.c: pipelines.txt, pass.txt, p<i>-*.spv,
+ * see mesa/anv_wddm_capture.c on branch debug: pipelines.txt, pass.txt, p<i>-*.spv,
  * buf<i>.bin) on this ICD and times it with GPU timestamps, so that what a
  * game's pass costs can be taken apart without running the game.
  * Pipelines are rebuilt from their create info; every draw gets its captured

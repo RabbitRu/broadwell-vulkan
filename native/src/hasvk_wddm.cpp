@@ -27,9 +27,7 @@ uint64_t canonical(uint64_t address)
    return address & (1ull << 47) ? address | 0xffff000000000000ull : address;
 }
 
-/* HASVK_WDDM_PLAIN_CONTEXT=1: context without the presentable private data
- * (redirected present then shows black; for measurements). */
-Device::Device() : Device(4 /* D3DKMT_CLIENTHINT_VULKAN */, {}, GetEnvironmentVariableA("HASVK_WDDM_PLAIN_CONTEXT", nullptr, 0) == 0) {}
+Device::Device() : Device(4 /* D3DKMT_CLIENTHINT_VULKAN */, {}, true) {}
 Device::Device(uint32_t client_hint, std::vector<uint8_t> context_private, bool presentable_context)
 {
    try {
@@ -92,14 +90,6 @@ Device::Device(uint32_t client_hint, std::vector<uint8_t> context_private, bool 
    } catch (...) { close(); throw; }
 }
 
-/* CPU cache write-back/invalidation around GPU work: off by default, the GPU
- * is coherent with the CPU caches on this machine (see Device::submit). */
-static bool cpu_flush_enabled()
-{
-   static const bool enabled = GetEnvironmentVariableA("HASVK_WDDM_CPU_FLUSH", nullptr, 0) > 0;
-   return enabled;
-}
-
 /* Paging operations (GPU VA mapping, residency) complete on the paging queue's
  * monitored fence. The kernel signals an event when it reaches the value:
  * polling with Sleep(1) cost a whole timer tick (~15.6 ms) per wait, twice per
@@ -125,11 +115,6 @@ void Device::wait_paging(uint64_t fence, DWORD timeout_ms)
    }
 }
 
-static bool sync_paging()
-{
-   static const bool enabled = GetEnvironmentVariableA("HASVK_WDDM_SYNC_PAGING", nullptr, 0) > 0;
-   return enabled;
-}
 /* Creating an allocation queues GPU VA and residency updates on the paging
  * queue; while the GPU renders they execute only behind the work already
  * queued, so a CPU wait for them stalled vkAllocateMemory for 10-30 ms per
@@ -138,7 +123,6 @@ static bool sync_paging()
  * guarantees with a GPU-side wait. */
 void Device::after_paging(uint64_t fence)
 {
-   if (sync_paging()) { wait_paging(fence); return; }
    uint64_t pending = paging_pending_.load();
    while (pending < fence && !paging_pending_.compare_exchange_weak(pending, fence)) {}
 }
@@ -161,10 +145,6 @@ void Device::retire_oldest()
       const uint32_t state = execution_state();
       if (state != D3DKMT_DEVICEEXECUTION_ACTIVE)
          throw std::runtime_error("WDDM device is not active after submission (execution state " + std::to_string(state) + ")");
-      if (cpu_flush_enabled()) {   /* see submit(): coherent, no invalidation needed */
-         std::lock_guard<std::mutex> lock(buffers_mutex_);
-         for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 2) buffer->flush();
-      }
       _mm_mfence();
    } catch (...) { abort_context(); throw; }
    completed_seq_ = pending_.front().first;
@@ -207,17 +187,11 @@ uint64_t Device::submit(uint64_t commands, uint32_t bytes, const std::vector<uin
    LONG refused = 0;
    try {
       MemoryBarrier();
-      LARGE_INTEGER t1, t2;
       /* GPU access to these allocations is coherent with the CPU caches
        * (shared LLC; native/tests/coherence_probe.cpp: CPU-written, CPU-read
-       * and CPU-dirtied lines in L2/L3 and beyond, both directions). CPU
-       * write-back happens only with HASVK_WDDM_CPU_FLUSH=1 (diagnostics). */
-      if (cpu_flush_enabled()) {
-         std::lock_guard<std::mutex> lock(buffers_mutex_);
-         for (const Buffer *buffer : buffers_) if (buffer->cpu_tracking() & 1) buffer->flush();
-      }
+       * and CPU-dirtied lines in L2/L3 and beyond, both directions): no CPU
+       * cache write-back before submitting. */
       _mm_mfence();
-      QueryPerformanceCounter(&t1);
       /* Allocations this submission may use: their paging operations first. */
       const uint64_t paging = paging_pending_.load();
       if (paging > paging_gpu_waited_.load() &&
@@ -248,23 +222,14 @@ uint64_t Device::submit(uint64_t commands, uint32_t bytes, const std::vector<uin
       const LONG enqueued = D3DKMTSignalSynchronizationObject2(&signal);
       if (enqueued < 0) { free_events_.push_back(event); check(enqueued, "Enqueue completion event"); }
       pending_.emplace_back(++next_seq_, event);
-      QueryPerformanceCounter(&t2);
-      kernel_ticks += t2.QuadPart - t1.QuadPart;
    } catch (...) { if (!refused) abort_context(); throw; }
    return next_seq_;
 }
 void Buffer::flush(uint64_t offset, uint64_t bytes) const
 {
    if (offset > bytes_ || bytes > bytes_ - offset) throw std::runtime_error("Flush range outside the buffer");
-   if (!cpu_) return;   // window surfaces have no CPU mapping
-   if (!cpu_flush_enabled()) return;   /* coherent: explicit flushes are no-ops too */
-   /* Every flush, implicit (around submissions) or explicit, is counted in
-    * the device profile. */
-   LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-   for (uint64_t line = offset & ~63ull; line < offset + bytes; line += 64) _mm_clflush(static_cast<const char *>(cpu_) + line);
-   _mm_mfence();
-   QueryPerformanceCounter(&t1);
-   device_.flush_ticks += t1.QuadPart - t0.QuadPart; device_.flushed_bytes += bytes;
+   /* GPU access is coherent with the CPU caches (see Device::submit): nothing
+    * to write back or invalidate. */
 }
 uint32_t Device::execution_state()
 {
@@ -364,7 +329,6 @@ Buffer::Buffer(Device &device, const std::vector<uint8_t> &metadata, uint64_t by
       create.hDevice = device_.handle();
       create.NumAllocations = 1;
       create.pAllocationInfo2 = &info;
-      LARGE_INTEGER t[6]; QueryPerformanceCounter(&t[0]);
       check(D3DKMTCreateAllocation2(&create), "CreateAllocation2");
       allocation_ = info.hAllocation;
       if (cpu_map) {
@@ -373,7 +337,6 @@ Buffer::Buffer(Device &device, const std::vector<uint8_t> &metadata, uint64_t by
          check(D3DKMTLock2(&lock), "Lock2");
          cpu_ = lock.pData;
       }
-      QueryPerformanceCounter(&t[1]);
       D3DDDI_MAPGPUVIRTUALADDRESS map{};
       map.hPagingQueue = device_.queue();
       map.hAllocation = allocation_;
@@ -383,21 +346,13 @@ Buffer::Buffer(Device &device, const std::vector<uint8_t> &metadata, uint64_t by
       map.Protection.Value = protection;
       check(D3DKMTMapGpuVirtualAddress(&map), "MapGpuVirtualAddress");
       address_ = map.VirtualAddress;
-      QueryPerformanceCounter(&t[2]);
       device_.after_paging(map.PagingFenceValue);
-      QueryPerformanceCounter(&t[3]);
       if (requested_va && address_ != requested_va) throw std::runtime_error("Exact GPU VA mapping was not honored");
       D3DDDI_MAKERESIDENT resident{};
       resident.hPagingQueue = device_.queue();
       resident.NumAllocations = 1; resident.AllocationList = &allocation_;
       check(D3DKMTMakeResident(&resident), "MakeResident");
-      QueryPerformanceCounter(&t[4]);
       device_.after_paging(resident.PagingFenceValue);
-      QueryPerformanceCounter(&t[5]);
-      ++device_.alloc_count; device_.alloc_bytes += bytes;
-      device_.alloc_create_ticks += t[1].QuadPart - t[0].QuadPart; device_.alloc_map_ticks += t[2].QuadPart - t[1].QuadPart;
-      device_.alloc_map_wait_ticks += t[3].QuadPart - t[2].QuadPart; device_.alloc_resident_ticks += t[4].QuadPart - t[3].QuadPart;
-      device_.alloc_resident_wait_ticks += t[5].QuadPart - t[4].QuadPart;
       std::lock_guard<std::mutex> lock(device_.buffers_mutex_);
       device_.buffers_.push_back(this);
    } catch (...) { close(); throw; }
@@ -455,11 +410,6 @@ void Buffer::close() noexcept
    // If cancellation failed, leave allocations to device/process teardown.
    // They may still be referenced by GPU work and must not be freed here.
    if (device_.cancellation_failed_) return;
-   LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
-   struct Timed {
-      Device &device; LARGE_INTEGER &t0, &t1; bool counted;
-      ~Timed() { if (!counted) return; QueryPerformanceCounter(&t1); ++device.destroy_count; device.destroy_ticks += t1.QuadPart - t0.QuadPart; }
-   } timed{device_, t0, t1, allocation_ != 0 && !resource_};
    if (cpu_) {
       D3DKMT_UNLOCK2 unlock{};
       unlock.hDevice = device_.handle(); unlock.hAllocation = allocation_;

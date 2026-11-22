@@ -3,9 +3,10 @@ Builds the performance probes and profiling tools of native\tests into
 build\probes (they are not part of test-all):
 
   Vulkan, through the system loader and VK_DRIVER_FILES:
-    replay_pass_probe  replay of a captured render pass (HASVK_WDDM_CAPTURE_PASS);
+    replay_pass_probe  replay of a captured render pass (captured with the
+                       driver of branch debug, HASVK_WDDM_CAPTURE_PASS);
                        REPLAY_RECORD_ONLY=<n> times the driver's recording CPU
-    replay_probe       replay of one captured draw (HASVK_WDDM_CAPTURE_DIR)
+    replay_probe       replay of one captured draw (branch debug, HASVK_WDDM_CAPTURE_DIR)
     depth_fill_probe, flops_probe, sample_probe, vs_fetch_probe, bandwidth_probe
   The same loads on Intel's own D3D11 driver:
     d3d11_depth_fill_probe, d3d11_flops_probe, d3d11_sample_probe,

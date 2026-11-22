@@ -249,8 +249,8 @@ int wmain(int argc, wchar_t **argv)
       std::vector<VkPresentModeKHR> modes(count); check(vk.vkGetPhysicalDeviceSurfacePresentModesKHR(vk.physical, vk.surface, &count, modes.data()), "Present modes");
       json listed = json::array(); for (const auto &f : formats) listed.push_back(format_name(f.format));
       report["surfaceFormats"] = listed; report["presentModes"] = modes;
-      /* R8G8B8A8 formats are not listed unless HASVK_WDDM_PRESENT_DIRECT=0; their
-       * swapchains are still created and checked below (presented by copy). */
+      /* R8G8B8A8 formats are not listed (DWM reads window surfaces as B8G8R8A8);
+       * their swapchains are still created and checked below (presented by copy). */
       const VkFormat wanted[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SRGB};
       for (VkFormat f : wanted)
          require(std::any_of(formats.begin(), formats.end(), [f](const VkSurfaceFormatKHR &s) { return s.format == f; }), std::string("Missing surface format ") + format_name(f));

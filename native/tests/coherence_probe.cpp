@@ -1,7 +1,7 @@
 /* Is GPU access to host-visible memory coherent with the CPU caches?
  *
- * Runs without CPU cache write-back before submissions and invalidation after
- * completion (the default; HASVK_WDDM_CPU_FLUSH=1 would add them). For buffers that stay in
+ * The driver does no CPU cache write-back before submissions and no invalidation
+ * after completion. For buffers that stay in
  * L2 (64 KiB), L3 (1 MiB) and exceed it (4 MiB):
  *  - CPU writes a fresh pattern into src (cache-hot), CPU reads dst (its lines
  *    cached with old data), the GPU copies src to dst, the CPU reads dst:
@@ -56,7 +56,6 @@ int wmain(int argc, wchar_t **argv)
       VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; ca.commandPool = pool; ca.commandBufferCount = 1;
       VkCommandBuffer cmd{}; check(vkAllocateCommandBuffers(device, &ca, &cmd), "Command buffer");
       VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; VkFence fence{}; check(vkCreateFence(device, &fi, nullptr, &fence), "Fence");
-      char flag[8]{}; report["cpuFlush"] = GetEnvironmentVariableA("HASVK_WDDM_CPU_FLUSH", flag, sizeof(flag)) > 0;
       json cases = json::array(); uint64_t total_mismatches = 0;
       for (const VkDeviceSize bytes : {VkDeviceSize(64) << 10, VkDeviceSize(1) << 20, VkDeviceSize(4) << 20}) {
          VkBuffer buffers[2]{}; VkDeviceMemory memory[2]{}; volatile uint32_t *maps[2]{};

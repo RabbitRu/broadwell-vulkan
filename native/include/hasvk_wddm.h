@@ -71,16 +71,6 @@ int hasvk_wddm_readonly_pool_create(struct hasvk_wddm_device *device, uint64_t a
 int hasvk_wddm_readonly_pool_map(struct hasvk_wddm_readonly_pool *pool, uint32_t offset,
                                 uint32_t bytes, void **out);
 int hasvk_wddm_readonly_pool_destroy(struct hasvk_wddm_readonly_pool *pool);
-/* Diagnostics: cumulative cost of creating and destroying allocations since
- * the device was created (times in microseconds). */
-struct hasvk_wddm_alloc_profile {
-   uint64_t count, bytes, destroys;
-   double create_us;          /* CreateAllocation2 and Lock2 */
-   double map_us, map_wait_us; /* MapGpuVirtualAddress, then the CPU wait for its paging fence */
-   double resident_us, resident_wait_us; /* MakeResident, then the CPU wait for its paging fence */
-   double destroy_us;
-};
-int hasvk_wddm_get_alloc_profile(struct hasvk_wddm_device *device, struct hasvk_wddm_alloc_profile *out);
 /* The video memory manager's budget for this process on the adapter and the
  * process's current usage (D3DKMTQueryVideoMemoryInfo, the segment group with
  * the larger budget: on this integrated GPU all memory is shared system

@@ -10,8 +10,6 @@
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
 
-int64_t anv_wddm_stat_command_buffers, anv_wddm_stat_command_bos;
-
 /* The first BO of a command buffer is small: most command buffers of a game
  * hold a few KiB (Dota 2: ~4400 of them, 1-10 KiB each, thousands recorded at
  * once), and 64 KiB each ran the driver's own memory (ANV_WDDM_INTERNAL_BYTES)
@@ -60,7 +58,6 @@ static VkResult command_extend(struct anv_batch *batch, void *data)
    if (!bo) {
       VkResult result = anv_device_alloc_bo(cmd->device, "command", command_bytes, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &bo);
       if (result != VK_SUCCESS) return result;
-      p_atomic_inc(&anv_wddm_stat_command_bos);
    }
    s->chunks[s->chunk_count - 1].length = (uint32_t)((char *)batch->next - (char *)batch->start);
    /* chain_bytes past batch->end are reserved for this jump. */
@@ -96,7 +93,7 @@ static void command_resources_finish(struct anv_cmd_buffer *cmd)
       const bool kept = w->command_spare_count < ANV_WDDM_COMMAND_SPARES;
       if (kept) w->command_spares[w->command_spare_count++] = s->chunks[i].bo;
       mtx_unlock(&w->alloc_mutex);
-      if (!kept) { anv_device_release_bo(cmd->device, s->chunks[i].bo); p_atomic_dec(&anv_wddm_stat_command_bos); }
+      if (!kept) anv_device_release_bo(cmd->device, s->chunks[i].bo);
    }
    for (uint32_t i = 0; i < cmd->wddm->wait_count; ++i) vk_free(&cmd->vk.pool->alloc, cmd->wddm->waits[i].events);
    cmd->wddm->wait_count = 0;
@@ -111,7 +108,6 @@ static VkResult command_storage_begin(struct anv_cmd_buffer *cmd)
    if (!s->bo) {
       VkResult result = anv_device_alloc_bo(cmd->device, "command", first_command_bytes, ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_CAPTURE, 0, &s->bo);
       if (result != VK_SUCCESS) { s->bo = NULL; return result; }
-      p_atomic_inc(&anv_wddm_stat_command_bos);
       s->chunks[0] = (struct anv_wddm_cmd_chunk){s->bo, 0}; s->chunk_count = 1;
    }
    command_use_bo(cmd, s->bo);
@@ -166,7 +162,6 @@ static VkResult create_command(struct vk_command_pool *pool, VkCommandBufferLeve
    if (!u_vector_init(&cmd->bt_block_states, 8, sizeof(struct anv_state))) { result = VK_ERROR_OUT_OF_HOST_MEMORY; goto fail; }
    cmd->batch.alloc = &pool->alloc;
    command_resources_init(cmd);
-   p_atomic_inc(&anv_wddm_stat_command_buffers);
    *out = &cmd->vk;
    return VK_SUCCESS;
 fail:
@@ -186,8 +181,7 @@ static void destroy_command(struct vk_command_buffer *base)
 {
    struct anv_cmd_buffer *cmd = container_of(base, struct anv_cmd_buffer, vk);
    command_resources_finish(cmd); u_vector_finish(&cmd->bt_block_states);
-   if (cmd->wddm->bo) { anv_device_release_bo(cmd->device, cmd->wddm->bo); p_atomic_dec(&anv_wddm_stat_command_bos); }
-   p_atomic_dec(&anv_wddm_stat_command_buffers);
+   if (cmd->wddm->bo) anv_device_release_bo(cmd->device, cmd->wddm->bo);
    vk_free(&base->pool->alloc, cmd->wddm->chunks); vk_free(&base->pool->alloc, cmd->wddm->waits);
    vk_free(&base->pool->alloc, cmd->batch.relocs); vk_free(&base->pool->alloc, cmd->wddm);
    vk_command_buffer_finish(base); vk_free(&base->pool->alloc, cmd);
@@ -195,25 +189,11 @@ static void destroy_command(struct vk_command_buffer *base)
 void anv_wddm_command_spares_finish(struct anv_device *device)
 {
    struct anv_wddm_device_state *w = device->wddm;
-   while (w->command_spare_count) {
-      anv_device_release_bo(device, w->command_spares[--w->command_spare_count]);
-      p_atomic_dec(&anv_wddm_stat_command_bos);
-   }
+   while (w->command_spare_count) anv_device_release_bo(device, w->command_spares[--w->command_spare_count]);
 }
 const struct vk_command_buffer_ops anv_cmd_buffer_ops = {
    .create = create_command, .reset = anv_cmd_buffer_reset, .destroy = destroy_command,
 };
-/* HASVK_WDDM_DUMP_REGISTERS=1 prints these context registers after each submission. */
-static const uint32_t anv_wddm_dumped_registers[] = {0x7004 /* CACHE_MODE_1 */, 0x7000 /* CACHE_MODE_0 */, 0x7008 /* GT_MODE */,
-   0x7300 /* HDC_CHICKEN0 */, 0x7010 /* HIZ_CHICKEN */, 0x7014 /* COMMON_SLICE_CHICKEN2 */, 0xe184 /* HALF_SLICE_CHICKEN3 */,
-   0xe4f0 /* ROW_CHICKEN */, 0xe4f4 /* ROW_CHICKEN2 */, 0x20c0 /* INSTPM */, 0xe180 /* HALF_SLICE_CHICKEN2 */, 0x7018 /* SLICE_COMMON_ECO_CHICKEN1 */,
-   0x7034 /* GEN8_L3CNTLREG */, 0xb100 /* GEN8_L3SQCREG1 */, 0xb118 /* GEN8_L3SQCREG4 */, 0xb010 /* L3 LRA */, 0x2358 /* TIMESTAMP, control */};
-static bool anv_wddm_dump_registers(void)
-{
-   static int enabled = -1;
-   if (enabled < 0) enabled = getenv("HASVK_WDDM_DUMP_REGISTERS") != NULL;
-   return enabled;
-}
 /* End of recording. A primary buffer flushes its caches and writes the
  * completion marker that the submit path checks; a secondary just ends. */
 void anv_cmd_buffer_end_batch_buffer(struct anv_cmd_buffer *cmd)
@@ -230,13 +210,6 @@ void anv_cmd_buffer_end_batch_buffer(struct anv_cmd_buffer *cmd)
       anv_add_pending_pipe_bits(cmd, ANV_PIPE_DATA_CACHE_FLUSH_BIT | ANV_PIPE_CS_STALL_BIT | ANV_PIPE_END_OF_PIPE_SYNC_BIT,
          "command buffer completion");
       genX(cmd_buffer_apply_pipe_flushes)(cmd);
-      if (anv_wddm_dump_registers()) {   /* diagnostics: context register values into the guard region */
-         for (unsigned i = 0; i < ARRAY_SIZE(anv_wddm_dumped_registers); ++i)
-            anv_batch_emit(&cmd->batch, GENX(MI_STORE_REGISTER_MEM), store) {
-               store.RegisterAddress = anv_wddm_dumped_registers[i];
-               store.MemoryAddress = (struct anv_address){cmd->wddm->bo, cmd->wddm->bo->size - guard_bytes + 4 * i};
-            }
-      }
       anv_batch_emit(&cmd->batch, GENX(PIPE_CONTROL), flush) {
          flush.DCFlushEnable = true; flush.CommandStreamerStallEnable = true;
          flush.PostSyncOperation = WriteImmediateData;
@@ -410,24 +383,11 @@ static int take_slot(struct anv_wddm_device_state *w, uint32_t *slot)
 }
 /* One kernel submission from a slot whose jump goes to start. Waits for the
  * GPU unless seq is given (non-blocking: *seq receives its number). */
-/* HASVK_WDDM_TIMELINE: TIMESTAMP (low 32 bits, 0x2358) into the entry slot at
- * offset, by MI_STORE_REGISTER_MEM (4 dwords at dw). */
-static void store_timestamp(struct anv_wddm_device_state *w, uint32_t *dw, uint32_t slot, uint32_t offset)
-{
-   struct GENX(MI_STORE_REGISTER_MEM) store = { GENX(MI_STORE_REGISTER_MEM_header), .RegisterAddress = 0x2358,
-      .MemoryAddress = {NULL, hasvk_wddm_bo_address(w->entry) + slot * 128 + offset} };
-   GENX(MI_STORE_REGISTER_MEM_pack)(NULL, dw, &store);
-}
 static int submit_run(struct anv_wddm_device_state *w, uint32_t slot, struct anv_address start, uint64_t present_token,
                       uint64_t *seq)
 {
    uint32_t *entry = (uint32_t *)hasvk_wddm_bo_map(w->entry) + slot * 32;
-   if (anv_wddm_timeline_on) {   /* the GPU's start time of this kernel submission, then the jump */
-      store_timestamp(w, entry, slot, ANV_WDDM_TIMELINE_START);
-      write_tail(entry + 4, start, true);
-   } else
-      write_tail(entry, start, true);
-   w->last_slot = slot;
+   write_tail(entry, start, true);
    const uint32_t offset = slot * 128;
    const int failed = seq ? (present_token ? hasvk_wddm_submit_present_async(w->transport, w->entry, offset, 16, present_token, seq)
                                            : hasvk_wddm_submit_async(w->transport, w->entry, offset, 16, seq))
@@ -482,10 +442,6 @@ int anv_wddm_execute_commands(struct anv_device *device, struct vk_command_buffe
    uint32_t final_slot;
    if (take_slot(w, &final_slot)) return -1;
    uint32_t *completion = (uint32_t *)hasvk_wddm_bo_map(w->entry) + final_slot * 32 + 16;
-   if (anv_wddm_timeline_on) {   /* the GPU's end time (after the last buffer's CS stall), then the write */
-      store_timestamp(w, completion, final_slot, ANV_WDDM_TIMELINE_END);
-      completion += 4;
-   }
    const uint64_t counter = intel_canonical_address(hasvk_wddm_bo_address(w->completion));
    completion[0] = 0x10000002; completion[1] = (uint32_t)counter; completion[2] = counter >> 32; completion[3] = serial;
    completion[4] = 0x05000000; completion[5] = 0;   /* MI_STORE_DATA_IMM serial, MI_BATCH_BUFFER_END */
@@ -506,11 +462,8 @@ int anv_wddm_execute_commands(struct anv_device *device, struct vk_command_buffe
       *(uint64_t *)((char *)s->bo->map + marker_offset(s->bo)) = 0;
       /* Command BOs are not flushed by the transport: write back exactly this
        * command buffer's chunks (with its tail and marker) now. */
-      for (uint32_t c = 0; c < s->chunk_count; ++c) {
+      for (uint32_t c = 0; c < s->chunk_count; ++c)
          if (hasvk_wddm_bo_flush(s->chunks[c].bo->wddm_bo)) return -1;
-         w->stats_command_bytes += s->chunks[c].length;
-      }
-      ++w->stats_command_buffers;
       s->run = w->runs + 1;
       for (uint32_t k = 0; k < s->wait_count; ++k) {
          uint32_t slot;
@@ -571,12 +524,6 @@ static int check_completed(struct anv_cmd_buffer *cmd)
    }
    for (uint32_t c = 0; c < cmd->wddm->chunk_count; ++c) {
       const uint8_t *tail = (const uint8_t *)cmd->wddm->chunks[c].bo->map + cmd->wddm->chunks[c].bo->size - guard_bytes;
-      if (!c && anv_wddm_dump_registers()) {
-         static bool printed;
-         if (!printed) { printed = true; const uint32_t *values = (const uint32_t *)tail;
-            for (unsigned i = 0; i < ARRAY_SIZE(anv_wddm_dumped_registers); ++i) fprintf(stderr, "WDDM context register 0x%04x = 0x%08x\n", anv_wddm_dumped_registers[i], values[i]); }
-         continue;
-      }
       for (unsigned i = 0; i < guard_bytes; ++i) if ((c || i < 192 || i >= 200) && tail[i] != 0x6d) return -1;
    }
    ++w->command_batches_completed;

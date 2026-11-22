@@ -190,16 +190,11 @@ edit('src/vulkan/wsi/wsi_common_win32.cpp', [
      ' * as B8G8R8A8 whatever it is declared as, so only B8G8R8A8 swapchain images\n'
      ' * can be shown as they are. R8G8B8A8 formats are not reported (as on other\n'
      ' * Windows drivers); a swapchain created with one still works through the\n'
-     ' * copy. HASVK_WDDM_PRESENT_DIRECT=0 reports them again. */\n'
+     ' * copy. */\n'
      'static bool\n'
      'wsi_win32_format_hidden(VkFormat format)\n'
      '{\n'
-     '   static int direct = -1;\n'
-     '   if (direct < 0) {\n'
-     '      const char *e = getenv("HASVK_WDDM_PRESENT_DIRECT");\n'
-     '      direct = !e || atoi(e) > 0;\n'
-     '   }\n'
-     '   return direct > 0 && (format == VK_FORMAT_R8G8B8A8_UNORM || format == VK_FORMAT_R8G8B8A8_SRGB);\n'
+     '   return format == VK_FORMAT_R8G8B8A8_UNORM || format == VK_FORMAT_R8G8B8A8_SRGB;\n'
      '}\n'
      '#endif\n'),
     ('''   for (unsigned i = 0; i < ARRAY_SIZE(sorted_formats); i++) {
@@ -225,7 +220,7 @@ edit('src/vulkan/wsi/wsi_common_win32.cpp', [
     # a shared window surface and submits with the present token. GDI remains
     # the fallback when the driver hook fails.
     ('   HWND wnd;\n   HDC chain_dc;\n',
-     '   HWND wnd;\n   HDC chain_dc;\n   void *redirect_state;\n   uint64_t redirected_presents, gdi_presents;\n'
+     '   HWND wnd;\n   HDC chain_dc;\n   void *redirect_state;\n'
      '   bool rgba_order;   /* R8G8B8A8 images: GDI needs R and B swapped */\n'
      '   uint32_t next_image;   /* round-robin acquire, see wsi_win32_find_idle_image */\n'),
     # VK_KHR_win32_surface: "minImageExtent, maxImageExtent, and currentExtent
@@ -302,10 +297,7 @@ wsi_win32_extent_matches(struct wsi_win32_swapchain *chain)
    if (!GetClientRect(chain->surface->base.hwnd, &client))
       return false;
    const uint32_t width = client.right - client.left, height = client.bottom - client.top;
-   const bool matches = (!width && !height) || (width == chain->extent.width && height == chain->extent.height);
-   if (!matches && getenv("HASVK_WDDM_PRESENT_DEBUG"))
-      fprintf(stderr, "HasVK/WDDM WSI: client %ux%u, swapchain %ux%u\\n", width, height, chain->extent.width, chain->extent.height);
-   return matches;
+   return (!width && !height) || (width == chain->extent.width && height == chain->extent.height);
 }
 
 /* FIFO pacing: sleep until the next vertical blank, from DWM's composition
@@ -396,7 +388,6 @@ wsi_win32_find_idle_image('''),
 #endif
    if (image->base.redirected) {
       /* The window copy and the present went with WSI's present submission. */
-      ++chain->redirected_presents;
       wsi_win32_set_image_idle(chain, image);
 #ifdef HASVK_WDDM_GDI
       if (chain->base.present_mode == VK_PRESENT_MODE_FIFO_KHR)
@@ -406,8 +397,6 @@ wsi_win32_find_idle_image('''),
 #endif
       return chain->status;
    }
-   ++chain->gdi_presents;
-
    char *ptr = (char *)image->base.cpu_map;
    char *dptr = (char *)image->sw.ppvBits;
 '''),
@@ -466,10 +455,6 @@ wsi_win32_find_idle_image('''),
 
    if (chain->surface->current_swapchain == chain)''', '''   if (chain->chain_dc)
       ReleaseDC(chain->wnd, chain->chain_dc);
-
-   if (getenv("HASVK_WDDM_PRESENT_STATS"))
-      fprintf(stderr, "HasVK/WDDM present stats: %llu redirected, %llu gdi\\n",
-              (unsigned long long)chain->redirected_presents, (unsigned long long)chain->gdi_presents);
 
    if (chain->surface->current_swapchain == chain)'''),
 ])
@@ -535,57 +520,6 @@ edit('src/vulkan/wsi/wsi_common.c', [
       if (wsi->sw) {
 #endif
          wsi->WaitForFences'''),
-    ('''         MESA_TRACE_SCOPE("throttle");
-         results[i] = wsi->WaitForFences(vk_device_to_handle(dev),
-                                         1, &swapchain->fences[image_index],
-                                         true, ~0ull);''',
-     '''         MESA_TRACE_SCOPE("throttle");
-#ifdef HASVK_WDDM_GDI
-         /* HASVK_WDDM_PROFILE_PASSES: time spent here, every 5 s. */
-         static int throttle_diag = -1;
-         static uint64_t throttle_ns, throttle_count, throttle_last_ms;
-         if (throttle_diag < 0) throttle_diag = getenv("HASVK_WDDM_PROFILE_PASSES") != NULL;
-         const uint64_t throttle_start = throttle_diag ? os_time_get_nano() : 0;
-#endif
-         results[i] = wsi->WaitForFences(vk_device_to_handle(dev),
-                                         1, &swapchain->fences[image_index],
-                                         true, ~0ull);
-#ifdef HASVK_WDDM_GDI
-         if (throttle_diag) {
-            throttle_ns += os_time_get_nano() - throttle_start; ++throttle_count;
-            const uint64_t now_ms = os_time_get_nano() / 1000000;
-            if (!throttle_last_ms) throttle_last_ms = now_ms;
-            if (now_ms - throttle_last_ms >= 5000) {
-               fprintf(stderr, "HasVK/WDDM WSI: throttle waits %.1f ms in %llu presents (image %u of %u)\\n", throttle_ns / 1e6,
-                       (unsigned long long)throttle_count, image_index, swapchain->image_count);
-               throttle_ns = throttle_count = 0; throttle_last_ms = now_ms;
-            }
-         }
-#endif'''),
-    ('''      results[i] = swapchain->queue_present(swapchain, image_index,
-                                            image_signal_infos[i].present_id,
-                                            region);''',
-     '''#ifdef HASVK_WDDM_GDI
-      static int present_diag = -1;
-      static uint64_t present_ns, present_count, present_last_ms;
-      if (present_diag < 0) present_diag = getenv("HASVK_WDDM_PROFILE_PASSES") != NULL;
-      const uint64_t present_start = present_diag ? os_time_get_nano() : 0;
-#endif
-      results[i] = swapchain->queue_present(swapchain, image_index,
-                                            image_signal_infos[i].present_id,
-                                            region);
-#ifdef HASVK_WDDM_GDI
-      if (present_diag) {   /* the backend's present (FIFO pacing included), every 5 s */
-         present_ns += os_time_get_nano() - present_start; ++present_count;
-         const uint64_t now_ms = os_time_get_nano() / 1000000;
-         if (!present_last_ms) present_last_ms = now_ms;
-         if (now_ms - present_last_ms >= 5000) {
-            fprintf(stderr, "HasVK/WDDM WSI: backend present %.1f ms in %llu presents, present mode %d\\n", present_ns / 1e6,
-                    (unsigned long long)present_count, (int)swapchain->present_mode);
-            present_ns = present_count = 0; present_last_ms = now_ms;
-         }
-      }
-#endif'''),
 ])
 edit('src/vulkan/wsi/meson.build', [
     ('libvulkan_wsi = static_library(',
@@ -633,29 +567,6 @@ edit('src/intel/vulkan_hasvk/anv_private.h', [
     ('struct anv_device_memory {\n   struct vk_object_base                        base;', 'struct anv_device_memory {\n   struct vk_object_base                        base;\n#ifdef _WIN32\n   uint64_t wddm_allocation_size;\n#endif'),
     ('#define anv_genX(devinfo, thing) ({', '#ifdef _WIN32\n/* The WDDM adapter gate accepts only Gen8. */\n#define anv_genX(devinfo, thing) (&gfx8_##thing)\n#else\n#define anv_genX(devinfo, thing) ({'),
     ('})\n\n/* Gen-specific function declarations */', '})\n#endif\n\n/* Gen-specific function declarations */'),
-    # HASVK_WDDM_PROFILE_PASSES: pipe flush/stall requests counted by reason.
-    ('''   cmd_buffer->state.pending_pipe_bits |= bits;
-   if (INTEL_DEBUG(DEBUG_PIPE_CONTROL) && bits)''', '''   cmd_buffer->state.pending_pipe_bits |= bits;
-#ifdef _WIN32
-   if (anv_wddm_profile_pipe_bits_enabled && bits) anv_wddm_profile_pipe_bits(bits, reason);
-#endif
-   if (INTEL_DEBUG(DEBUG_PIPE_CONTROL) && bits)'''),
-    ('   if (devinfo->ver != 8 && !devinfo->has_sample_with_hiz)\n      return false;\n',
-     '   if (devinfo->ver != 8 && !devinfo->has_sample_with_hiz)\n      return false;\n'
-     '#ifdef _WIN32\n   /* HASVK_WDDM_NO_HIZ_SAMPLING=1: depth is resolved before sampling instead\n'
-     '    * of sampled with HiZ, which allows HiZ fast clears on Gen8\n'
-     '    * (anv_can_hiz_clear_ds_view). Faster when alpha-tested geometry is drawn\n'
-     '    * first after a clear (docs/optimizations-vs-dx11.md, 2.10); costs a\n'
-     '    * resolve per sampled depth pass, so it is not the default. */\n'
-     '   static int no_hiz_sampling = -1;\n'
-     '   if (no_hiz_sampling < 0) no_hiz_sampling = getenv("HASVK_WDDM_NO_HIZ_SAMPLING") != NULL;\n'
-     '   if (no_hiz_sampling) return false;\n#endif\n'),
-    ('static inline void\nanv_add_pending_pipe_bits(', '''#ifdef _WIN32
-extern bool anv_wddm_profile_pipe_bits_enabled;
-void anv_wddm_profile_pipe_bits(uint32_t bits, const char *reason);
-#endif
-static inline void
-anv_add_pending_pipe_bits('''),
     ('   return image->vk.samples == 1;\n}\n\nvoid\nanv_cmd_buffer_mark_image_written(',
      '''   return image->vk.samples == 1;
 }
@@ -825,32 +736,6 @@ for function in ['anv_graphics_pipeline_init', 'anv_graphics_pipeline_create', '
     pipeline_replacements.append((body, '#if !defined(_WIN32) || defined(HASVK_WDDM_GRAPHICS)\n' + body + '\n#endif'))
 # After the wrapping above, which matches the upstream function bodies.
 pipeline_replacements += [
-    # MEASUREMENT ONLY (stage 7, docs/roadmap.md): HASVK_WDDM_SHADOW_NO_DISCARD=1
-    # drops the fragment shader of pipelines without colour attachments
-    # (depth-only passes such as shadow maps), and with it any alpha-test
-    # discard. This changes what the application asked for; it exists to
-    # measure what the alpha test of The Talos Principle's shadow casters
-    # costs and changes. Off by default.
-    ('''   if (pipeline->active_stages & VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)
-      pipeline->active_stages |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
-''', '''   if (pipeline->active_stages & VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)
-      pipeline->active_stages |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
-#ifdef _WIN32
-   {
-      static int no_discard = -1;
-      if (no_discard < 0) no_discard = getenv("HASVK_WDDM_SHADOW_NO_DISCARD") != NULL;
-      if (no_discard && state->rp && state->rp->color_attachment_count == 0)
-         pipeline->active_stages &= ~VK_SHADER_STAGE_FRAGMENT_BIT;
-   }
-#endif
-'''),
-    ('''      mesa_shader_stage stage = vk_to_mesa_shader_stage(info->pStages[i].stage);
-      stages[stage].stage = stage;''', '''      mesa_shader_stage stage = vk_to_mesa_shader_stage(info->pStages[i].stage);
-#ifdef _WIN32
-      if (!(pipeline->active_stages & mesa_to_vk_shader_stage(stage)))
-         continue;   /* dropped above (HASVK_WDDM_SHADOW_NO_DISCARD) */
-#endif
-      stages[stage].stage = stage;'''),
     # VK_KHR_maintenance5: VkPipelineCreateFlags2CreateInfo replaces
     # pCreateInfo->flags, which the application may then leave as anything.
     # Upstream takes the graphics pipeline's flags, and the compute
@@ -957,9 +842,7 @@ image_after = image_after.replace('   vk_image_init(&device->vk, &image->vk, pCr
 #ifndef HASVK_WDDM_GRAPHICS
    create_info->isl_extra_usage_flags |= ISL_SURF_USAGE_DISABLE_AUX_BIT;
 #else
-   /* Graphics: upstream's HiZ and MCS (CCS is off, see anv_CreateInstance).
-    * HASVK_WDDM_NO_AUX=1 disables every auxiliary surface (investigation). */
-   if (getenv("HASVK_WDDM_NO_AUX")) create_info->isl_extra_usage_flags |= ISL_SURF_USAGE_DISABLE_AUX_BIT;
+   /* Graphics: upstream's HiZ and MCS (CCS is off, see anv_CreateInstance). */
 #endif
 #endif
    vk_image_init(&device->vk, &image->vk, pCreateInfo);''')
@@ -1054,62 +937,7 @@ image_after = gen8_only(image_after, [
       view.swizzle = ISL_SWIZZLE_IDENTITY;
 ''', ''),
 ])
-# CCS_D (colour fast clears) only where it was checked: single-level,
-# single-layer images (multisample resolves into mip level 3 and into array
-# layer 1 came out wrong with it: CTS multisample_resolve.*_resolve_level_3,
-# *_baseLayer1) that are not swapchain images (those are shown by DWM as they
-# are, without a resolve). It is off unless HASVK_WDDM_CCS=1 (anv_CreateInstance).
-ccs_old = '''      ok = isl_surf_get_ccs_surf(&device->isl_dev,
-'''
-assert image_after.count(ccs_old) == 1
-image_after = image_after.replace(ccs_old, '''#ifdef _WIN32
-      if (image->vk.mip_levels > 1 || image->vk.array_layers > 1 || image->from_wsi)
-         return VK_SUCCESS;
-#endif
-''' + ccs_old)
 edit(image_name, [(image_before, image_after)])
-# HASVK_WDDM_L3=<n> (measurements): entry n of the platform's validated L3
-# configurations (Broadwell: 0 = URB 48 + ALL 48, the default; 1 = URB 48, DC
-# 16, RO 32; 2 = URB 32, DC 16, RO 48; 3 = URB 32, RO 64; 4 = URB 32, ALL 64)
-# for every pipeline and the device default, as long as its SLM matches what
-# the pipeline needs. URB sizes follow the chosen configuration.
-edit('src/intel/common/intel_l3_config.c', [
-    ('''const struct intel_l3_config *
-intel_get_default_l3_config(const struct intel_device_info *devinfo)
-{''', '''#ifdef _WIN32
-#include <stdlib.h>
-static const struct intel_l3_config *
-wddm_forced_l3_config(const struct intel_device_info *devinfo, bool slm)
-{
-   static int forced = -2;
-   if (forced == -2) {
-      const char *e = getenv("HASVK_WDDM_L3");
-      forced = e && *e ? atoi(e) : -1;
-   }
-   const struct intel_l3_list *const list = get_l3_list(devinfo);
-   if (forced < 0 || forced >= (int)list->length) return NULL;
-   const struct intel_l3_config *cfg = &list->configs[forced];
-   return (cfg->n[INTEL_L3P_SLM] > 0) == slm ? cfg : NULL;
-}
-#endif
-
-const struct intel_l3_config *
-intel_get_default_l3_config(const struct intel_device_info *devinfo)
-{
-#ifdef _WIN32
-   const struct intel_l3_config *forced = wddm_forced_l3_config(devinfo, false);
-   if (forced) return forced;
-#endif'''),
-    ('''   const struct intel_l3_config *cfg_best = NULL;
-   float dw_best = HUGE_VALF;
-''', '''   const struct intel_l3_config *cfg_best = NULL;
-   float dw_best = HUGE_VALF;
-#ifdef _WIN32
-   const struct intel_l3_config *forced = wddm_forced_l3_config(devinfo, w0.w[INTEL_L3P_SLM] > 0);
-   if (forced) return forced;
-#endif
-'''),
-])
 # A shader upload that fails (out of memory) is returned to the caller, which
 # skips the operation; the driver marks the command buffer failed. Upstream
 # asserts, which ended the process in CTS simulate_oom tests.
@@ -1472,8 +1300,6 @@ owned_sources = {
     'src/intel/vulkan_hasvk/anv_wddm_batch.c': (ROOT / 'mesa/anv_wddm_batch.c').read_text(encoding='utf-8'),
     'src/intel/vulkan_hasvk/anv_wddm_command.c': (ROOT / 'mesa/anv_wddm_command.c').read_text(encoding='utf-8'),
     'src/intel/vulkan_hasvk/anv_wddm_present.c': (ROOT / 'mesa/anv_wddm_present.c').read_text(encoding='utf-8'),
-    'src/intel/vulkan_hasvk/anv_wddm_profile.c': (ROOT / 'mesa/anv_wddm_profile.c').read_text(encoding='utf-8'),
-    'src/intel/vulkan_hasvk/anv_wddm_capture.c': (ROOT / 'mesa/anv_wddm_capture.c').read_text(encoding='utf-8'),
     'src/intel/wddm_compiler/vulkan_hasvk_wddm.def': (ROOT / 'mesa/anv_wddm.def').read_text(encoding='utf-8'),
     'src/intel/wddm_compiler/elk_compile_probe.c': (ROOT / 'mesa/elk_compile_probe.c').read_text(encoding='utf-8'),
     'src/intel/wddm_compiler/elk_abi_probe.cpp': (ROOT / 'mesa/elk_abi_probe.cpp').read_text(encoding='utf-8'),
@@ -1624,7 +1450,7 @@ if get_option('hasvk-wddm-graphics')
 endif
 libanv_wddm_objects = static_library('anv_wddm_objects',
   ['../vulkan_hasvk/anv_wddm_device.c', '../vulkan_hasvk/anv_wddm_memory.c', '../vulkan_hasvk/anv_wddm_pools.c', '../vulkan_hasvk/anv_allocator.c',
-   '../vulkan_hasvk/anv_wddm_present.c', '../vulkan_hasvk/anv_wddm_profile.c', '../vulkan_hasvk/anv_wddm_capture.c',
+   '../vulkan_hasvk/anv_wddm_present.c',
    '../vulkan_hasvk/anv_descriptor_set.c',
    '../vulkan_hasvk/anv_image.c', '../vulkan_hasvk/anv_android_stubs.c',
    '../vulkan_hasvk/anv_pipeline.c', '../vulkan_hasvk/anv_pipeline_cache.c', '../vulkan_hasvk/anv_wddm_batch.c',

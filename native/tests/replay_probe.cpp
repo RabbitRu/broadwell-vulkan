@@ -1,5 +1,5 @@
 /* Replays one draw captured by the driver (HASVK_WDDM_CAPTURE_DIR, see
- * mesa/anv_wddm_capture.c) on this ICD and times it with GPU timestamps, so
+ * mesa/anv_wddm_capture.c on branch debug) on this ICD and times it with GPU timestamps, so
  * that compiler or driver variants can be compared in seconds instead of game
  * runs. The pipeline is rebuilt from capture.txt (stages, specialization,
  * vertex input, layout, raster and depth state); buffers get the captured

@@ -74,7 +74,7 @@ $a = Snapshot
 $samples = @(Get-Counter -Counter $paths -SampleInterval 1 -MaxSamples $Seconds -ErrorAction SilentlyContinue)
 $b = Snapshot
 $wall = ($b.when - $a.when) / [Diagnostics.Stopwatch]::Frequency
-$tsc = 2.7e9   # invariant TSC of the i5-5257U (2.700 GHz, measured by HASVK_WDDM_TIMELINE)
+$tsc = 2.7e9   # invariant TSC of the i5-5257U (2.700 GHz)
 $sum = @{}; $flags = @{}; $gpu = 0.0; $gameGpu = 0.0; $dwmGpu = 0.0; $n = 0
 foreach ($set in $samples) {
    if (-not $set.CounterSamples) { continue }

@@ -72,8 +72,6 @@ $taskStart.EnvironmentVariables.Remove('VK_ICD_FILENAMES'); $taskStart.Environme
 $taskStart.EnvironmentVariables['VK_LOADER_LAYERS_DISABLE']='~implicit~'
 $taskStart.EnvironmentVariables['PATH']=$taskPackage+';'+$env:PATH
 if ($Present -eq 'gdi') { $taskStart.EnvironmentVariables['HASVK_WDDM_PRESENT']='gdi' } else { $taskStart.EnvironmentVariables.Remove('HASVK_WDDM_PRESENT') }
-$taskStart.EnvironmentVariables['HASVK_WDDM_PRESENT_STATS']='1'
-$taskStart.EnvironmentVariables['HASVK_WDDM_ASSERTS_TO_STDERR']='1'   # no assert message boxes from the ICD
 [CubeWindow]::KeepDisplayOn($true); Start-Sleep -Milliseconds 1000
 if ($Validate) {
     if (-not (Test-Path -LiteralPath (Join-Path $LayerPath 'VkLayer_khronos_validation.json'))) { throw "Validation layer not found in $LayerPath" }
@@ -144,14 +142,9 @@ try {
     }
     if (-not $taskProcess.HasExited) { $taskProcess.Kill(); $taskProcess.WaitForExit(); throw 'vkcube did not exit before the deadline' }
     $taskBlank=@($taskCaptures | Where-Object { $_.distinctSampledColors -lt 20 -or $_.unpaintedEdgeSamples })
-    # "HasVK/WDDM present stats: R redirected, G gdi" (HASVK_WDDM_PRESENT_STATS, at swapchain destruction).
-    $taskStats=@([regex]::Matches($taskErrors.Result, 'present stats: (\d+) redirected, (\d+) gdi'))
-    $taskRedirected=($taskStats | ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
-    $taskGdi=($taskStats | ForEach-Object { [int]$_.Groups[2].Value } | Measure-Object -Sum).Sum
     $taskCpu=$null; try { $taskCpu=[math]::Round($taskProcess.TotalProcessorTime.TotalSeconds,2) } catch {}
     $taskResult=[ordered]@{frames=$Frames; exerciseSeconds=$ExerciseSeconds; present=$Present; exitCode=$taskProcess.ExitCode; seconds=[math]::Round($taskWatch.Elapsed.TotalSeconds,2);
         cpuSeconds=$taskCpu;
-        redirectedPresents=$taskRedirected; gdiPresents=$taskGdi;
         captureCount=$taskCaptures.Count; blankCaptures=$taskBlank.Count; captures=$taskCaptures}
     [IO.File]::WriteAllText((Join-Path $OutputDirectory 'report.json'), ($taskResult | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
     if ($taskBlank.Count) { throw "vkcube produced $($taskBlank.Count) blank captures" }

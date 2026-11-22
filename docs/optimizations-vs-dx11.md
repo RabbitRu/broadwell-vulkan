@@ -178,6 +178,9 @@ $env:REPLAY_RECORD_ONLY='20000'; .\build\probes\replay_pass_probe.exe build\talo
 # микротесты (пары Vulkan / D3D11): depth_fill, flops, sample, vs_fetch, cpu_map_probe, gpu_freq_monitor
 ```
 
+- Переменные `HASVK_WDDM_*` в этом разделе (журнал кадра, захват прохода,
+  профиль) и переключатели из реестра гипотез есть только в драйвере ветки
+  `debug`; в `main` и в релизных пакетах их нет.
 - `HASVK_WDDM_PROFILE_PASSES=1` — время GPU по проходам, вызовы ядра, медленные
   кадры с причинами (замедляет на 10–15 %); `HASVK_WDDM_STATS=1` — объём
   команд и память драйвера; `HASVK_WDDM_PROFILE_DRAWS=1` — время каждого draw.

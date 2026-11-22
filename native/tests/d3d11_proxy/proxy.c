@@ -1,4 +1,4 @@
-/* Timing proxy d3d11.dll: the DX11 counterpart of HASVK_WDDM_PROFILE_PASSES.
+/* Timing proxy d3d11.dll: the DX11 counterpart of HASVK_WDDM_PROFILE_PASSES (branch debug).
  *
  * Put next to a game's executable only for a measurement run (tools/
  * run-talos.ps1 -D3D11Proxy copies it there and removes it afterwards). It

@@ -42,25 +42,6 @@ def fragment_dispatch(source):
                                       ForceON : 0,'''
     assert source.count(old) == 1
     source = source.replace(old, new)
-    # HASVK_WDDM_PMA_FIX=0 (measurement option): never enable the Gfx8 PMA fix.
-    # Off is the state upstream calls always safe; the option shows what the
-    # fix and its toggles (a command streamer stall each) are worth.
-    old = '      const bool pma = want_depth_pma_fix(cmd_buffer, &opt_ds);\n'
-    assert source.count(old) == 1
-    source = source.replace(old, '''      static int pma_allowed = -1;
-      if (pma_allowed < 0) {
-         const char *e = getenv("HASVK_WDDM_PMA_FIX");
-         pma_allowed = !(e && e[0] == '0');
-      }
-      const bool pma = pma_allowed && want_depth_pma_fix(cmd_buffer, &opt_ds);
-''')
-    old = '   cmd_buffer->state.pma_fix_enabled = enable;\n'
-    assert source.count(old) == 1
-    source = source.replace(old, old + '''#ifdef _WIN32
-   if (anv_wddm_profile_pipe_bits_enabled)
-      anv_wddm_profile_pipe_bits(1, enable ? "PMA fix toggled on" : "PMA fix toggled off");
-#endif
-''')
     return source
 
 

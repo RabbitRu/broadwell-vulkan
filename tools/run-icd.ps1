@@ -30,7 +30,6 @@ $taskStart.EnvironmentVariables.Remove('VK_ICD_FILENAMES')
 $taskStart.EnvironmentVariables.Remove('VK_ADD_DRIVER_FILES')
 $taskStart.EnvironmentVariables['VK_LOADER_LAYERS_DISABLE']='~implicit~'
 $taskStart.EnvironmentVariables['VK_LOADER_DEBUG']='error,warn'
-$taskStart.EnvironmentVariables['HASVK_WDDM_ASSERTS_TO_STDERR']='1'   # no assert message boxes from the ICD
 $taskStart.EnvironmentVariables['PATH']=$taskPackage+';'+$env:PATH
 if ($ValidationLog) {
     if (-not (Test-Path -LiteralPath (Join-Path $LayerPath 'VkLayer_khronos_validation.json'))) { throw "Validation layer not found in $LayerPath" }

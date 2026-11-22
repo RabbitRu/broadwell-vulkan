@@ -10,12 +10,7 @@
 #include <cwctype>
 using namespace hasvk::wddm;
 
-/* HASVK_WDDM_PROFILE=1: time spent per submission phase, printed at device destruction. */
-struct submit_profile { uint64_t submissions = 0, upload_ticks = 0, submit_ticks = 0, upload_bytes = 0; };
-static bool profile_enabled() { static int enabled = -1; if (enabled < 0) enabled = GetEnvironmentVariableA("HASVK_WDDM_PROFILE", nullptr, 0) > 0; return enabled != 0; }
-static uint64_t ticks() { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
 struct hasvk_wddm_device {
-   submit_profile profile;
    Device native;
    std::mutex mutex;
    std::unordered_map<uint64_t, std::unique_ptr<VaRange>> ranges;
@@ -80,12 +75,6 @@ extern "C" int hasvk_wddm_device_create(hasvk_wddm_device **out)
 extern "C" int hasvk_wddm_device_destroy(hasvk_wddm_device *device)
 {
    if (!device) return 0;
-   if (profile_enabled() && device->profile.submissions) {
-      LARGE_INTEGER f; QueryPerformanceFrequency(&f); const double us = 1e6 / double(f.QuadPart), n = double(device->profile.submissions);
-      fprintf(stderr, "WDDM submit profile: %llu submissions; per submission: pool upload %.0f us (%.0f KiB), cache flush %.0f us (%.0f KiB), kernel submit+wait %.0f us\n",
-         (unsigned long long)device->profile.submissions, device->profile.upload_ticks * us / n, device->profile.upload_bytes / n / 1024,
-         device->native.flush_ticks * us / n, device->native.flushed_bytes / n / 1024, device->native.kernel_ticks * us / n);
-   }
    return checked([&] {
       {
          std::lock_guard<std::mutex> lock(device->mutex);
@@ -96,15 +85,6 @@ extern "C" int hasvk_wddm_device_destroy(hasvk_wddm_device *device)
       }
       delete device;
    });
-}
-extern "C" int hasvk_wddm_get_alloc_profile(hasvk_wddm_device *device, hasvk_wddm_alloc_profile *out)
-{
-   if (!device || !out) return failure("Missing allocation profile arguments");
-   LARGE_INTEGER f; QueryPerformanceFrequency(&f); const double us = 1e6 / double(f.QuadPart);
-   const Device &n = device->native;   /* atomic counters: no device lock needed */
-   *out = {n.alloc_count.load(), n.alloc_bytes.load(), n.destroy_count.load(), n.alloc_create_ticks * us, n.alloc_map_ticks * us,
-           n.alloc_map_wait_ticks * us, n.alloc_resident_ticks * us, n.alloc_resident_wait_ticks * us, n.destroy_ticks * us};
-   return 0;
 }
 extern "C" int hasvk_wddm_query_video_memory(uint32_t luid_low, int32_t luid_high, uint64_t *budget, uint64_t *usage)
 {
@@ -285,15 +265,12 @@ static int submit(hasvk_wddm_device *device, hasvk_wddm_bo *commands, uint32_t o
          std::lock_guard<std::mutex> lock(device->mutex);
          if (commands->native->size() != 8192 || offset > 8192 || bytes > 8192 - offset || (offset & 7))
             throw std::runtime_error("Submission entry must fit the calibrated 8192-byte command BO");
-         const uint64_t t0 = ticks();
          for (const auto *pool : device->pools) {
             for (size_t i = 0; i < pool->chunks.size(); ++i) {
-               if (pool->chunks[i]) { memcpy(pool->chunks[i]->cpu(), static_cast<const char *>(pool->cpu) + i * 65536, 65536); device->profile.upload_bytes += 65536; }
+               if (pool->chunks[i]) memcpy(pool->chunks[i]->cpu(), static_cast<const char *>(pool->cpu) + i * 65536, 65536);
             }
          }
-         const uint64_t t1 = ticks();
          seq = device->native.submit(commands->native->address() + offset, bytes, command_header_8192(), present_token);
-         device->profile.upload_ticks += t1 - t0; device->profile.submit_ticks += ticks() - t1; ++device->profile.submissions;
       }
       if (seq_out) *seq_out = seq;
       if (wait) wait_submission(device, seq, 15000);

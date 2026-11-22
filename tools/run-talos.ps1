@@ -9,7 +9,7 @@ shows a modal crash dialog), shows any other modal dialog, or exceeds
   -Api Vulkan|Direct3D11
   -Icd <json>        Vulkan only: VK_DRIVER_FILES (default: build\icd; "installed"
                      uses the registered ICD)
-  -Env NAME=v,...    extra environment variables (HASVK_WDDM_PROFILE_PASSES=1, ...)
+  -Env NAME=v,...    extra environment variables
   -Extra '...'       extra Talos command line (+cvar value ...)
   -Tag name          output name in build\talos (stdout/stderr and Talos.log copy)
   -D3D11Proxy dll    Direct3D11 only: the timing proxy (native\tests\d3d11_proxy)

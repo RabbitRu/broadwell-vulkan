@@ -31,9 +31,6 @@ anv_wddm_heap_bytes(void)
 /* Application memory (vkAllocateMemory) of all devices of this process. */
 uint64_t anv_wddm_process_user_bytes(void);
 #define ANV_WDDM_MAX_BOS 65536u
-/* HASVK_WDDM_STATS: command buffers and their command BOs (in use,
- * idle first BOs and spares) alive in this process. */
-extern int64_t anv_wddm_stat_command_buffers, anv_wddm_stat_command_bos;
 #define ANV_WDDM_COMMAND_SPARES 512u   /* 32 MiB of idle 64 KiB command BOs */
 /* Scratch BOs, relative to origin: above the general state pool (which ends
  * at most at origin + 2 MiB + 1 GiB), below the instruction pool (origin + 3 GiB). */
@@ -108,15 +105,12 @@ struct anv_wddm_device_state {
    uint64_t slot_seq[ANV_WDDM_ENTRY_SLOTS];
    uint32_t next_slot;
    uint32_t next_serial;
-   uint32_t last_slot;   /* slot of the last kernel submission (submit_mutex) */
    /* Non-blocking queue: a vkQueueSubmit's last kernel submission is not
     * waited for; the completion thread waits for it, verifies markers and
     * guards, then signals its syncs. pending (oldest first), verified_seq and
     * completion_exit are protected by mutex and announced on condition. */
    struct list_head pending;
    uint64_t verified_seq;
-   /* HASVK_WDDM_STATS=1: command stream volume, printed every 5 s by submit(). */
-   uint64_t stats_command_bytes, stats_command_buffers, stats_submits, stats_last_ms;
    thrd_t completion_thread;
    bool completion_thread_started, completion_exit;
 };
@@ -124,7 +118,6 @@ struct anv_wddm_pending {
    struct list_head link;
    uint64_t seq;        /* transport submission number */
    uint32_t serial;     /* value of the completion write */
-   uint32_t slot;       /* entry slot of its last kernel submission (timeline) */
    uint32_t command_count, signal_count;
    struct anv_cmd_buffer **commands;
    struct vk_sync_signal *signals;
@@ -173,13 +166,6 @@ struct anv_wddm_cmd_state {
     * present, the commands run without it and *present_refused is set. */
    uint64_t present_token;
    int *present_refused;
-   /* HASVK_WDDM_PROFILE_PASSES (anv_wddm_profile.c): timestamp slot + 1 of
-    * the open render pass; since vkBeginCommandBuffer: draws, the bound
-    * graphics pipeline's kill_pixel (1 no, 2 yes) and how often it changed. */
-   uint32_t profile_slot, profile_draws, profile_kill, profile_kill_switches, profile_cmd_slot;
-   /* The open render pass (HASVK_WDDM_DUMP_DIR shadow map dumps). */
-   uint64_t profile_framebuffer, profile_render_pass;
-   uint32_t profile_width, profile_height;
 };
 /* Executes command buffers in order, chaining them into as few kernel
  * submissions as their event waits and repetitions allow. serial != 0: the
@@ -209,20 +195,10 @@ VkCommandBuffer anv_wddm_present_redirected_record(VkDevice device, VkQueue queu
                                                    void *hwnd, VkExtent2D extent, void **state);
 void anv_wddm_present_redirected_finish(VkDevice device, void *state);
 /* Swapchain image whose memory can be a window surface itself, so its present
- * needs no copy (anv_wddm_present.c, HASVK_WDDM_PRESENT_DIRECT). */
+ * needs no copy (anv_wddm_present.c). */
 bool anv_wddm_window_image(struct anv_device *device, const struct anv_image *image, uint64_t size);
 #endif
 #ifdef HASVK_WDDM_GRAPHICS
-void anv_wddm_profile_install(struct vk_device_dispatch_table *dispatch);
-void anv_wddm_profile_report(struct anv_device *device);
-void anv_wddm_capture_pipelines(const VkGraphicsPipelineCreateInfo *infos, uint32_t count, const VkPipeline *pipelines);
-void anv_wddm_capture_draw(struct anv_cmd_buffer *cmd, bool indexed, uint32_t count, uint32_t instances, uint32_t first,
-                           int32_t vertex_offset, uint32_t first_instance);
-void anv_wddm_capture_end_command_buffer(struct anv_cmd_buffer *cmd);
-void anv_wddm_capture_poll(void);
-void anv_wddm_capture_pass_begin(struct anv_cmd_buffer *cmd, const VkRenderPassBeginInfo *info);
-void anv_wddm_capture_pass_end(struct anv_cmd_buffer *cmd);
-void anv_wddm_capture_execute(struct anv_cmd_buffer *cmd, uint32_t count);
 void anv_wddm_cmd_state_finish(struct anv_cmd_buffer *cmd);
 void anv_wddm_init_border_colors(struct anv_device *device);
 struct anv_address anv_wddm_event_address(struct anv_device *device, const struct anv_event *event);
@@ -231,38 +207,6 @@ int anv_wddm_flush_state_pools(struct anv_device *device);
 void anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct vk_device_extension_table *ext,
                                     struct vk_features *features, struct vk_properties *props);
 #endif
-
-/* HASVK_WDDM_TIMELINE=<file.csv> (anv_wddm_profile.c): a log of what each
- * thread does around the frame, written when the device is destroyed — the
- * application's Vulkan calls that can block (submit, present, acquire, fence
- * and query waits, allocations), the queue thread's semaphore waits and kernel
- * submissions, the completion thread's wake-ups, and the GPU's own start and
- * end time of every kernel submission (TIMESTAMP stored by the entry slot,
- * ANV_WDDM_TIMELINE_START/END bytes into it). Independent of
- * HASVK_WDDM_PROFILE_PASSES, whose per-pass timestamps serialize the GPU. */
-#define ANV_WDDM_TIMELINE_START 112u
-#define ANV_WDDM_TIMELINE_END 116u
-enum anv_wddm_timeline_type {
-   ANV_TL_CALL_BEGIN = 1,   /* a: anv_wddm_timeline_call; b: thread cycles (frame calls) */
-   ANV_TL_CALL_END,         /* a: call; b: VkResult */
-   ANV_TL_SUBMIT_BEGIN,     /* queue thread enters submit(): a: command buffers, b: waits */
-   ANV_TL_SUBMIT_WAITED,    /* after its CPU semaphore waits: a: waits done on the CPU */
-   ANV_TL_KERNEL_BEGIN,     /* a: serial, b: bit 0: a present; bits 63:1: thread cycles */
-   ANV_TL_KERNEL_END,       /* a: serial, b: thread cycles */
-   ANV_TL_GPU_DONE,         /* completion thread woke: a: serial, b: GPU start | end << 32 (ticks) */
-   ANV_TL_SIGNALED,         /* a: serial, b: thread cycles */
-   ANV_TL_CALIBRATE,        /* a: rdtsc, b: FILETIME (local) */
-};
-enum anv_wddm_timeline_call {
-   ANV_TL_QUEUE_SUBMIT = 1, ANV_TL_QUEUE_PRESENT, ANV_TL_ACQUIRE, ANV_TL_WAIT_FENCES, ANV_TL_FENCE_STATUS,
-   ANV_TL_QUERY_RESULTS, ANV_TL_QUEUE_WAIT_IDLE, ANV_TL_DEVICE_WAIT_IDLE, ANV_TL_ALLOCATE, ANV_TL_MAP,
-   ANV_TL_RESET_FENCES, ANV_TL_WAIT_SEMAPHORES, ANV_TL_CREATE_PIPELINES, ANV_TL_FREE, ANV_TL_RESET_POOL,
-};
-extern bool anv_wddm_timeline_on;
-bool anv_wddm_timeline_enabled(void);
-void anv_wddm_timeline_event(uint32_t type, uint64_t a, uint64_t b);
-uint64_t anv_wddm_timeline_thread_cycles(void);
-void anv_wddm_timeline_write(void);
 
 static inline struct anv_wddm_device_state *
 anv_wddm_state(struct vk_device *device)
