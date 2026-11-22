@@ -13,13 +13,16 @@ if ($Report) {
     exit 0
 }
 $log = Join-Path $env:RUNNER_TEMP "step-$Name.log"
-try {
-    Invoke-Expression $Command | Tee-Object -FilePath $log
-    if ($LASTEXITCODE) { throw "$Name exited with code $LASTEXITCODE" }
-} catch {
-    Write-ErrorAnnotation $Name (@(Get-Content -LiteralPath $log -Tail 40 -ErrorAction SilentlyContinue) + @("$_", $_.ScriptStackTrace))
-    [IO.File]::Delete($log)
-    exit 1
-}
+# A child process with stderr merged by cmd.exe: the messages of failing tools
+# (a Python traceback, for example) go to stderr, and merging it inside
+# PowerShell would turn every such line into an error record.
+# The command goes through a script file: with -EncodedCommand PowerShell
+# writes its errors to a redirected stderr as CLIXML.
+$script = Join-Path $env:RUNNER_TEMP "step-$Name.ps1"
+[IO.File]::WriteAllText($script, "`$ProgressPreference = 'SilentlyContinue'`r`n$Command`r`nexit `$LASTEXITCODE`r`n", [Text.UTF8Encoding]::new($true))
+& cmd.exe /d /c "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$script`" 2>&1" | Tee-Object -FilePath $log
+$code = $LASTEXITCODE
+[IO.File]::Delete($script)
+if ($code) { Write-ErrorAnnotation $Name (@(Get-Content -LiteralPath $log -Tail 40 -ErrorAction SilentlyContinue) + "$Name exited with code $code") }
 [IO.File]::Delete($log)
-exit 0
+exit $code

@@ -53,6 +53,11 @@ Get-PinnedFile $taskDependencies.nlohmann (Join-Path $taskRoot 'third_party\nloh
 'bootstrap: extracting Mesa'
 & $taskPythonExe (Join-Path $PSScriptRoot 'prepare-sources.py')
 if ($LASTEXITCODE) { throw 'Mesa source preparation failed' }
+# vk.xml of the pinned Vulkan-Headers: gen-native-packets.py takes the lists of
+# core commands for the probes from it.
+Get-PinnedFile $taskDependencies.vulkanHeaders (Join-Path $taskDownloads $taskDependencies.vulkanHeaders.archive)
+& $taskPythonExe (Join-Path $PSScriptRoot 'prepare-sources.py') vulkanHeaders (Join-Path $taskRoot 'third_party')
+if ($LASTEXITCODE) { throw 'Vulkan-Headers preparation failed' }
 $taskCache = Join-Path $taskRoot 'third_party\mesa-26.2.7\subprojects\packagecache'
 New-Item -ItemType Directory -Path $taskCache -Force | Out-Null
 Get-PinnedFile $taskDependencies.zlib (Join-Path $taskCache 'zlib-1.3.1.tar.gz')
