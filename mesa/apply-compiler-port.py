@@ -448,7 +448,7 @@ wsi_win32_find_idle_image('''),
 '''),
     # The window DC comes from GetDC: one per swapchain (upstream took one per
     # image and kept the last) and released with ReleaseDC, not DeleteDC
-    # (tools/test-leaks.ps1: 2 GDI objects lost per swapchain).
+    # (tools/dev/test-leaks.ps1: 2 GDI objects lost per swapchain).
     ('   chain->chain_dc = GetDC(chain->wnd);\n',
      '   if (!chain->chain_dc)\n      chain->chain_dc = GetDC(chain->wnd);\n'),
     ('''   DeleteDC(chain->chain_dc);

@@ -1,102 +1,100 @@
-# HasVK/WDDM — Vulkan 1.3 для Intel Iris 6100 под Windows
+# HasVK/WDDM: Vulkan 1.3 for the Intel Iris 6100 on Windows
 
-Экспериментальный Vulkan-драйвер (ICD) на основе Mesa HasVK, работающий
-поверх штатного WDDM-драйвера Intel без Intel UMD и без D3D.
+An experimental Vulkan driver (ICD) built from Mesa HasVK. It runs on top of
+Intel's stock WDDM kernel driver, without Intel's user-mode driver and without
+D3D.
 
-## Поддерживаемая конфигурация
+## Supported configuration
 
-Только одна:
+Exactly one:
 
 | | |
 |---|---|
 | GPU | Intel Iris Graphics 6100 (Broadwell GT3, PCI `8086:162b`) |
-| Драйвер Intel | `20.19.15.5171` |
-| ОС | Windows 10/11, 64 бит |
-| Приложения | 64-битные |
-| CPU | Broadwell (тот, что рядом с этой GPU): драйвер собран с `-march=broadwell` и использует AVX2/BMI2/FMA |
+| Intel driver | `20.19.15.5171` |
+| OS | Windows 10/11, 64-bit |
+| Applications | 64-bit |
+| CPU | Broadwell (the one this GPU is part of): the driver is built with `-march=broadwell` and uses AVX2, BMI2 and FMA |
 
-На другом GPU или другой версии драйвера ICD не находит устройство и ничего
-не делает: закрытый интерфейс драйвера Intel снят с этой версии.
+On another GPU or driver version the ICD finds no device and does nothing: the
+undocumented interface of Intel's driver was taken from this version only.
 
-## Возможности
+## Features
 
-- Vulkan 1.3, 108 расширений устройства (список — `vulkaninfo`).
-- Вывод в окно без копирования через CPU (как у OpenGL-драйвера Intel);
-  форматы B8G8R8A8/R8G8B8A8 в UNORM и SRGB; режимы FIFO, MAILBOX, IMMEDIATE.
-- Известные отказы CTS и их причины — `cts-expected-failures.md`. Полный
-  прогон CTS выполнен 2026-11-20; драйвер не сертифицирован.
+- Vulkan 1.3, 108 device extensions (`vulkaninfo` lists them).
+- Presentation to a window without a copy through the CPU; surface formats
+  B8G8R8A8 UNORM and SRGB; FIFO, MAILBOX and IMMEDIATE present modes.
+- Known CTS failures and their causes are in `cts-expected-failures.md`. The
+  driver is not a conformant Vulkan implementation.
 
-## Установка
+## Install
 
-В PowerShell **от имени администратора**, в распакованной папке пакета:
-
-```powershell
-.\tools\install-icd.ps1 -WhatIf     # показать шаги, ничего не меняя
-.\tools\install-icd.ps1             # установить
-```
-
-Скрипт копирует драйвер в `%ProgramFiles%\HasVK-WDDM`, регистрирует его в
-`HKLM\SOFTWARE\Khronos\Vulkan\Drivers` и проверяет установленную копию
-пробой `IrisIcdProbe` через системный загрузчик Vulkan. Уже
-зарегистрированные драйверы не трогаются.
-
-Без установки драйвер можно использовать для одного приложения:
+In PowerShell **as administrator**, in the unpacked package directory:
 
 ```powershell
-$env:VK_DRIVER_FILES = "<папка пакета>\icd\intel_hasvk_wddm_icd.json"
-& "<приложение>.exe"
+.\tools\install-icd.ps1 -WhatIf     # show the steps, change nothing
+.\tools\install-icd.ps1             # install
 ```
 
-## Удаление
+The script copies the driver to `%ProgramFiles%\HasVK-WDDM`, registers it in
+`HKLM\SOFTWARE\Khronos\Vulkan\Drivers` and checks the installed copy with the
+`IrisIcdProbe` self-test through the system Vulkan loader. Drivers that are
+already registered are left alone.
+
+Without installing, the driver can be used for one application:
+
+```powershell
+$env:VK_DRIVER_FILES = "<package>\icd\intel_hasvk_wddm_icd.json"
+& "<application>.exe"
+```
+
+## Uninstall
 
 ```powershell
 .\tools\install-icd.ps1 -Uninstall
 ```
 
-Кэш шейдеров (следующий раздел) при удалении остаётся; папку можно удалить
-вручную.
+The shader cache (next section) is kept; delete its directory by hand if you
+want.
 
-## Кэш шейдеров
+## Shader cache
 
-Драйвер хранит скомпилированные шейдеры в `%LOCALAPPDATA%\HasVK-WDDM`:
-`internal-cache.bin` — собственные шейдеры драйвера (копии, очистки),
-`default-cache.bin` — все конвейеры приложений, в том числе созданные со
-своим `VkPipelineCache` (так ведёт себя дисковый кэш Mesa в Linux: игра,
-которая не сохраняет свой кэш, как Dota 2, иначе компилировала бы всё заново
-при каждом запуске). Файлы читаются при создании устройства и записываются при
-его уничтожении, каждый не больше 256 МиБ. После обновления драйвера старое
-содержимое не используется, и первый запуск приложения компилирует шейдеры
-заново; то же при другом значении `INTEL_DEBUG` (флаги компилятора входят в
-идентификатор кэша). Папку можно удалить в любой момент.
+Compiled shaders are stored in `%LOCALAPPDATA%\HasVK-WDDM`:
+`internal-cache.bin` holds the driver's own shaders (copies, clears) and
+`default-cache.bin` holds all application pipelines, including those created
+with the application's own `VkPipelineCache` (Mesa's disk cache does the same
+on Linux; a game that never saves its cache, like Dota 2, would otherwise
+compile everything on every start). The files are read when the device is
+created and written when it is destroyed, at most 256 MiB each. After a driver
+update the old contents are not used and the first run compiles shaders again;
+the same happens with a different `INTEL_DEBUG` value. The directory can be
+deleted at any time.
 
-## Переменные окружения
+## Environment variables
 
-Переключатели для замеров и отладочный вывод (профиль проходов, журнал кадра,
-захват кадра, статистика вывода) есть только в ветке `debug` репозитория.
-
-| Переменная | Действие |
+| Variable | Effect |
 |---|---|
-| `HASVK_WDDM_INTERNAL_CACHE=0` | не читать и не писать файлы кэша шейдеров |
-| `HASVK_WDDM_PRESENT=gdi` | вывод через GDI с копией в CPU (обходной путь) |
-| `INTEL_PRECISE_TRIG=0` | отключить обход точности `sin`/`cos` (умножение на 0,99997, чтобы результат не выходил за [−1, 1]); по умолчанию включён |
+| `HASVK_WDDM_INTERNAL_CACHE=0` | do not read or write the shader cache files |
+| `HASVK_WDDM_PRESENT=gdi` | present through GDI with a copy through the CPU (a fallback) |
+| `INTEL_PRECISE_TRIG=0` | turn off the `sin`/`cos` precision workaround (a multiplication by 0.99997 that keeps the result within [−1, 1]); on by default |
 
-## Ограничения
+## Limitations
 
-- Одна очередь графики и compute; отдельной transfer-очереди нет.
-- Работа GPU дольше 2 секунд одной отправкой сбрасывается Windows (TDR),
-  приложение получает `VK_ERROR_DEVICE_LOST`.
-- Нет sparse-ресурсов, внешней памяти и семафоров между процессами.
-- Зависание GPU (приложение получает `VK_ERROR_DEVICE_LOST`) Windows
-  сбрасывает сама, но на этой версии драйвера ядра Intel такой сброс дважды
-  закончился критической ошибкой системы. Обе найденные причины зависаний
-  исправлены (`cts-expected-failures.md`); в пакете `…-74e2287` и более ранних
-  GPU вешал фрагментный шейдер, который пишет глубину с режимом
-  `DepthUnchanged` (исправлено начиная с пакета `…-43935e7`).
+- One graphics and compute queue; there is no separate transfer queue.
+- Windows resets a GPU that works on one submission for more than 2 seconds
+  (TDR); the application gets `VK_ERROR_DEVICE_LOST`.
+- No sparse resources, no external memory and no semaphores shared between
+  processes.
+- Windows recovers from a GPU hang by itself, but on this version of Intel's
+  kernel driver such a recovery has twice ended in a system bug check. Both
+  causes of hangs that were found are fixed (`cts-expected-failures.md`).
+  Packages up to `…-74e2287` hang the GPU on a fragment shader that writes
+  depth with the `DepthUnchanged` execution mode; use a later one.
 
-## Лицензия
+## License
 
-Драйвер распространяется по лицензии MIT (файл `LICENSE`), без каких-либо
-гарантий. Он собран из Mesa 26.2.7 (тоже MIT) и содержит zlib и небольшие
-сторонние части Mesa под лицензиями Boost, BSD и Apache-2.0; их уведомления
-об авторских правах и тексты лицензий — в `THIRD-PARTY-NOTICES.md`. Драйвер
-не сертифицирован Khronos и не является продуктом Intel.
+The driver is distributed under the MIT License (`LICENSE`), without warranty
+of any kind. It is built from Mesa 26.2.7 (also MIT) and contains zlib and
+small third-party parts of Mesa under the Boost, BSD and Apache-2.0 licenses;
+their copyright notices and license texts are in `THIRD-PARTY-NOTICES.md`. The
+driver is not certified by Khronos and is not an Intel product.

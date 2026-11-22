@@ -1,0 +1,79 @@
+# Builds the driver and the release package on a hosted runner. There is no
+# Iris 6100 there, so nothing is run: the hardware tests (tools\dev\test-all.ps1)
+# stay local. The runner's own Visual Studio replaces the locked MSVC build
+# (HASVK_UNLOCKED_TOOLCHAIN, see tools\import-toolchain.ps1); clang-cl, Mesa and
+# the other sources are the pinned ones, downloaded by tools\bootstrap.ps1.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      HASVK_UNLOCKED_TOOLCHAIN: '1'
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12.10'
+
+      - name: Check that the scripts parse
+        run: .\.github\run-step.ps1 -Name lint -Command '.\.github\lint.ps1'
+
+      # bootstrap.ps1 installs Python and MSVC under .tools only when they are
+      # not there: point those directories at what the runner already has.
+      - name: Use the runner's Python and Visual Studio
+        run: |
+          New-Item -ItemType Directory -Force .tools | Out-Null
+          New-Item -ItemType Junction -Path .tools\python -Target $env:pythonLocation | Out-Null
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { Write-Host '::error::no Visual Studio with the C++ tools on this runner'; exit 1 }
+          New-Item -ItemType Junction -Path .tools\vs -Target $vs | Out-Null
+          "Visual Studio: $vs"
+          Get-ChildItem .tools\vs\VC\Tools\MSVC | Select-Object -ExpandProperty Name
+          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include" | Select-Object -ExpandProperty Name
+
+      - name: Download the pinned sources and clang
+        run: .\.github\run-step.ps1 -Name bootstrap -Command '.\tools\bootstrap.ps1'
+
+      - name: Build the driver
+        run: .\.github\run-step.ps1 -Name build-icd -Command ".\tools\build-icd.ps1 -Jobs $env:NUMBER_OF_PROCESSORS"
+
+      - name: Package
+        run: |
+          .\.github\run-step.ps1 -Name make-release -Command '.\tools\make-release.ps1'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $zip = Get-ChildItem build\release\*.zip | Select-Object -First 1
+          $toolchain = (Get-Content build\mesa-compiler-clang\build.json -Raw | ConvertFrom-Json).toolchain
+          @("### $($zip.Name)", '',
+            "- SHA-256: ``$((Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLowerInvariant())``",
+            "- clang-cl $($toolchain.clangVersion), MSVC $($toolchain.msvc), Windows SDK $($toolchain.windowsSdk), locked toolchain: $($toolchain.locked)",
+            '- Built on a hosted runner and not run on the GPU.') | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: HasVK-WDDM-${{ github.sha }}
+          path: build/release/*.zip
+          if-no-files-found: error
+
+      # The notices list what is linked into the DLLs: a change of the Mesa
+      # version or of the linked sources must come with a regenerated file.
+      - name: Check that THIRD-PARTY-NOTICES.md is current
+        run: .\.github\run-step.ps1 -Name notices -Command '.\.github\check-notices.ps1'

@@ -7,10 +7,11 @@
 # linker drops unreferenced functions and folds identical ones (/OPT:REF,ICF).
 # -Pgo generate: instrumented build (clang -fprofile-instr-generate); every
 # process using the ICD writes a .profraw at exit to LLVM_PROFILE_FILE. Merge
-# them with llvm-profdata merge -o <file>.profdata (tools\pgo-profile.ps1 does
+# them with llvm-profdata merge -o <file>.profdata (tools\dev\pgo-profile.ps1 does
 # both). -Pgo <file.profdata>: optimize with that profile. Default: the
 # profile in tools\pgo\hasvk.profdata if present, -Pgo none for neither.
-param([switch]$ConfigureOnly, [switch]$Graphics = $true, [switch]$Asserts, [switch]$DebugInfo, [string]$Pgo = '')
+# -Jobs: parallel compile jobs (2 keeps the laptop usable and cool).
+param([switch]$ConfigureOnly, [switch]$Graphics = $true, [switch]$Asserts, [switch]$DebugInfo, [string]$Pgo = '', [int]$Jobs = 2)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'import-toolchain.ps1') -UseClang
 $taskDependencies=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'dependencies.json') -Raw | ConvertFrom-Json
@@ -60,7 +61,7 @@ if ($LASTEXITCODE) { throw 'Mesa graphics option configuration failed' }
 # A PDB left by a build with -DebugInfo would no longer match the DLL.
 if (-not $DebugInfo) { Remove-Item -LiteralPath (Join-Path $taskMesaBuild 'src\intel\wddm_compiler\vulkan_hasvk_wddm.pdb') -ErrorAction SilentlyContinue }
 if (-not $ConfigureOnly) {
-    & $taskToolchain.python -m mesonbuild.mesonmain compile -C $taskMesaBuild -j 2 intel_compiler_elk intel_dev IrisElkCompile IrisImageProbe IrisNirSerializeTest vulkan_runtime vulkan_lite_runtime vulkan_instance vulkan_util vulkan_wsi vulkan_hasvk_wddm
+    & $taskToolchain.python -m mesonbuild.mesonmain compile -C $taskMesaBuild -j $Jobs intel_compiler_elk intel_dev IrisElkCompile IrisImageProbe IrisNirSerializeTest vulkan_runtime vulkan_lite_runtime vulkan_instance vulkan_util vulkan_wsi vulkan_hasvk_wddm
     if ($LASTEXITCODE) { throw 'Mesa compiler build failed' }
     $taskProducts=@('src\intel\wddm_compiler\IrisElkCompile.exe','src\intel\wddm_compiler\IrisImageProbe.exe','src\intel\wddm_compiler\IrisNirSerializeTest.exe',
         'src\intel\wddm_compiler\libhasvk_wddm.a','src\intel\wddm_compiler\libwddm_blorp.a',

@@ -1,89 +1,66 @@
-# Известные отказы и неподдерживаемые группы CTS
+# Vulkan CTS results
 
-Конфигурация: Iris 6100 (8086:162b), драйвер `20.19.15.5171`, Windows, CTS
-`vulkan-cts-1.4.5.5`.
+Configuration: Iris 6100 (`8086:162b`), Intel driver `20.19.15.5171`, Windows,
+CTS `vulkan-cts-1.4.5.5`.
 
-## Полный прогон 2026-11-20
+## Full run, 2026-11-20
 
-Весь mustpass `vk-default` (`tools/run-cts-full.ps1`, 8,5 часа, по два
-процесса): из 2 888 682 тестов выполнено 2 849 001 — Pass 669 179,
-NotSupported 2 179 726, QualityWarning 6, Fail 85, ResourceError 5. Итог —
+The whole `vk-default` mustpass (`tools\dev\run-cts-full.ps1`, 8.5 hours, two
+processes): 2,849,001 of 2,888,682 tests were executed — 669,179 Pass,
+2,179,726 NotSupported, 6 QualityWarning, 85 Fail, 5 ResourceError. Summary:
 `native/artifacts/cts-full-20261120.json`.
 
-- 19 681 тест списка в этой сборке `deqp-vk` отсутствует
-  (`renderpass.custom_resolve.*` — 19 676, `image.astc_sample.*` — 5).
-- 20 000 тестов первой части `draw` в полном прогоне не посчитаны (ошибка
-  запускалки); на исправленной сборке: 14 047 Pass, 5953 NotSupported.
-- 2 теста исключены заранее (первые две строки таблицы ниже).
+- 19,681 tests of the list do not exist in this `deqp-vk` build
+  (`renderpass.custom_resolve.*`, `image.astc_sample.*`).
+- 20,000 tests of the first `draw` chunk were not counted because of a runner
+  bug; rerun on the fixed build they give 14,047 Pass and 5,953 NotSupported.
+- 2 tests were excluded in advance (the first two rows of the next table).
 
-Прогон шёл на сборке до исправлений. Из 90 непрошедших тестов после
-исправлений (раздел «Исправлено») проходят 89; остаётся один ожидаемый отказ
-(итоговая проверка всех 90 тестов одним запуском: 89 Pass, 1 Fail —
-`native/artifacts/cts-rerun-failed-20261120.json`). Повторного полного
-прогона на исправленной сборке не было: перепроверены только непрошедшие
-тесты, часть `draw` и группы рядом с каждым исправлением.
+The run was made before the fixes below. Of the 90 tests that did not pass, 89
+pass after the fixes and one failure is expected
+(`native/artifacts/cts-rerun-failed-20261120.json`). The full run was not
+repeated on the fixed build: only the failed tests, the `draw` chunk and the
+groups next to each fix were rerun.
 
-## Ожидаемые отказы (причина установлена, в ICD не исправляется)
+## Expected failures
 
-| Тест | Результат | Причина |
+| Test | Result | Cause |
 |---|---|---|
-| `dEQP-VK.tessellation.misc_draw.tess_factor_barrier_bug` | `VK_ERROR_DEVICE_LOST` через ~4 с (иногда Pass); в полном прогоне исключён | Нагрузка дольше таймаута TDR Windows (2 с), а не зависание. Вершинный шейдер делает ≈6,0·10⁸ `atomicAdd` в одну ячейку (524 288 инстансов × 4 вершины × 36/64 × 512). Измеренная скорость атомиков в один адрес на этой GPU — 287 млн/с (compute, счётчик точный), то есть ≥2,1 с только на атомики. В Linux у i915 нет жёсткого 2-секундного лимита, поэтому upstream этот тест проходит. Менять `TdrDelay` — системная настройка, ICD её не трогает. |
-| `dEQP-VK.wsi.win32.swapchain.simulate_oom.min_image_count` | `Timeout` (и при лимите 20 мин); в полном прогоне исключён | Долгий тест, не ошибка: для 16 конфигураций (1–16 изображений) он отказывает каждому выделению по очереди, около 2300 попыток создать swapchain. Каждая стоит ~0,5 с: изображения и их CPU-буферы — отдельные выделения WDDM. Все 16 конфигураций пройдены без падений и ошибок. |
-| `dEQP-VK.api.driver_properties.conformance_version` | Fail | Драйвер не сертифицирован и сообщает `conformanceVersion` 0.0.0.0; тест требует версию не ниже версии API. |
+| `dEQP-VK.tessellation.misc_draw.tess_factor_barrier_bug` | `VK_ERROR_DEVICE_LOST` after about 4 s (sometimes Pass) | The workload is longer than the 2-second Windows TDR timeout; it is not a hang. The vertex shader does about 6.0·10⁸ `atomicAdd` operations on one cell, and this GPU does 287 million of them per second. i915 on Linux has no such hard limit. Changing `TdrDelay` is a system setting the ICD does not touch. |
+| `dEQP-VK.wsi.win32.swapchain.simulate_oom.min_image_count` | Timeout | A long test, not a bug: about 2,300 swapchain creation attempts at about 0.5 s each. All 16 configurations complete without errors. |
+| `dEQP-VK.api.driver_properties.conformance_version` | Fail | The driver is not conformant and reports `conformanceVersion` 0.0.0.0. |
 
-## Известные ошибки (не исправлены)
+No unfixed driver bugs are known.
 
-На 2026-11-20 известных неисправленных ошибок нет: оба теста, вешавшие
-видеодвижок (`depthunchanged_0`, `depthunchanged_2`), исправлены — см.
-«Исправлено».
+## Fixed
 
-## Зависания GPU и сбои системы
-
-Зависание видеодвижка Windows сбрасывает сама (TDR; отчёт LiveKernelEvent 141,
-приложение получает `VK_ERROR_DEVICE_LOST`). На этой машине со старым
-драйвером ядра Intel такой сброс дважды закончился критической ошибкой
-системы: 0x119 (2026-11-20 01:06) и 0xD1 (2026-11-20 13:38, через минуту после
-зависания на `spirv_assembly…opphi.wide`). Всего отчётов 141 за время работы —
-около 50, сбоев два. Обе найденные причины зависаний в CTS исправлены (ниже):
-шейдеры со сбросом регистров без буфера сброса и шейдеры с режимом
-`DepthUnchanged`. Тестов, которые заведомо вешают видеодвижок, в списке
-больше нет.
-
-Разбор `depthunchanged` (2026-11-20) стоил около 20 сбросов видеодвижка;
-система их пережила. После серии сбросов один раз завис и родной пробник
-транспорта (`test-all`, `generated-compute` на 1 элемент, 16:25) — он не
-использует ни ICD, ни компилятор шейдеров; повтор `test-all` прошёл полностью.
-То же наблюдалось после первого сбоя системы (`docs/roadmap.md`, раздел 3).
-
-## Исправлено
-
-2026-11-20, по итогам полного прогона (89 тестов из 90 непрошедших):
-
-| Что | Тесты | Причина и исправление |
+| What | Tests | Cause and fix |
 |---|---|---|
-| Знаковые битовые поля-перечисления в `shader_info` | `spirv_assembly.instruction.graphics.execution_mode.depthunchanged_0`, `depthunchanged_2` — **зависание видеодвижка** | По правилам Microsoft перечисление без заданного типа — `int`, и битовое поле такого типа знаковое. `depth_layout` занимает 3 бита, значение `FRAG_DEPTH_LAYOUT_UNCHANGED` = 4 читалось как −4, компилятор ELK не узнавал его и сообщал «глубина не вычисляется». Шейдер при этом писал глубину: состояние `3DSTATE_PS_EXTRA` говорило `PSCDEPTH_OFF`, а сообщение записи в цель несло глубину — расхождение, которое, по комментарию в самом ELK, вешает железо. Зависал первый же пиксель, прошедший раннюю проверку глубины (поэтому `_1` и `_3`, где проверка не проходит, работали). Перечислениям, которые `shader_info` хранит в узких полях, задан беззнаковый тип (как раньше перечислениям ELK): `gl_frag_depth_layout`, `gl_frag_stencil_layout`, `gl_derivative_group`, `shader_info_hash_type`. Вся группа `execution_mode.depth*` — 14 Pass; соседние группы (`glsl.builtin_var.fragdepth`, `fragment_operations.early_fragment`, каждый 3-й `glsl.builtin_var`, каждый 5-й `pipeline.monolithic.depth`): 714 Pass, 3 QualityWarning, 0 Fail. |
-| Буфер сброса регистров шейдера не существовал | `graphicsfuzz` — 42, `subgroups` — 13 (в том числе давний отказ `clustered…i64vec4_requiredsubgroupsize`), `spirv_assembly…opphi.wide` | Число потоков стадии, владеющих буфером сброса (`max_scratch_ids`), заполняет только Linux-часть Mesa, и здесь оно оставалось нулём; к тому же порт отклонял флаг «адрес в пределах 4 ГиБ». Указатель буфера был нулевым, шейдер со сбросом регистров писал по неотображённым адресам GPU: неверные результаты и зависания видеодвижка. Теперь буферы сброса лежат в своём диапазоне первых 4 ГиБ окна адресов GPU, указатель — смещение от General State Base Address. |
-| Временный файл на каждую компиляцию шейдера | весь прогон: после 65 535 файлов `MEM*.tmp` в `%TEMP%` каждая компиляция шла секундами | `u_memstream` Mesa на Windows удалял файл, пока тот открыт, и файл оставался. Теперь файл открывается с удалением при закрытии. |
-| `vkCreateBuffer` не учитывал `VkBufferUsageFlags2CreateInfo` | первая часть `draw` (тысячи тестов с `VK_KHR_maintenance5`) | Проверялось поле `usage`, которое при этой структуре приложение вправе оставить любым. |
-| `VK_ACCESS_2_SHADER_STORAGE_READ_BIT` не сбрасывал кэши | `synchronization2…write_draw*_read_image_vertex.*_specialized_access_flag` — 20 | Upstream HasVK для этого флага не делает ничего, а для общего `SHADER_READ` сбрасывает кэш констант и текстур. Теперь одинаково. |
-| 10 000 командных буферов сразу | `api.command_buffers.allocate_many_primary`, `…_secondary`, `api.object_management.max_concurrent.command_buffer_primary`, `…_secondary` | Каждый командный буфер при создании получал BO на 64 КиБ и блок таблиц привязок; теперь — при начале записи. |
-| 10 000 событий сразу | `api.command_buffers.execute_large_primary` | 65 536 слотов событий вместо 4096. |
-| Следствие потери устройства | `spirv_assembly…mixed_relaxed_precision_operands` | Отдельно проходит; падал после зависания на `depthunchanged`. |
-| Флаги создания графического конвейера из старого поля | `pipeline.monolithic.misc.identically_defined_layout` | Upstream HasVK берёт флаги графического конвейера из `pCreateInfo->flags`, не учитывая `VkPipelineCreateFlags2CreateInfo` (maintenance5); тест кладёт в старое поле 0x7fffffff, и драйвер возвращал `VK_PIPELINE_COMPILE_REQUIRED`. То же в проверке «не компилировать» compute-конвейера. |
-| 64-битный вершинный атрибут шире, чем читает шейдер | `pipeline.monolithic.vertex_input.component_mismatch.r64g64b64_to_double`, `…_to_dvec2`, `r64g64b64a64_to_double`, `…_to_dvec2` | Элемент вершины записывался в поток как 256 бит по формату, а шейдер (`double`, `dvec2`) читал 128; теперь такой атрибут выбирается как R64G64. Соседние группы (`vertex_input` каждый 3-й, `misc`, `cache`, `creation_feedback`, `creation_cache_control`): 1939 Pass, 0 Fail. |
-| `continue` в цикле после кэша NIR становился `return` (найдено аудитом битовых полей, не CTS) | в прогонах CTS не проявилось; проверка — `IrisNirSerializeTest` в `test-all` | Ошибка upstream Mesa 26.2.7, от ABI не зависит: `nir_jump_abort` вставлен перед `break`, `nir_jump_continue` стал равен 4, а `nir_serialize.c` хранит тип перехода в двух битах (защищал только `assert`, которого в выпускной сборке нет). HasVK сериализует NIR каждого шейдера сразу после `spirv_to_nir` и достаёт его для следующего конвейера из того же модуля — `continue` читался как `return` и завершал весь шейдер. Поле — 3 бита; код текстурной операции и тип источника текстуры — 6 (их переполнение в нашем пути недостижимо). `glsl.loops` 624 Pass, `pipeline.monolithic.cache` 773 Pass. |
+| Signed enum bit-fields in `shader_info` | `spirv_assembly.instruction.graphics.execution_mode.depthunchanged_0`, `_2` — **GPU hang** | Under the Microsoft ABI an enum without a fixed type is `int`, and a bit-field of it is signed. `depth_layout` has 3 bits, so `FRAG_DEPTH_LAYOUT_UNCHANGED` (4) read as −4 and ELK decided the shader does not write depth. The shader did write it: `3DSTATE_PS_EXTRA` said `PSCDEPTH_OFF` while the render target write carried depth, a mismatch that hangs the hardware. The enums that `shader_info` stores in narrow fields now have an unsigned underlying type. |
+| The shader register spill buffer did not exist | `graphicsfuzz` (42), `subgroups` (13), `spirv_assembly…opphi.wide` | `max_scratch_ids` is filled only by Mesa's Linux code and stayed zero, and the port rejected the "address below 4 GiB" flag. Shaders that spill registers wrote to unmapped GPU addresses: wrong results and GPU hangs. Spill buffers now live in their own range of the first 4 GiB. |
+| A temporary file per shader compilation | the whole run: after 65,535 `MEM*.tmp` files every compilation took seconds | Mesa's `u_memstream` on Windows deleted the file while it was open, which left it behind. It is now opened delete-on-close. |
+| `vkCreateBuffer` ignored `VkBufferUsageFlags2CreateInfo` | the first `draw` chunk (`VK_KHR_maintenance5`) | The legacy `usage` field was checked. |
+| `VK_ACCESS_2_SHADER_STORAGE_READ_BIT` did not flush caches | `synchronization2…write_draw*_read_image_vertex.*_specialized_access_flag` (20) | Upstream HasVK does nothing for this flag; it is now handled like `SHADER_READ`. |
+| 10,000 command buffers at once | `api.command_buffers.allocate_many_*`, `api.object_management.max_concurrent.command_buffer_*` | A command buffer got its 64 KiB buffer and binding table block when created; now when recording begins. |
+| 10,000 events at once | `api.command_buffers.execute_large_primary` | 65,536 event slots instead of 4,096. |
+| Graphics pipeline flags read from the legacy field | `pipeline.monolithic.misc.identically_defined_layout` | Upstream HasVK ignores `VkPipelineCreateFlags2CreateInfo` and returned `VK_PIPELINE_COMPILE_REQUIRED`. |
+| A 64-bit vertex attribute wider than the shader reads | `pipeline.monolithic.vertex_input.component_mismatch.r64g64b64*_to_double`, `…_to_dvec2` | The vertex element was 256 bits while the shader read 128; such an attribute is now fetched as R64G64. |
+| `continue` in a loop became `return` after the NIR cache (found by the bit-field audit, not by the CTS) | covered by `IrisNirSerializeTest` | An upstream bug in Mesa 26.2.7: `nir_jump_continue` became 4 while `nir_serialize.c` stores the jump type in two bits. The field is now 3 bits. |
+| `sin`/`cos` slightly above 1 | `glsl.builtin.precision.{sin,cos}.*` (8) | Broadwell's math unit returns values like `0x1.0001a8p0`. The `precise_trig` compiler workaround is on (as in brw before Gfx10); `INTEL_PRECISE_TRIG=0` turns it off. |
 
-2026-11-20, по выборкам:
+## Legitimately unsupported
 
-- `glsl.builtin.precision.{sin,cos}.*` (8 отказов) — математический блок Broadwell возвращает
-  sin/cos чуть больше 1 по модулю (`sin(1.58)` = `0x1.0001a8p0`), CTS требует [−1, 1]. Включён
-  обход компилятора `precise_trig` (умножение на 0,99997, как в brw для всех поколений до Gfx10,
-  кроме KBL); `INTEL_PRECISE_TRIG=0` отключает.
-
-## Законно неподдерживаемое (NotSupported)
-
-| Группа | Причина |
+| Group | Reason |
 |---|---|
-| `api.copy_and_blit.multiplanar_xfer.*` | Нужна отдельная transfer-очередь; у HasVK (и у этого ICD) одна очередь графики и compute. |
-| `image.texel_view_compatible.*.3d_image.*` для сжатых форматов | Несжатый вид сжатого изображения Gen8 описывает только для одного слоя (`isl_surf_get_uncompressed_surf` до Gfx9), а вид 3D-изображения всегда охватывает все срезы глубины. Upstream HasVK объявлял поддержку и падал на `assert` (без них — access violation на неинициализированной поверхности); порт сообщает `VK_ERROR_FORMAT_NOT_SUPPORTED` для 3D + сжатый формат + `BLOCK_TEXEL_VIEW_COMPATIBLE` (с 2026-11-20; было 68 падений на каждом 6-м случае группы). |
-| Расширения только для Linux | dma-buf, DRM-модификаторы, fd-дескрипторы памяти и семафоров, `pci_bus_info`, `queue_family_foreign`. |
+| `api.copy_and_blit.multiplanar_xfer.*` | Needs a separate transfer queue; HasVK has one graphics and compute queue. |
+| `image.texel_view_compatible.*.3d_image.*` for compressed formats | Gen8 can describe an uncompressed view of a compressed image for one layer only, and a 3D image view always covers all depth slices. Upstream HasVK advertised support and crashed; the port returns `VK_ERROR_FORMAT_NOT_SUPPORTED`. |
+| Linux-only extensions | dma-buf, DRM modifiers, fd handles for memory and semaphores, `pci_bus_info`, `queue_family_foreign`. |
+
+## GPU hangs during CTS work
+
+Windows resets a hung engine by itself (TDR, LiveKernelEvent 141), but on this
+machine such a reset twice ended in a system bug check (0x119 and 0xD1). Both
+causes were the first two rows of the "Fixed" table. No test is known to hang
+the GPU now. Right after a series of resets even the transport's own probe,
+which uses neither the ICD nor the shader compiler, hung once; a repeated
+`test-all` passed.

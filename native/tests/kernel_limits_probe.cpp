@@ -1,4 +1,4 @@
-/* Risk check (roadmap stage 0): which MI commands and MMIO registers that
+/* Risk check: which MI commands and MMIO registers that
  * HasVK emits work in our WDDM context (an unprivileged PPGTT batch of the
  * Intel KMD 20.19.15.5171). MI_SEMAPHORE_WAIT is known not to complete and is
  * not run here.

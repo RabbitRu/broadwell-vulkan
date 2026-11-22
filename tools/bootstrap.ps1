@@ -3,7 +3,9 @@ $taskRoot = Split-Path $PSScriptRoot -Parent
 $taskTools = Join-Path $taskRoot '.tools'
 $taskDownloads = Join-Path $taskTools 'downloads'
 $taskDrive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($taskRoot))
-if ($taskDrive.AvailableFreeSpace -lt 25GB) { throw 'At least 25 GiB free space is required before installing build tools.' }
+# 25 GiB with the MSVC installation; LLVM, Mesa and the build alone take about 7.
+$taskNeeded = if (Test-Path -LiteralPath (Join-Path $taskTools 'vs\VC\Tools\MSVC')) { 10GB } else { 25GB }
+if ($taskDrive.AvailableFreeSpace -lt $taskNeeded) { throw "At least $($taskNeeded / 1GB) GiB free space is required before installing build tools." }
 $taskDependencies = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'dependencies.json') -Raw | ConvertFrom-Json
 New-Item -ItemType Directory -Path $taskDownloads,(Join-Path $taskRoot 'third_party\nlohmann') -Force | Out-Null
 $taskScratch = Join-Path $taskTools 'tmp'

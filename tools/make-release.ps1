@@ -9,6 +9,7 @@ $taskRoot = Split-Path $PSScriptRoot -Parent
 if ($Build) { & (Join-Path $PSScriptRoot 'build-icd.ps1') | Out-Null }
 $taskPackage = Join-Path $taskRoot 'build\icd'
 $git = Join-Path $taskRoot '.tools\mingit\cmd\git.exe'
+if (-not (Test-Path -LiteralPath $git)) { $git = 'git' }
 $commit = (& $git -C $taskRoot rev-parse --short HEAD).Trim()
 $dirty = [bool](& $git -C $taskRoot status --porcelain --untracked-files=no -- mesa native tools)
 $name = 'HasVK-WDDM-' + (Get-Date -Format 'yyyyMMdd') + '-' + $commit + $(if ($dirty) { '-dirty' } else { '' })

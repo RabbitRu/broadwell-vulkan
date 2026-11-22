@@ -1,7 +1,7 @@
 /* Windowed present without a CPU copy and without D3D.
  *
  * As the Intel OpenGL ICD of the same driver package does (traced with
- * tools/trace-gl-present.ps1, reproduced by tools/test-present-redirect.ps1):
+ * tools/dev/trace-gl-present.ps1, reproduced by tools/dev/test-present-redirect.ps1):
  * the frame is copied by the GPU into a shared window surface and the
  * submission carries PresentRedirected with the token
  * (0x80000000 | HWND) << 32 | share handle; DWM composes that surface.

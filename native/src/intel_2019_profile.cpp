@@ -21,7 +21,7 @@ std::vector<uint8_t> linear_metadata(uint64_t bytes)
 }
 /* Window surface for redirected present: 2D B8G8R8A8, render target, shared.
  * Captured from the surface dwmapi creates through D3D11 for the Intel OpenGL
- * ICD (tools/trace-gl-present.ps1); only width (0x28) and height (0x30) vary.
+ * ICD (tools/dev/trace-gl-present.ps1); only width (0x28) and height (0x30) vary.
  * The kernel driver picks Y tiling, pitch align(width * 4, 128) and height
  * aligned to 32 rows. */
 std::vector<uint8_t> window_surface_metadata(uint32_t width, uint32_t height)
@@ -38,7 +38,7 @@ std::vector<uint8_t> window_surface_metadata(uint32_t width, uint32_t height)
 /* D3D runtime data of that resource (DXGI_FORMAT_B8G8R8A8_UNORM = 0x57).
  * DWM reads the surface as B8G8R8A8 whatever is declared: with
  * DXGI_FORMAT_R8G8B8A8_UNORM here and D3DFMT_A8B8G8R8 at 0x194 an R8G8B8A8
- * image still showed R and B swapped (tools/test-wsi.ps1, 2026-11-21). */
+ * image still showed R and B swapped (tools/dev/test-wsi.ps1, 2026-11-21). */
 std::vector<uint8_t> window_surface_runtime_data(uint32_t width, uint32_t height)
 {
    std::vector<uint8_t> data(104, 0);

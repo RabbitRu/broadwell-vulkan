@@ -3,10 +3,23 @@ $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path $PSScriptRoot -Parent
 $taskTools = Join-Path $taskRoot '.tools'
 $taskLock=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'toolchain-lock.json') -Raw | ConvertFrom-Json
-$msvcDirectory = Get-Item -LiteralPath (Join-Path $taskTools ('vs\VC\Tools\MSVC\'+$taskLock.msvc)) -ErrorAction SilentlyContinue
+# HASVK_UNLOCKED_TOOLCHAIN=1 (the CI build on a hosted runner): take the MSVC
+# and Windows SDK that are installed instead of the exact builds of the lock
+# and report the differences as warnings. clang-cl, which compiles the driver,
+# stays pinned. Release packages are built with the locked toolchain.
+$taskUnlocked = $env:HASVK_UNLOCKED_TOOLCHAIN -eq '1'
+$taskDrift = @()
+function Get-NewestVersionDirectory([string]$path) {
+    Get-ChildItem -LiteralPath $path -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^\d+(\.\d+){1,3}$' } | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+}
+$msvcRoot = Join-Path $taskTools 'vs\VC\Tools\MSVC'
+$msvcDirectory = Get-Item -LiteralPath (Join-Path $msvcRoot $taskLock.msvc) -ErrorAction SilentlyContinue
+if (-not $msvcDirectory -and $taskUnlocked) { $msvcDirectory = Get-NewestVersionDirectory $msvcRoot }
 if (-not $msvcDirectory) { throw 'MSVC missing; run tools\bootstrap.ps1 first.' }
 $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
 $sdkVersion = Get-Item -LiteralPath (Join-Path $sdkRoot ('Include\'+$taskLock.windowsSdk)) -ErrorAction SilentlyContinue
+if (-not $sdkVersion -and $taskUnlocked) { $sdkVersion = Get-NewestVersionDirectory (Join-Path $sdkRoot 'Include') }
 if (-not $sdkVersion) { throw 'Windows SDK 10.0.26100 is missing.' }
 $taskCompilerBin = Join-Path $msvcDirectory.FullName 'bin\Hostx64\x64'
 $taskPython = Join-Path $taskTools 'python'
@@ -29,13 +42,16 @@ $taskToolchain = [ordered]@{
     windowsSdk = $sdkVersion.Name
     python = (Join-Path $taskPython 'python.exe')
 }
-if ($taskToolchain.compilerSha256 -ne $taskLock.msvcCompilerSha256) { throw 'MSVC differs from tools\toolchain-lock.json' }
+if ($taskToolchain.compilerSha256 -ne $taskLock.msvcCompilerSha256) { $taskDrift += "MSVC $($msvcDirectory.Name) differs from tools\toolchain-lock.json" }
 foreach ($header in $taskLock.sdkHeaders.PSObject.Properties) {
     $taskHeaderPath=Join-Path $sdkVersion.FullName ('shared\'+$header.Name)
     if ((Get-FileHash -LiteralPath $taskHeaderPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $header.Value) {
-        throw "Windows KMT ABI header differs from lock: $taskHeaderPath"
+        $taskDrift += "Windows KMT ABI header differs from lock: $taskHeaderPath"
     }
 }
+if ($taskDrift -and -not $taskUnlocked) { throw $taskDrift[0] }
+foreach ($taskDifference in $taskDrift) { Write-Warning "unlocked toolchain: $taskDifference" }
+$taskToolchain.locked = -not $taskDrift
 $taskClangBin=Join-Path $taskTools ('llvm-'+$taskLock.clangVersion+'\bin')
 $taskClangExe=Join-Path $taskClangBin 'clang-cl.exe'
 if (Test-Path -LiteralPath $taskClangExe) {

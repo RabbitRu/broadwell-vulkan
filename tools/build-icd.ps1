@@ -1,8 +1,10 @@
-param([switch]$SkipBuild)
+# Builds the driver and the probes and assembles build\icd (the DLLs, the
+# manifest, the probes with their shaders). -SkipBuild only reassembles it.
+param([switch]$SkipBuild, [int]$Jobs = 2)
 $ErrorActionPreference='Stop'
 $taskRoot=Split-Path $PSScriptRoot -Parent
 if (-not $SkipBuild) {
-    & (Join-Path $PSScriptRoot 'build-mesa-compiler.ps1')
+    & (Join-Path $PSScriptRoot 'build-mesa-compiler.ps1') -Jobs $Jobs
     & (Join-Path $PSScriptRoot 'build-native.ps1') -BuildOnly
 }
 $taskPackage=Join-Path $taskRoot 'build\icd'
@@ -42,7 +44,7 @@ Copy-Item -LiteralPath (Join-Path $taskRoot 'build\native\IrisLeakProbe.exe') -D
 Copy-Item -LiteralPath (Join-Path $taskRoot 'build\native\IrisCoherenceProbe.exe') -Destination $taskPackage
 Copy-Item -LiteralPath (Join-Path $taskRoot 'build\native\IrisOomProbe.exe') -Destination $taskPackage
 Copy-Item -LiteralPath (Join-Path $taskRoot 'build\native\IrisDepthSampleProbe.exe') -Destination $taskPackage
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run-icd.ps1') -Destination (Join-Path $taskPackage 'Run-Icd.ps1')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dev\run-icd.ps1') -Destination (Join-Path $taskPackage 'Run-Icd.ps1')
 $taskManifest=[ordered]@{file_format_version='1.0.0'; ICD=[ordered]@{library_path='.\vulkan_hasvk_wddm.dll'; api_version='1.3.0'}}
 [IO.File]::WriteAllText((Join-Path $taskPackage 'intel_hasvk_wddm_icd.json'), ($taskManifest | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
 $taskMesaManifest=Get-Content -LiteralPath (Join-Path $taskSource 'build.json') -Raw | ConvertFrom-Json

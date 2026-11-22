@@ -1,164 +1,119 @@
-# Broadwell Vulkan: HasVK/WDDM для Intel Iris 6100
+# Broadwell Vulkan: HasVK on WDDM for the Intel Iris 6100
 
-Экспериментальный Vulkan-драйвер (ICD) для Windows x64 на основе Mesa HasVK
-26.2.7. Он работает поверх штатного WDDM-драйвера ядра Intel
-`20.19.15.5171` на Intel Iris 6100 (`8086:162b`); Intel UMD и D3D12 в процесс
-не загружаются. Другие GPU и версии драйвера не поддерживаются: на них ICD не
-показывает ни одного устройства.
+An experimental Vulkan 1.3 driver (ICD) for Windows x64, built from Mesa HasVK
+26.2.7. It runs on top of Intel's stock WDDM kernel driver `20.19.15.5171` on
+the Intel Iris Graphics 6100 (Broadwell GT3, PCI `8086:162b`); neither Intel's
+user-mode driver nor D3D is loaded into the process. On any other GPU or driver
+version the ICD exposes no device.
 
-## Состояние
+![vkcube on the Iris 6100 through the HasVK/WDDM ICD](native/artifacts/vkcube-preview.png)
 
-- Vulkan 1.3, 108 расширений устройства. Собственный транспорт WDDM, штатные
-  SPIR-V → NIR → ELK → Gen8, ISL, BLORP и runtime Mesa.
-- Вывод в окно без копии через CPU, режимы FIFO, MAILBOX, IMMEDIATE; окно без
-  рамки размера swapchain (полноэкранная игра) получает изображение вовсе без
-  копии.
-- CTS 1.4.5.5: полный прогон mustpass выполнен 2026-11-20 (2 849 001 тест:
-  Pass 669 179, NotSupported 2 179 726, не прошли 90; после исправлений из них
-  проходят 89, остался один ожидаемый отказ). Драйвер не сертифицирован.
-  Отказы и их причины —
-  [docs/cts-expected-failures.md](docs/cts-expected-failures.md).
-- Проверенные приложения: `vulkaninfo`, `vkcube`, `vkcubepp`, The Talos
-  Principle.
-- The Talos Principle: 70–83 FPS против 79–87 у DX11 на драйвере Intel (в
-  начале работы — 27,8). Разрыв задаёт путь Vulkan самой игры (тени), без
-  построения теней Vulkan не медленнее DX11.
-- Конечная цель — Dota 2 под Vulkan быстрее, чем под DX11. Запись матча
-  проигрывается до конца: с выводом кадра без копии 25,5–25,7 FPS против
-  25,4–26,1 у DX11 (до него 23,2–24,7; timedemo, `tools/run-dota.ps1`).
-  Драйвер на критическом пути CPU почти не стоит — разбор и
-  реестр проверенных идей в
-  [docs/optimizations-vs-dx11.md](docs/optimizations-vs-dx11.md). В системе
-  установлен пакет `HasVK-WDDM-20261122-6468d32` (вывод без копии, без
-  переключателей для замеров и отладочного вывода — они в ветке `debug`).
-- Зависание GPU на этой версии драйвера ядра Intel дважды закончилось
-  критической ошибкой системы; обе найденные причины зависаний исправлены,
-  известных зависающих тестов CTS не осталось (roadmap, раздел 3).
+## Status
 
-![vkcube на Iris 6100 через HasVK/WDDM ICD](native/artifacts/vkcube-preview.png)
+- Vulkan 1.3, 108 device extensions. The WDDM transport is the project's own;
+  SPIR-V → NIR → ELK → Gen8, ISL, BLORP and the Vulkan runtime are stock Mesa.
+- Presentation to a window without a copy through the CPU, in FIFO, MAILBOX and
+  IMMEDIATE modes. A borderless window of the swapchain's size (a fullscreen
+  game) is shown with no copy at all.
+- Vulkan CTS 1.4.5.5: the full mustpass ran once (2,849,001 tests: 669,179
+  Pass, 2,179,726 NotSupported, 90 not passed). After the fixes 89 of those 90
+  pass and one failure is expected. The driver is not a conformant
+  implementation. See [docs/cts-expected-failures.md](docs/cts-expected-failures.md).
+- Applications that work: `vulkaninfo`, `vkcube`, `vkcubepp`, The Talos
+  Principle, Dota 2.
+- Performance against Intel's DX11 driver on the same machine
+  ([docs/performance.md](docs/performance.md)):
+  - The Talos Principle: 70–83 FPS against 79–87 (27.8 at the start of the
+    work). The gap is the game's own Vulkan path; with shadow rendering off
+    Vulkan is not slower.
+  - Dota 2 (a replay as a timedemo): 25.5–25.7 FPS against 25.4–26.1 at
+    2560×1600, and 1–3 % faster than DX11 at 1280×800.
+- A GPU hang on this version of Intel's kernel driver has twice ended in a
+  Windows bug check. Both causes found were fixed and no CTS test is known to
+  hang the GPU, but the risk of running an experimental driver is yours.
 
-## Документация
+## Install
 
-- [docs/roadmap.md](docs/roadmap.md) — что сделано, что осталось, риски и
-  меры безопасности.
-- [docs/optimizations-vs-dx11.md](docs/optimizations-vs-dx11.md) —
-  производительность: итоги по Talos и Dota, реестр проверенных гипотез
-  (смотреть перед новым опытом), команды замеров, подводные камни.
-- [docs/install.md](docs/install.md) — установка, кэш шейдеров, переменные
-  окружения, ограничения (эта инструкция входит в релизный пакет).
-- [docs/cts-expected-failures.md](docs/cts-expected-failures.md) — известные
-  отказы CTS.
-- [docs/intel-interface.md](docs/intel-interface.md) — закрытый интерфейс
-  Intel, от которого зависит порт, и порядок переноса на другую версию
-  драйвера.
-- [gpu-probe/README.md](gpu-probe/README.md) — исходный C#-прототип прямого
-  доступа к GPU.
+Download or build the release package and follow
+[docs/install.md](docs/install.md) (it is the README of the package). To try
+the driver with one application without installing it:
 
-## Сборка
+```powershell
+$env:VK_DRIVER_FILES = "<package>\icd\intel_hasvk_wddm_icd.json"
+& "<application>.exe"
+```
 
-Нужны минимум 25 ГиБ свободного места перед установкой зависимостей.
-Все команды выполняются из корня проекта в PowerShell x64:
+## Build
+
+About 25 GiB of free space is needed. From the repository root, in PowerShell:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\bootstrap.ps1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\test-all.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build-icd.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\make-release.ps1
 ```
 
-Bootstrap устанавливает MSVC/SDK и Python, получает Mesa 26.2.7 и зависимости
-с закреплёнными SHA-256. Драйвер (Mesa) собирается clang-cl из LLVM 23.1.6:
-официальный архив выпуска `clang+llvm-23.1.6-x86_64-pc-windows-msvc.tar.xz`
-(SHA-256 в `tools/dependencies.json`) распаковывается в `.tools\llvm-23.1.6`
-без установщика и прав администратора; оттуда же lld-link,
-llvm-symbolizer и llvm-profdata. В архиве нет lldb: `tools/debug-icd.ps1`
-берёт lldb 19.1.5, оставшийся в `.tools\llvm` от прежней установки LLVM
-(остальное оттуда удалено), с Python 3.10 из `.tools\python310-debug`;
-bootstrap их не ставит. Mesa собирается с `-march=broadwell`
-(AVX2, BMI2, FMA): драйвер работает только рядом с GPU Broadwell, значит
-и процессор всегда Broadwell. Сборка оптимизируется по профилю (PGO):
-`tools/pgo/hasvk.profdata` снят `tools/pgo-profile.ps1` на стенде записи
-команд, vkcubepp и бенчмарке Talos; поведение драйвера он не меняет, только
-раскладку кода (`build-mesa-compiler.ps1 -Pgo none` — без него). Отладочной информации в сборке по умолчанию
-нет; для профилирования и отладки с именами функций (`rip_sampler`,
-`tools/debug-icd.ps1`) — `tools/build-mesa-compiler.ps1 -DebugInfo`, затем
-`tools/build-icd.ps1 -SkipBuild` (PDB ляжет рядом с DLL в `build\icd`).
-Версии Python-пакетов закреплены в `tools/requirements.txt`.
-MSVC 14.44.35207, SDK 10.0.26100.0 и хеши компиляторов/заголовков KMT закреплены
-в `tools/toolchain-lock.json`; сборка останавливается при несовпадении.
-Онлайн-установщик Visual Studio может менять состав пакетов: для повторной
-установки именно этой версии следует сохранить локальные инструменты/пакеты.
-`ExecutionPolicy Bypass` действует только для запускаемого процесса.
+`bootstrap.ps1` installs the MSVC build tools, the Windows SDK and Python and
+downloads Mesa 26.2.7, clang 23.1.6 and zlib, all pinned by SHA-256.
+`build-icd.ps1` builds the driver into `build\icd`; `make-release.ps1` packs it
+into `build\release\HasVK-WDDM-<date>-<commit>.zip`.
 
-Установленные инструменты находятся в `.tools`, исходники зависимостей —
-в `third_party`, сборки и подробные журналы — в `build`. Windows SDK и служебный
-установщик Visual Studio используют стандартные системные каталоги.
+Every push is also built by GitHub Actions
+([.github/workflows/build.yml](.github/workflows/build.yml)); the package is
+attached to the run as an artifact. That build uses the runner's Visual Studio
+instead of the locked MSVC build and is not run on the GPU.
 
-Изменения Mesa воспроизводятся скриптом `mesa/apply-compiler-port.py` и
-сохраняются в `mesa/patches/compiler-port.patch`. ICD собирает
-`tools/build-icd.ps1`; готовый комплект (DLL и JSON-манифест) лежит в
-`build/icd`.
+Toolchain details, tests and the rest of the development workflow are in
+[docs/development.md](docs/development.md).
 
-## Проверки
+## Documentation
 
-Все проверки идут на настоящей GPU и не требуют участия пользователя.
+- [docs/install.md](docs/install.md) — installation, shader cache, environment
+  variables, limitations.
+- [docs/design.md](docs/design.md) — how the driver works: the WDDM transport,
+  presentation, what was changed in Mesa, known risks.
+- [docs/performance.md](docs/performance.md) — results in Talos and Dota 2,
+  what made the difference, how to measure.
+- [docs/cts-expected-failures.md](docs/cts-expected-failures.md) — CTS results
+  and the bugs the CTS found.
+- [docs/intel-interface.md](docs/intel-interface.md) — the undocumented Intel
+  interface the port depends on and how to move to another driver version.
+- [docs/development.md](docs/development.md) — toolchain, tests, CTS,
+  benchmarks, profiling, CI.
 
-- `tools/test-all.ps1` — общий прогон аппаратных проб с побайтной или
-  попиксельной сверкой результатов; ключ `-SkipBuild` запускает его на уже
-  собранных файлах.
-- Отдельные пробы: `test-native.ps1` (транспорт WDDM), `test-elk.ps1`,
-  `test-spirv.ps1`, `test-images.ps1`, `test-icd.ps1`, `test-graphics.ps1`,
-  `test-wsi.ps1` (вывод в окно), `test-oom.ps1`, `test-leaks.ps1`,
-  `test-device-lost.ps1`, `test-kernel-limits.ps1`,
-  `test-present-redirect.ps1`, `test-validation.ps1` (validation layers),
-  `test-stability.ps1`.
-- CTS: `build-cts.ps1`, `run-cts.ps1` и срезы по группам
-  (`run-cts-sample.ps1`, `run-cts-groups.ps1`, `run-cts-vk13.ps1`,
-  `run-cts-extensions.ps1`); полный mustpass (2,89 млн тестов, 8–10 часов,
-  возобновляемый) — `run-cts-full.ps1`, ход в `build\cts-full\progress.log`.
-- `run-dota.ps1` — запись матча Dota 2 как timedemo под Vulkan и DX11
-  (всегда с `-insecure`; итог игры, её профиль по разделам кадра и журнал
-  консоли — в `build\dota`; `-Sample` — потоки, частота CPU, загрузка GPU;
-  `-RipModule` — сэмплы стеков).
-- `run-talos.ps1` — встроенный бенчмарк The Talos Principle под Vulkan и DX11
-  (`-Sample` — потоки, частота CPU и загрузка GPU в окне замера;
-  `-RipModule` — сэмплы стеков; `-D3D11Proxy` — разбивка кадра DX11).
-- Диагностика производительности: `build-probes.ps1` (пробы, `rip_sampler`,
-  прокси `d3d11.dll`), таблицы кадров игры — `bench-frames.py`, секции
-  кадра игры в миллисекундах по API — `talos-sections.py`, сравнение
-  выборок кода двух прогонов — `rip-compare.py`. Отладочный вывод
-  драйвера (профиль проходов, журнал кадра с `timeline-report.py`, захват
-  кадра) и переключатели для замеров остались в ветке `debug`.
+## Repository layout
 
-Компактные отчёты прогонов — в `native/artifacts`.
+Needed to build the release:
 
-## Использование
+| Path | Contents |
+|---|---|
+| `mesa/` | The Windows platform of HasVK (`anv_wddm_*`), the script that ports the pinned Mesa tree (`apply-compiler-port.py`) and the resulting patch |
+| `native/src`, `native/include` | The WDDM transport |
+| `tools/` | Bootstrap, build, packaging and installation scripts, the PGO profile |
+| `.github/` | The CI build |
 
-Для одного приложения, без установки:
+Needed only for development:
 
-```powershell
-$env:VK_DRIVER_FILES = "<корень проекта>\build\icd\intel_hasvk_wddm_icd.json"
-& "<приложение>.exe"
-```
+| Path | Contents |
+|---|---|
+| `tools/dev/` | Tests, CTS runners, game benchmarks, profiling and debugging scripts |
+| `native/tests` | Hardware probes and micro-benchmarks (one of them, `IrisIcdProbe`, is the installer's self-test) |
+| `native/artifacts` | Compact reports of test and CTS runs |
+| `gpu-probe/` | The original C# prototype of direct GPU access |
 
-Системная установка и удаление — `tools/install-icd.ps1`, инструкция в
-[docs/install.md](docs/install.md). Релизный пакет собирает
-`tools/make-release.ps1`.
+`.tools`, `third_party` and `build` are local and not tracked; `bootstrap.ps1`
+recreates the first two.
 
-## Состав репозитория
+The driver in `main` has no measurement switches and no debug output. They are
+kept in the `debug` branch together with the tooling that reads them (frame
+timeline, per-pass GPU times, frame capture).
 
-В Git сохраняются исходники, патч к закреплённой Mesa, скрипты и компактные
-отчёты. `.tools`, `third_party`, `build` и захваты `gpu-probe/artifacts` остаются
-локальными. Bootstrap получает внешние зависимости заново. Сохранённые Intel
-ISA/описатели контрольного C# и раннего raw-теста в репозиторий не входят:
-для `test-all.ps1` нужны локальные контрольные fixtures. Самостоятельные Vulkan
-compute/graphics тесты (`test-icd.ps1`, `test-graphics.ps1`) их не используют.
+## License
 
-## Лицензия
+The project's own code is under the MIT License ([LICENSE](LICENSE)). The parts
+derived from Mesa stay under Mesa's license (also MIT) with their copyright
+notices, see [NOTICE.md](NOTICE.md). Notices for the third-party code in the
+binary package are in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
-Собственный код проекта — под лицензией MIT ([LICENSE](LICENSE)). Части,
-производные от Mesa, остаются под её лицензией (тоже MIT) со своими
-уведомлениями об авторских правах; подробности — в [NOTICE.md](NOTICE.md).
-Уведомления о стороннем коде, который попадает в бинарный пакет (Mesa, zlib и
-др.), собраны в [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md): его строит
-`tools/gen-third-party-notices.py` по списку исходников, реально вошедших в
-DLL, и после смены версии Mesa или состава сборки его надо перестроить.
-Релизный пакет включает `LICENSE` и `THIRD-PARTY-NOTICES.md`.
+This is an independent project: it is not an Intel product and is not certified
+by Khronos. Vulkan is a registered trademark of the Khronos Group.

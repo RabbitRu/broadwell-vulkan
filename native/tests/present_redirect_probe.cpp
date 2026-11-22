@@ -2,7 +2,7 @@
  *
  * The Intel OpenGL ICD presents a frame by writing it into a shared surface
  * the size of the window and submitting with PresentRedirected and the token
- * (0x80000000 | HWND) << 32 | shared handle (see tools/trace-gl-present.ps1).
+ * (0x80000000 | HWND) << 32 | shared handle (see tools/dev/trace-gl-present.ps1).
  * Its surface comes from dwmapi!DwmpDxGetWindowSharedSurface, which uses D3D11.
  * Here the surface is created by our own transport from the traced Intel
  * descriptor and D3D runtime data; frames are solid colours written by the

@@ -39,7 +39,7 @@ int hasvk_wddm_bo_flush(struct hasvk_wddm_bo *bo);
 int hasvk_wddm_bo_flush_range(struct hasvk_wddm_bo *bo, uint64_t offset, uint64_t bytes);
 int hasvk_wddm_submit_wait(struct hasvk_wddm_device *device, struct hasvk_wddm_bo *commands,
                           uint32_t offset, uint32_t bytes);
-/* Windowed present without D3D (see tools/test-present-redirect.ps1): a
+/* Windowed present without D3D (see tools/dev/test-present-redirect.ps1): a
  * shared B8G8R8A8 window surface, Y-tiled, pitch align(width * 4, 128),
  * height aligned to 32 rows, GPU-mapped, never CPU-mapped. A submission with
  * present_token = (0x80000000 | HWND) << 32 | share handle shows the surface

@@ -1,185 +1,89 @@
-# Iris 6100: прямой доступ к GPU через WDDM
+# gpu-probe: the C# prototype of direct GPU access through WDDM
 
-Проверены нативные операции памяти и вычислительный шейдер на Intel Iris Graphics 6100, PCI `8086:162B`,
-Windows 11, Intel `20.19.15.5171`, WDDM 2.0.
+The experiment the project started from. It proved that a process can drive the
+Intel Iris Graphics 6100 (PCI `8086:162B`, Intel driver `20.19.15.5171`)
+through the stock kernel driver alone: it builds Gen8 commands itself, submits
+them with `D3DKMTSubmitCommand` and reads back what the GPU wrote, with neither
+D3D12 nor `igd12umd64.dll` loaded (checked against the list of loaded modules).
 
-Программа сформировала команды Gen8, отправила их через
-`D3DKMTSubmitCommand` и прочитала записанные GPU значения.
-В режиме `-NativeOnly` в процесс не загружаются D3D12 и `igd12umd64.dll`.
-Это проверяется по фактически загруженным модулям после выполнения теста.
+The Vulkan driver later reimplemented all of this in C++ (`native/src`). The
+prototype is kept because it is the tool that captures Intel's private
+allocation descriptors and because `tools\dev\test-all.ps1` still uses its
+captures as controls.
 
-## Что работает
+## What it does
 
-- Собственные WDDM-устройство, виртуальный контекст и очередь подкачки.
-- Выделение двух буферов через `D3DKMTCreateAllocation2`, CPU mapping через
-  `D3DKMTLock2`, GPU mapping через `D3DKMTMapGpuVirtualAddress` и residency.
-- Собственный 72-байтный пакет команд Gen8: четыре `MI_STORE_DWORD_IMM`
-  и `MI_BATCH_BUFFER_END`.
-- Отправка через `D3DKMTSubmitCommand` с настоящим выполнением, без NullRendering.
-- Ожидание GPU через `D3DKMTSignalSynchronizationObject2 / EnqueueCpuEvent`.
-- Проверка всех 1024 слов результата: четыре заданных значения и 1020
-  неизменённых защитных слов.
-- Освобождение CPU/GPU mappings, буферов, контекста, очереди подкачки и устройства.
+- Its own WDDM device, context and paging queue; allocations through
+  `D3DKMTCreateAllocation2`, CPU mappings through `D3DKMTLock2`, GPU mappings
+  through `D3DKMTMapGpuVirtualAddress`.
+- `-NativeOnly`: a 72-byte Gen8 batch of four `MI_STORE_DWORD_IMM` and
+  `MI_BATCH_BUFFER_END`, real execution, a wait through a CPU event, and a
+  check of all 1024 result words (4 written values and 1020 guard words).
+- `-NativeCompute`: a 328-byte compute batch (`PIPELINE_SELECT`,
+  `STATE_BASE_ADDRESS`, `MEDIA_VFE_STATE`, `MEDIA_INTERFACE_DESCRIPTOR_LOAD`,
+  `GPGPU_WALKER`) that runs a shader over 1 to 16,381 elements. The 896 bytes
+  of shader machine code come from Intel's compiler in a bootstrap run; the
+  prototype allocates fresh memory and relocates base addresses, buffer
+  pointers and CURBE parameters. The CPU computes the same function and checks
+  every word.
+- `-Raw` and `-Trace`: a tracer that hooks nine GPU system calls of
+  `win32u.dll` inside its own process only, to record what Intel's user-mode
+  driver passes to the kernel. This is the source of the descriptors in
+  [docs/intel-interface.md](../docs/intel-interface.md). System files and other
+  processes are not touched.
+- A baseline through the stock D3D12 driver: a 65,536-byte copy, a `cs_5_1`
+  compute shader and a 512×384 triangle compared with a CPU calculation.
 
-Самостоятельный режим проверен в трёх отдельных процессах со случайными
-входными значениями. Все три запуска прошли; D3D12-модули отсутствовали.
+It depends on three blocks of Intel parameters captured from the stock
+user-mode driver (two 1096-byte allocation descriptors and the 80-byte
+submission header) and, for compute, on the captured shader code and state.
+They are pinned by SHA-256, checked against the driver version, and are not
+distributed in this repository.
 
-## Нативный вычислительный шейдер
+## Running
 
-Режим `-NativeCompute` создаёт собственные ресурсы и отправляет свой compute-пакет
-Gen8 размером 328 байт. Он содержит `PIPELINE_SELECT`, `STATE_BASE_ADDRESS`,
-`MEDIA_VFE_STATE`, `MEDIA_INTERFACE_DESCRIPTOR_LOAD`, `GPGPU_WALKER`, сбросы кэшей
-и завершение пакета. Полный пакет D3D12 не воспроизводится; 3D-команды копирования,
-отрисовка и служебный `MI_ATOMIC` из исходной трассы не используются.
-
-Машинный код шейдера размером 896 байт получен от компилятора Intel во время
-bootstrap-прогона нашего HLSL. Снимок содержит необходимые описания состояния и
-ресурсов. При самостоятельном запуске наш код выделяет новую GPU-память,
-перенастраивает адреса баз, указатели на шейдер, входной и выходной буферы,
-параметры CURBE и количество рабочих групп.
-
-Входной массив, seed и salt меняются при каждом запуске. CPU отдельно рассчитывает
-`Mix(Input[i] ^ Salt ^ (i * 0x9e3779b9))` и проверяет все слова результата.
-Три отдельных процесса прошли проверки:
-
-| Элементов | Рабочих групп по 64 | Проверенных защитных слов |
-| ---: | ---: | ---: |
-| 16 381 | 256 | 3 |
-| 257 | 5 | 16 127 |
-| 1 | 1 | 16 383 |
-
-В каждом процессе дополнительно подтверждено отсутствие D3D12 и `igd12umd64.dll`.
-Сейчас поддерживается именно этот тестовый шейдер, с числом элементов 1..16381.
-
-Отдельный базовый тест через штатный D3D12-драйвер также проходит:
-копирование 65 536 байт, вычислительный шейдер `cs_5_1` с проверкой
-16 381 результата, треугольник RGBA8 512×384. Шесть пикселей треугольника
-сравниваются с CPU-расчётом барицентрических координат.
-
-## Граница результата
-
-Это ещё не Vulkan ICD и не порт HasVK. Вычислительный шейдер уже запускается
-самостоятельным WDDM-путём; треугольник пока выполняется базовым тестом D3D12.
-Компиляция произвольного SPIR-V в Gen8, генерация произвольных состояний pipeline
-и нативная графика ещё не реализованы.
-
-Есть зависимость от трёх сохранённых блоков параметров Intel:
-шаблоны описаний буферов 8192/4096 байт по 1096 байт и заголовок отправки
-80 байт. Они сняты со штатного UMD в bootstrap-прогоне. Самостоятельный процесс
-читает их из файлов и работает через штатный KMD, не загружая UMD.
-
-Шаблоны памяти закреплены SHA-256; перед использованием проверяется версия драйвера
-`20.19.15.5171`. Общий генератор описаний GMM, произвольные ресурсы, форматы
-текстур и поддержка других драйверов ещё не реализованы.
-
-Compute также использует сохранённые ISA шейдера и состояния, подготовленные
-Intel UMD, с проверкой SHA-256 и размера файлов. Считывание состояния и команд
-выполняется через `-CaptureCompute`; Mesa genxml используется для разбора пакетов.
-Некоторые GPU-only буферы недоступны `Lock2`: в снимке они помечены
-`cpuReadSucceeded=false`, их файлы не считаются достоверным содержимым памяти.
-Самостоятельный compute использует только успешно прочитанные состояния,
-а входной и выходной массивы создаёт заново.
-
-## Запуск
-
-Нужны Windows x64, конкретная Iris 6100 и установленный .NET Framework 4.x.
-Для сборки используется штатный `csc.exe`; SDK и пакеты не устанавливаются.
-
-Из корня проекта:
+Requires Windows x64, this exact GPU and .NET Framework 4.x; it is compiled by
+the `csc.exe` that ships with Windows. From the repository root:
 
 ```powershell
-# Полный bootstrap: D3D12 baseline, трасса, прямые команды, собственный WDDM allocator.
+# Full bootstrap: D3D12 baseline, trace, direct commands, own allocator.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\gpu-probe\run.ps1 -Raw -OutputDirectory .\gpu-probe\artifacts\native-bootstrap
 
-# Самостоятельный процесс: только WDDM, сохранённые параметры Intel и наши команды.
+# Standalone: WDDM only, the saved Intel parameters and our commands.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\gpu-probe\run.ps1 -NativeOnly -OutputDirectory .\gpu-probe\artifacts\native-only
 
-# Подготовить снимок нашего compute-шейдера и разобрать пакеты Gen8.
+# Capture the compute shader and decode the Gen8 packets.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\gpu-probe\tools\fetch-genxml.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\gpu-probe\run.ps1 -CaptureCompute -OutputDirectory .\gpu-probe\artifacts\compute-bootstrap
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\gpu-probe\tools\decode-compute.ps1
 
-# Самостоятельный compute: без D3D12, с новыми данными и перенастроенными адресами.
+# Standalone compute with fresh data and relocated addresses.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\gpu-probe\run.ps1 -NativeCompute -ElementCount 16381 -OutputDirectory .\gpu-probe\artifacts\native-compute
-
-# Только сборка.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\gpu-probe\run.ps1 -BuildOnly
 ```
 
-Другую папку шаблонов можно передать через `-BootstrapDirectory`, снимок compute —
-через `-CaptureDirectory`. Если файлы уже подготовлены, повторно запускать
-`-CaptureCompute` и скачивать XML не требуется. `fetch-genxml.ps1` сохраняет URL
-и SHA-256 определений; описание берётся из зеркала открытых исходников Mesa.
-Выполнение ограничено конкретным PCI ID; программного рендерера как запасного
-варианта нет. Ожидания GPU и paging fence ограничены 15 секундами.
-Тест работает с несколькими килобайтами собственной GPU-памяти.
+`fetch-genxml.ps1` downloads Mesa's Gen8 command definitions, which
+`decode-compute.ps1` uses to decode packets. Execution is limited to the one
+PCI ID; there is no software fallback. GPU and paging waits time out after 15
+seconds. Each run writes a `report.json` and the batches and readbacks it used
+into its output directory under `gpu-probe\artifacts` (not tracked).
 
-Параметры `-Raw` и `-Trace` включают трассировщик: он временно перехватывает
-девять GPU-вызовов `win32u.dll` только в адресном пространстве своего процесса,
-сохраняет аргументы и восстанавливает точки входа. Он принимает только
-проверенный x64 layout syscall stub. В `-NativeOnly` перехват не включается.
-Файлы системных DLL и другие процессы не меняются.
+## Sources
 
-Smart App Control был отключён самим пользователем после подтверждения.
-Программа не меняет политики безопасности Windows. `-ExecutionPolicy Bypass`
-задаёт режим только запуска PowerShell и не управляет Smart App Control.
+- `src/NativeCompute.cs` — the compute batch, state relocation, result checks.
+- `src/ComputeCapture.cs` — capture of buffers, machine code and compute
+  arguments.
+- `src/NativeMemory.cs` — the WDDM allocator, mappings, residency.
+- `src/NativeOnly.cs` — the run without D3D12, adapter and module checks.
+- `src/Wddm.cs` — context, direct submission, completion wait.
+- `src/KernelTrace.cs` — the system call tracer.
+- `src/Native.cs` — COM ABI of D3D12/DXGI and structure size checks.
+- `src/Program.cs` — the D3D12 baseline and the test driver.
+- `src/Imports.cs` — module list and import reading.
+- `shaders/probe.hlsl` — shaders of the baseline.
 
-## Результаты
-
-- `artifacts/native-compute/report.json` — самостоятельный compute для 16 381 элемента.
-- `artifacts/native-compute-257/report.json`, `native-compute-1/report.json` — граничные проверки.
-- `artifacts/native-compute/native-compute-batch.bin` — наш пакет Gen8, 328 байт.
-- `artifacts/native-compute/gen8-compute-kernel.bin` — ISA вычислительного шейдера, 896 байт.
-- `artifacts/native-compute/native-compute-readback.bin` — фактический выходной массив и защитные слова.
-- `artifacts/compute-bootstrap/compute-capture/capture.json` — снимок и хеши ресурсов.
-- `artifacts/compute-bootstrap/compute-capture/decoded-packets.json` — разбор исходного пакета.
-- `artifacts/compute-regression/report.json` — повторная проверка прежних стадий после добавления compute.
-- `artifacts/native-store-regression/report.json` — проверка самостоятельных команд записи текущей сборкой.
-- `artifacts/native-only/report.json` — самостоятельный успешный запуск.
-- `artifacts/native-only-repeat2/report.json`, `native-only-repeat3/report.json` — повторы.
-- `artifacts/native-only/native-memory-batch.bin` — созданные программой команды.
-- `artifacts/native-only/native-memory-readback.bin` — фактические данные с GPU.
-- `artifacts/native-bootstrap/report.json` — все стадии вместе с D3D12 baseline.
-- `artifacts/native-bootstrap/bootstrap/` — три блока параметров Intel.
-- `artifacts/native-bootstrap/wddm/calls.jsonl` — трасса с кодами возврата.
-- `artifacts/native-bootstrap/triangle.png` — треугольник базового теста.
-- `artifacts/native-bootstrap/build.json` — SHA-256 EXE, исходников и шейдера.
-- `artifacts/status.json` — сводный статус и следующие шаги.
-
-Папки `native-map-diagnostic` и ранние `trace/raw` содержат промежуточные
-эксперименты. Актуальные успешные результаты перечислены выше.
-При первом запросе mapping был указан CPU-диапазон VA; рабочая трасса показала,
-что этот драйвер использует GPU-диапазон выше `0x800000000000`.
-После исправления mapping самостоятельный тест прошёл.
-
-## Исходники
-
-- `src/NativeCompute.cs` — собственный compute-пакет, перенастройка состояний, проверка результатов.
-- `src/ComputeCapture.cs` — снимок буферов, машинного кода и аргументов compute.
-- `src/NativeMemory.cs` — самостоятельный WDDM allocator, mappings, residency и проверка.
-- `src/NativeOnly.cs` — запуск без D3D12, проверка аппаратного адаптера и модулей.
-- `src/Wddm.cs` — контекст, прямая отправка пакета, ожидание завершения.
-- `src/KernelTrace.cs` — диагностика GPU-вызовов и получение параметров Intel.
-- `src/Native.cs` — COM ABI D3D12/DXGI и проверки размеров структур.
-- `src/Program.cs` — D3D12 baseline, тесты прямых команд, проверка результатов.
-- `src/Imports.cs` — чтение списка модулей и обычных импортов.
-- `shaders/probe.hlsl` — шейдеры базового теста.
-
-## Дальнейшая работа
-
-1. Подключить компилятор Mesa Gen8 для произвольного SPIR-V и создавать состояния pipeline без снимка Intel UMD.
-2. Заменить сохранённые GMM-шаблоны созданием полноценных описаний ресурсов.
-3. Перенести рабочие операции памяти, submit, synchronization и compute в Windows backend HasVK.
-4. Реализовать нативную графику, Vulkan loader ICD, Win32 presentation и аппаратный `vkcube`.
-5. Проверять Vulkan CTS и требования конкретных приложений.
-
-Эти пункты пока не выполнены. Результат не является сертификацией Vulkan,
-драйвером для произвольных игр или тестом производительности.
-
-## Первичные источники
+## References
 
 - Microsoft WDDM headers: https://github.com/microsoft/win32metadata/tree/main/generation/WinSDK/RecompiledIdlHeaders/shared
-- Microsoft DirectX headers: https://github.com/microsoft/DirectX-Headers
-- Intel WDDM implementation: https://github.com/intel/compute-runtime/tree/master/shared/source/os_interface/windows/wddm
+- Intel's WDDM implementation: https://github.com/intel/compute-runtime/tree/master/shared/source/os_interface/windows/wddm
 - Intel command encodings in i915: https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/i915/gt/intel_gpu_commands.h
 - Mesa HasVK: https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/intel/vulkan_hasvk
