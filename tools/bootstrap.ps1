@@ -14,7 +14,9 @@ $env:TEMP = $taskScratch
 $env:TMP = $taskScratch
 function Get-PinnedFile($dependency, $destination, [switch]$Signed) {
     if (-not (Test-Path -LiteralPath $destination)) {
-        & curl.exe -fLsS --retry 3 --connect-timeout 15 --max-time 1800 -o $destination $dependency.url
+        "bootstrap: downloading $($dependency.url)"
+        # --speed-*: give up on a transfer that stalls instead of waiting out --max-time.
+        & curl.exe -fLsS --retry 3 --connect-timeout 15 --max-time 1800 --speed-limit 1024 --speed-time 60 -o $destination $dependency.url
         if ($LASTEXITCODE) { throw "Download failed: $($dependency.url)" }
     }
     if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() -ne $dependency.sha256) {
@@ -43,10 +45,12 @@ if (-not (Test-Path -LiteralPath (Join-Path $taskVsDirectory 'VC\Tools\MSVC'))) 
     if ($taskProcess.ExitCode -notin @(0,3010)) { throw "MSVC install failed: $($taskProcess.ExitCode)" }
 }
 $taskPythonExe = Join-Path $taskPythonDirectory 'python.exe'
+'bootstrap: installing the Python packages'
 & $taskPythonExe -m pip install --disable-pip-version-check --no-warn-script-location -r (Join-Path $PSScriptRoot 'requirements.txt')
 if ($LASTEXITCODE) { throw 'Python dependency installation failed' }
 Get-PinnedFile $taskDependencies.mesa (Join-Path $taskDownloads 'mesa-26.2.7.tar.xz')
 Get-PinnedFile $taskDependencies.nlohmann (Join-Path $taskRoot 'third_party\nlohmann\json.hpp')
+'bootstrap: extracting Mesa'
 & $taskPythonExe (Join-Path $PSScriptRoot 'prepare-sources.py')
 if ($LASTEXITCODE) { throw 'Mesa source preparation failed' }
 $taskCache = Join-Path $taskRoot 'third_party\mesa-26.2.7\subprojects\packagecache'
@@ -55,16 +59,16 @@ Get-PinnedFile $taskDependencies.zlib (Join-Path $taskCache 'zlib-1.3.1.tar.gz')
 Get-PinnedFile $taskDependencies.zlibMeson (Join-Path $taskCache 'zlib_1.3.1-1_patch.zip')
 # Official LLVM release archive (clang-cl, lld-link, llvm-lib, compiler-rt incl.
 # the profile runtime, llvm-symbolizer, llvm-profdata; no lldb): no installer, no admin.
-# The .tar.xz, not the smaller .tar.zst: the zstd archive needs a long decoder
-# window that the Windows tar.exe (bsdtar) refuses.
+# The .tar.xz, extracted by Python: tar.exe has an xz decoder only in recent
+# Windows builds (Windows Server 2022 has none), and Python 3.12 has no zstd.
 $taskLlvm = Join-Path $taskTools ('llvm-'+$taskDependencies.llvm.version)
 if (-not (Test-Path -LiteralPath (Join-Path $taskLlvm 'bin\clang-cl.exe'))) {
     $taskLlvmArchive = Join-Path $taskDownloads $taskDependencies.llvm.archive
     Get-PinnedFile $taskDependencies.llvm $taskLlvmArchive
     $taskLlvmStaging = Join-Path $taskScratch 'llvm-extract'
     if (Test-Path -LiteralPath $taskLlvmStaging) { Remove-Item -LiteralPath $taskLlvmStaging -Recurse -Force }
-    New-Item -ItemType Directory -Path $taskLlvmStaging | Out-Null
-    & (Join-Path $env:SystemRoot 'System32\tar.exe') -xf $taskLlvmArchive -C $taskLlvmStaging
+    'bootstrap: extracting LLVM (about 4 GiB)'
+    & $taskPythonExe (Join-Path $PSScriptRoot 'prepare-sources.py') llvm $taskLlvmStaging
     if ($LASTEXITCODE) { throw 'LLVM archive extraction failed' }
     Move-Item -LiteralPath (Join-Path $taskLlvmStaging $taskDependencies.llvm.directory) -Destination $taskLlvm
     Remove-Item -LiteralPath $taskLlvmStaging -Recurse -Force

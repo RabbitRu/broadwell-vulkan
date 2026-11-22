@@ -51,9 +51,11 @@ jobs:
           Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include" | Select-Object -ExpandProperty Name
 
       - name: Download the pinned sources and clang
+        timeout-minutes: 30
         run: .\.github\run-step.ps1 -Name bootstrap -Command '.\tools\bootstrap.ps1'
 
       - name: Build the driver
+        timeout-minutes: 60
         run: .\.github\run-step.ps1 -Name build-icd -Command ".\tools\build-icd.ps1 -Jobs $env:NUMBER_OF_PROCESSORS"
 
       - name: Package
@@ -77,3 +79,8 @@ jobs:
       # version or of the linked sources must come with a regenerated file.
       - name: Check that THIRD-PARTY-NOTICES.md is current
         run: .\.github\run-step.ps1 -Name notices -Command '.\.github\check-notices.ps1'
+
+      # A step killed by its timeout leaves its log behind without reporting it.
+      - name: Report interrupted steps
+        if: failure()
+        run: .\.github\run-step.ps1 -Report
