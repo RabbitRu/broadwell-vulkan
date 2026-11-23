@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include "kernel_dump.h"
 #include <cstring>
 #include <vector>
 
@@ -114,5 +115,7 @@ int main(int argc, char **argv)
    }
    printf("d3d11 %s %s: best %.3f ms for %u layers -> %.2f Gpixels/s, %.2fM PS invocations, %.2fM samples passed\n", mode, front_to_back ? "front-to-back" : "back-to-front",
           best, layers, (double)size * size * layers / (best / 1000) / 1e9, ps.PSInvocations / 1e6, samples / 1e6);
+   const uint32_t constants[] = {0x40800000 /* 4.0 */, 0x3f000000 /* 0.5 */};
+   DumpKernelCandidates(constants, 2, 128);
    return 0;
 }

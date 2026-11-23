@@ -6,6 +6,8 @@
 #define VK_NO_PROTOTYPES
 #include <windows.h>
 #include <vulkan/vulkan.h>
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -92,6 +94,29 @@ int main(int argc, char **argv)
       const double flop = groups * 64.0 * 512 * 8 * 2;
       if (reps <= 20 || rep % (reps / 20) == 0)
          printf("run %d: %.2f ms -> %.0f GFLOPS\n", rep, ms, flop / (ms / 1000) / 1e9);
+   }
+   if (!clock_mode) {
+      /* The values: 1024 invocations, one per element, against the CPU. */
+      F(vkMapMemory); CHECK(vkMapMemory(d, mem, 0, VK_WHOLE_SIZE, 0, &mapped));
+      CHECK(vkResetCommandBuffer(cmd, 0));
+      VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; CHECK(vkBeginCommandBuffer(cmd, &begin));
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, nullptr);
+      vkCmdDispatch(cmd, 16, 1, 1);
+      CHECK(vkEndCommandBuffer(cmd));
+      VkSubmitInfo s{VK_STRUCTURE_TYPE_SUBMIT_INFO}; s.commandBufferCount = 1; s.pCommandBuffers = &cmd;
+      CHECK(vkQueueSubmit(queue, 1, &s, VK_NULL_HANDLE)); CHECK(vkQueueWaitIdle(queue));
+      static const float offsets[8] = {0.0f, 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f};
+      double worst = 0;
+      for (uint32_t x = 0; x < 1024; ++x) {
+         float chain[8], sum = 0;
+         for (int j = 0; j < 8; ++j) chain[j] = float(x) * 1e-7f + offsets[j];
+         for (int i = 0; i < 512; ++i) for (int j = 0; j < 8; ++j) chain[j] = fmaf(chain[j], 0.9999f, 0.0001f);
+         for (int j = 0; j < 8; ++j) sum += chain[j];
+         worst = std::max(worst, (double)fabsf(((const float *)mapped)[x] - sum) / sum);
+      }
+      printf("check: worst relative error %.3g -> %s\n", worst, worst < 1e-5 ? "OK" : "WRONG");
+      if (!(worst < 1e-5)) return 1;
    }
    return 0;
 }

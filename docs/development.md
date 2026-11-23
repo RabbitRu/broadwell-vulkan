@@ -79,7 +79,10 @@ All tests run on the real GPU and need no interaction.
   Talos Principle. `-Sample` adds per-thread CPU time, CPU frequency and GPU
   load in the measured window, `-RipModule` adds sampled stacks.
 - `build-probes.ps1` builds the micro-benchmarks, the `rip_sampler` profiler
-  and a `d3d11.dll` proxy that breaks a DX11 frame down.
+  and a `d3d11.dll` proxy that breaks a DX11 frame down. With
+  `D3D11_PROBE_DUMP=<prefix>` the D3D11 micro-benchmarks save the kernel that
+  Intel's compiler produced; `IrisElkCompile.exe --disasm <file>` disassembles
+  it (and any raw Gen8 code).
 - `bench-frames.py` (frame tables), `talos-sections.py` (frame sections in
   milliseconds per API), `rip-compare.py` (code samples of two runs compared).
 - Commands and measurement pitfalls are in [performance.md](performance.md).

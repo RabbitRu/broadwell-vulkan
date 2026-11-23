@@ -3666,7 +3666,236 @@
              assert(inst->dst.file != MRF);
  
              for (unsigned i = 0; i < inst->implied_mrf_writes(); i++) {
-@@ -870,7 +871,7 @@
+@@ -563,6 +564,31 @@
+       }
+ 
+       return constrained;
++   }
++
++   /**
++    * Return the set of GRF atoms that the program reads or writes.  The other
++    * ones are free space an atom can be moved into.
++    */
++   bool *
++   shader_reg_references(const elk_fs_visitor *v, const partitioning &p)
++   {
++      bool *referenced = new bool[p.num_atoms()]();
++
++      foreach_block_and_inst(block, elk_fs_inst, inst, v->cfg) {
++         if (is_grf(inst->dst))
++            referenced[p.atom_of_reg(reg_of(inst->dst))] = true;
++
++         for (int i = 0; i < inst->sources; i++) {
++            if (is_grf(inst->src[i]))
++               referenced[p.atom_of_reg(reg_of(inst->src[i]))] = true;
++         }
++
++         for (unsigned i = 0; i < inst->implied_mrf_writes(); i++)
++            referenced[p.atom_of_reg(GFX7_MRF_HACK_START + inst->base_mrf + i)] = true;
++      }
++
++      return referenced;
+    }
+ 
+    /**
+@@ -604,46 +630,61 @@
+          } else if (inst->opcode == ELK_OPCODE_WHILE) {
+             block_scale /= 10;
+ 
+-         } else if (inst->elk_is_3src(v->compiler) &&
+-                    is_grf(inst->src[1]) && is_grf(inst->src[2])) {
+-            const unsigned r = p.atom_of_reg(reg_of(inst->src[1]));
+-            const unsigned s = p.atom_of_reg(reg_of(inst->src[2]));
+-
++         } else if (inst->elk_is_3src(v->compiler)) {
+             /* Estimate of the cycle-count cost of incurring a bank conflict
+-             * for this instruction.  This is only true on the average, for a
+-             * sequence of back-to-back ternary instructions, since the EU
+-             * front-end only seems to be able to issue a new instruction at
+-             * an even cycle.  The cost of a bank conflict incurred by an
+-             * isolated ternary instruction may be higher.
++             * for this instruction: one cycle for every SIMD8 half (a
++             * register of the destination).  This is only true on the
++             * average, for a sequence of back-to-back ternary instructions,
++             * since the EU front-end only seems to be able to issue a new
++             * instruction at an even cycle.  The cost of a bank conflict
++             * incurred by an isolated ternary instruction may be higher.
+              */
+             const unsigned exec_size = inst->dst.component_size(inst->exec_size);
+-            const unsigned cycle_scale = block_scale * DIV_ROUND_UP(exec_size,
+-                                                                    REG_SIZE);
+-
+-            /* Neglect same-atom conflicts (since they're either trivial or
+-             * impossible to avoid without splitting the atom).
+-             */
+-            if (r != s) {
+-               /* Calculate the parity of the sources relative to the start of
+-                * their respective atoms.  If their parity is the same (and
+-                * none of the atoms straddle the 2KB mark), the instruction
+-                * will incur a conflict iff both atoms are assigned the same
+-                * bank b.  If their parity is opposite, the instruction will
+-                * incur a conflict iff they are assigned opposite banks (b and
+-                * b^1).
++            const unsigned halves = DIV_ROUND_UP(exec_size, REG_SIZE);
++
++            /* The second source conflicts with the first and with the third. */
++            for (unsigned first = 0; first < 2; first++) {
++               const elk_fs_reg &src_r = inst->src[first];
++               const elk_fs_reg &src_s = inst->src[first + 1];
++
++               if (!is_grf(src_r) || !is_grf(src_s))
++                  continue;
++
++               const unsigned r = p.atom_of_reg(reg_of(src_r));
++               const unsigned s = p.atom_of_reg(reg_of(src_s));
++
++               /* Neglect same-atom conflicts (since they're either trivial or
++                * impossible to avoid without splitting the atom).
+                 */
+-               const bool p_r = 1 & (reg_of(inst->src[1]) - p.reg_of_atom(r));
+-               const bool p_s = 1 & (reg_of(inst->src[2]) - p.reg_of_atom(s));
+-               const unsigned p = p_r ^ p_s;
+-
+-               /* Calculate the updated cost of a hypothetical conflict
+-                * between atoms r and s.  Note that the weight matrix is
+-                * symmetric with respect to indices r and s by construction.
+-                */
+-               const scalar_type w = MIN2(unsigned(max_scalar),
+-                                          get(conflicts[r], s, p) + cycle_scale);
+-               set(conflicts[r], s, p, w);
+-               set(conflicts[s], r, p, w);
++               if (r == s)
++                  continue;
++
++               for (unsigned h = 0; h < halves; h++) {
++                  /* Calculate the parity of the sources relative to the start
++                   * of their respective atoms.  If their parity is the same
++                   * (and none of the atoms straddle the 2KB mark), the
++                   * instruction will incur a conflict iff both atoms are
++                   * assigned the same bank b.  If their parity is opposite,
++                   * the instruction will incur a conflict iff they are
++                   * assigned opposite banks (b and b^1).  A source with
++                   * stride 0 stays in its register while the other one
++                   * advances, so the parity can differ between the halves.
++                   */
++                  const unsigned reg_r = reg_of(src_r) + (src_r.stride ? h : 0);
++                  const unsigned reg_s = reg_of(src_s) + (src_s.stride ? h : 0);
++                  const bool p_r = 1 & (reg_r - p.reg_of_atom(r));
++                  const bool p_s = 1 & (reg_s - p.reg_of_atom(s));
++                  const unsigned parity = p_r ^ p_s;
++
++                  /* Calculate the updated cost of a hypothetical conflict
++                   * between atoms r and s.  Note that the weight matrix is
++                   * symmetric with respect to indices r and s by construction.
++                   */
++                  const scalar_type w = MIN2(unsigned(max_scalar),
++                                             get(conflicts[r], s, parity) + block_scale);
++                  set(conflicts[r], s, parity, w);
++                  set(conflicts[s], r, parity, w);
++               }
+             }
+          }
+       }
+@@ -800,11 +841,19 @@
+    permutation
+    optimize_reg_permutation(const partitioning &p,
+                             const bool *constrained,
++                            const bool *referenced,
+                             const weight_vector_type *conflicts,
+                             permutation map)
+    {
+       const bool *any_conflicts = have_any_conflicts(p, conflicts);
+       weight_vector_type *banks = bank_characteristics(map);
++
++      /* The atom that each register address currently belongs to. */
++      unsigned owner[ELK_MAX_GRF];
++      for (unsigned r = 0; r < map.size; r++) {
++         for (unsigned i = 0; i < p.size_of_atom(r); i++)
++            owner[map.v[r] + i] = r;
++      }
+ 
+       for (unsigned r = 0; r < map.size; r++) {
+          const unsigned bank_r = bank_of(map.v[r]);
+@@ -830,13 +879,75 @@
+                }
+             }
+ 
+-            if (best_s != r) {
++            /* Or a run of unused registers in another bank, below the
++             * registers that stand in for the MRFs.  An unused register is
++             * always an atom of its own, and moving there costs nothing but
++             * the conflicts of this atom.
++             */
++            const unsigned size_r = p.size_of_atom(r);
++            unsigned best_q = ELK_MAX_GRF;
++
++            if (any_conflicts[r]) {
++               for (unsigned q = 2; q + size_r <= GFX7_MRF_HACK_START; q++) {
++                  const unsigned bank_q = bank_of(q);
++                  bool is_free = bank_q != bank_r;
++
++                  for (unsigned i = 0; i < size_r && is_free; i++) {
++                     is_free = !referenced[owner[q + i]] &&
++                               !constrained[owner[q + i]];
++                  }
++
++                  if (is_free) {
++                     const int benefit =
++                        delta_conflicts(banks[bank_r], banks[bank_q], conflicts[r]);
++
++                     if (benefit > best_benefit) {
++                        best_q = q;
++                        best_benefit = benefit;
++                     }
++                  }
++               }
++            }
++
++            if (best_q != ELK_MAX_GRF) {
++               /* The unused atoms take the place this one leaves. */
++               const unsigned from = map.v[r];
++
++               for (unsigned i = 0; i < size_r; i++) {
++                  const unsigned unused = owner[best_q + i];
++
++                  map.v[unused] = from + i;
++                  owner[from + i] = unused;
++
++                  for (unsigned b = 0; b < 4; b++) {
++                     for (unsigned parity = 0; parity < 2; parity++)
++                        set(banks[b], unused, parity,
++                            (b ^ parity) == bank_of(map.v[unused]) ? -1 : 0);
++                  }
++               }
++
++               map.v[r] = best_q;
++               for (unsigned i = 0; i < size_r; i++)
++                  owner[best_q + i] = r;
++
+                for (unsigned b = 0; b < 4; b++) {
+-                  for (unsigned p = 0; p < 2; p++)
+-                     swap(banks[b], r, p, best_s, p);
++                  for (unsigned parity = 0; parity < 2; parity++)
++                     set(banks[b], r, parity,
++                         (b ^ parity) == bank_of(best_q) ? -1 : 0);
+                }
+ 
++            } else if (best_s != r) {
++               for (unsigned b = 0; b < 4; b++) {
++                  for (unsigned parity = 0; parity < 2; parity++)
++                     swap(banks[b], r, parity, best_s, parity);
++               }
++
+                SWAP(map.v[r], map.v[best_s]);
++
++               for (unsigned i = 0; i < size_r; i++) {
++                  owner[map.v[r] + i] = r;
++                  owner[map.v[best_s] + i] = best_s;
++               }
+             }
+          }
+       }
+@@ -870,22 +981,34 @@
     assert(grf_used || !"Must be called after register allocation");
  
     /* No ternary instructions -- No bank conflicts. */
@@ -3675,6 +3904,35 @@
        return false;
  
     const partitioning p = shader_reg_partitioning(this);
+    const bool *constrained = shader_reg_constraints(this, p);
+    const weight_vector_type *conflicts =
+       shader_conflict_weight_matrix(this, p);
++   const bool *referenced = shader_reg_references(this, p);
+    const permutation map =
+-      optimize_reg_permutation(p, constrained, conflicts,
++      optimize_reg_permutation(p, constrained, referenced, conflicts,
+                                identity_reg_permutation(p));
++   delete[] referenced;
+ 
+    foreach_block_and_inst(block, elk_fs_inst, inst, cfg) {
+       inst->dst = transform(p, map, inst->dst);
+ 
+-      for (int i = 0; i < inst->sources; i++)
++      /* An atom may have moved above the registers the allocator used: the
++       * scheduler that runs next sizes its tables by grf_used.
++       */
++      if (inst->dst.file == VGRF)
++         grf_used = MAX2(grf_used, inst->dst.nr + regs_written(inst));
++
++      for (int i = 0; i < inst->sources; i++) {
+          inst->src[i] = transform(p, map, inst->src[i]);
++
++         if (inst->src[i].file == VGRF)
++            grf_used = MAX2(grf_used, inst->src[i].nr + regs_read(inst, i));
++      }
+    }
+ 
+    delete[] conflicts;
 --- a/src/intel/compiler/elk/elk_fs.cpp
 +++ b/src/intel/compiler/elk/elk_fs.cpp
 @@ -26,6 +26,7 @@
@@ -4206,6 +4464,256 @@
  
     /* The thread ID should be stored in the last param dword */
     assert(subgroup_id_index == -1 ||
+--- a/src/intel/compiler/elk/elk_fs_combine_constants.cpp
++++ b/src/intel/compiler/elk/elk_fs_combine_constants.cpp
+@@ -20,6 +20,7 @@
+ #include "elk_fs_builder.h"
+ #include "elk_cfg.h"
+ #include "util/half_float.h"
++#include "util/hash_table.h"
+ 
+ using namespace elk;
+ 
+@@ -763,7 +764,7 @@
+           inst->opcode == ELK_OPCODE_ADD ||
+           inst->opcode == ELK_OPCODE_MUL);
+ 
+-   if (devinfo->ver != 7)
++   if (true)
+       return false;
+ 
+    /* Only float instructions can coissue.  We don't have a great
+@@ -855,6 +856,19 @@
+    /** Is the value used only in a single basic block? */
+    bool used_in_single_block;
+ 
++   /** Loaded before the outermost loop around its uses; block is the DO block. */
++   bool hoisted;
++
++   /**
++    * Constants (indices into the table) that must not share a register with
++    * this one: a three-source instruction reads them as adjacent sources.
++    */
++   unsigned *apart;
++   unsigned num_apart;
++
++   /** A register has been chosen (nr is valid). */
++   bool placed;
++
+    /**
+     * The GRF register and subregister number where we've decided to store the
+     * constant value.
+@@ -1060,10 +1074,50 @@
+    uint16_t avail;
+ };
+ 
++/**
++ * Is register \p nr taken by a constant that \p self has to stay apart from?
++ *
++ * A three-source instruction loses a cycle per SIMD8 half when its second
++ * source comes from the same GRF bank as its first or its third source, and
++ * two constants in one register are in one bank wherever the register is.
++ */
++static bool
++holds_adjacent_source(const struct imm *table, const struct imm *self,
++                      unsigned nr)
++{
++   for (unsigned i = 0; i < self->num_apart; i++) {
++      const struct imm *other = &table[self->apart[i]];
++
++      if (other->placed && other->nr == nr)
++         return true;
++   }
++
++   return false;
++}
++
++static void
++keep_apart(void *mem_ctx, struct imm *table, unsigned a, unsigned b)
++{
++   for (unsigned n = 0; n < 2; n++) {
++      struct imm *imm = &table[n ? b : a];
++      const unsigned other = n ? a : b;
++      bool known = false;
++
++      for (unsigned i = 0; i < imm->num_apart; i++)
++         known |= imm->apart[i] == other;
++
++      if (!known) {
++         imm->apart = reralloc(mem_ctx, imm->apart, unsigned, imm->num_apart + 1);
++         imm->apart[imm->num_apart++] = other;
++      }
++   }
++}
++
+ static elk_fs_reg
+ allocate_slots(struct register_allocation *regs, unsigned num_regs,
+                unsigned bytes, unsigned align_bytes,
+-               elk::simple_allocator &alloc)
++               elk::simple_allocator &alloc,
++               const struct imm *table, const struct imm *self)
+ {
+    assert(bytes == 2 || bytes == 4 || bytes == 8);
+    assert(align_bytes == 2 || align_bytes == 4 || align_bytes == 8);
+@@ -1073,6 +1127,10 @@
+    const uint16_t mask = (1U << words) - 1;
+ 
+    for (unsigned i = 0; i < num_regs; i++) {
++      /* There is a register for every constant, so one is always left. */
++      if (regs[i].nr != UINT_MAX && holds_adjacent_source(table, self, regs[i].nr))
++         continue;
++
+       for (unsigned j = 0; j <= (16 - words); j += align_words) {
+          const uint16_t x = regs[i].avail >> j;
+ 
+@@ -1156,10 +1214,11 @@
+             const elk_fs_reg reg = allocate_slots(regs, num_regs,
+                                               imm[i].size * width,
+                                               get_alignment_for_imm(&imm[i]),
+-                                              alloc);
++                                              alloc, imm, &imm[i]);
+ 
+             imm[i].nr = reg.nr;
+             imm[i].subreg_offset = reg.offset;
++            imm[i].placed = true;
+          }
+       }
+    }
+@@ -1218,7 +1277,7 @@
+                                     devinfo, const_ctx);
+          }
+ 
+-         if (inst->src[1].file == IMM && devinfo->ver < 8) {
++         if (inst->src[1].file == IMM && false) {
+             add_candidate_immediate(&table, inst, ip, 1, true, false, block,
+                                     devinfo, const_ctx);
+          }
+@@ -1317,6 +1376,27 @@
+    table.imm = ralloc_array(const_ctx, struct imm, result->num_values_to_emit);
+    table.len = 0;
+ 
++   /* The DO block of the outermost loop around each block, or NULL. A loop is
++    * a contiguous range of blocks: from the block that holds its DO to the
++    * block that ends with its WHILE.
++    */
++   elk_bblock_t **outer_do = rzalloc_array(const_ctx, elk_bblock_t *, cfg->num_blocks);
++   {
++      unsigned depth = 0;
++      elk_bblock_t *head = NULL;
++
++      foreach_block(block, cfg) {
++         if (block->instructions.is_empty())
++            continue;
++         if (block->start()->opcode == ELK_OPCODE_DO && depth++ == 0)
++            head = block;
++         outer_do[block->num] = depth ? head : NULL;
++         if (block->end()->opcode == ELK_OPCODE_WHILE && depth)
++            depth--;
++      }
++   }
++   unsigned hoisted_bytes = 0;
++
+    for (unsigned i = 0; i < result->num_values_to_emit; i++) {
+       struct imm *imm = &table.imm[table.len];
+ 
+@@ -1401,6 +1481,24 @@
+             imm->is_half_float = true;
+       }
+ 
++      /* A constant used inside a loop is loaded once, before the outermost
++       * loop, not in every iteration.  Its slot is then never released (see
++       * parcel_out_registers), so only two registers' worth is hoisted.
++       */
++      imm->hoisted = false;
++      if (imm->must_promote || imm->uses_by_coissue >= 4) {
++         elk_bblock_t *const head = outer_do[imm->block->num];
++         const unsigned bytes = imm->size * (imm->is_half_float ? 2 : 1);
++
++         if (head != NULL && hoisted_bytes + bytes <= 2 * REG_SIZE) {
++            hoisted_bytes += bytes;
++            imm->block = head;
++            imm->inst = NULL;
++            imm->used_in_single_block = false;
++            imm->hoisted = true;
++         }
++      }
++
+       /* Remove constants from the table that don't have enough uses to make
+        * them profitable to store in a register.
+        */
+@@ -1417,7 +1515,46 @@
+    if (cfg->num_blocks != 1)
+       qsort(table.imm, table.len, sizeof(struct imm), compare);
+ 
+-   if (devinfo->ver > 7) {
++   /* Find the constants that an instruction reads as adjacent sources, in
++    * the final order of the table.
++    */
++   {
++      struct hash_table *users = _mesa_pointer_hash_table_create(const_ctx);
++
++      for (int i = 0; i < table.len; i++) {
++         table.imm[i].apart = NULL;
++         table.imm[i].num_apart = 0;
++         table.imm[i].placed = false;
++
++         brw_foreach_list_typed(reg_link, link, link, table.imm[i].uses) {
++            if (!link->inst->elk_is_3src(compiler))
++               continue;
++
++            struct hash_entry *entry = _mesa_hash_table_search(users, link->inst);
++            int *sources = entry ? (int *) entry->data : NULL;
++
++            if (sources == NULL) {
++               sources = ralloc_array(const_ctx, int, 3);
++               sources[0] = sources[1] = sources[2] = -1;
++               _mesa_hash_table_insert(users, link->inst, sources);
++            }
++
++            sources[link->src] = i;
++         }
++      }
++
++      hash_table_foreach(users, entry) {
++         const int *sources = (const int *) entry->data;
++
++         for (unsigned first = 0; first < 2; first++) {
++            if (sources[first] >= 0 && sources[first + 1] >= 0 &&
++                sources[first] != sources[first + 1])
++               keep_apart(const_ctx, table.imm, sources[first], sources[first + 1]);
++         }
++      }
++   }
++
++   if (true) {
+       struct register_allocation *regs =
+          (struct register_allocation *) calloc(table.len, sizeof(regs[0]));
+ 
+@@ -1469,7 +1606,14 @@
+        */
+       brw_exec_node *n;
+       elk_bblock_t *insert_block;
+-      if (imm->inst != nullptr) {
++      if (imm->hoisted) {
++         /* Before the DO.  A DO block may hold nothing but the DO, so the CFG
++          * is rebuilt at the end of the pass, as for the nested DO case below.
++          */
++         insert_block = imm->block;
++         n = insert_block->start();
++         rebuild_cfg = true;
++      } else if (imm->inst != nullptr) {
+          n = imm->inst;
+          insert_block = imm->block;
+       } else {
+@@ -1526,7 +1670,7 @@
+        * replicating the single one we want. To avoid this, we always populate
+        * both HF slots within a DWord with the constant.
+        */
+-      const uint32_t width = devinfo->ver == 8 && imm->is_half_float ? 2 : 1;
++      const uint32_t width = true && imm->is_half_float ? 2 : 1;
+       const fs_builder ibld = fs_builder(this, width).at(insert_block, n).exec_all();
+ 
+       elk_fs_reg reg(VGRF, imm->nr);
 --- a/src/intel/compiler/elk/elk_eu_defines.h
 +++ b/src/intel/compiler/elk/elk_eu_defines.h
 @@ -8,6 +8,7 @@
@@ -6845,44 +7353,6 @@
                    } else {
                       inst->remove(block, true);
                       progress = true;
---- a/src/intel/compiler/elk/elk_fs_combine_constants.cpp
-+++ b/src/intel/compiler/elk/elk_fs_combine_constants.cpp
-@@ -763,7 +763,7 @@
-           inst->opcode == ELK_OPCODE_ADD ||
-           inst->opcode == ELK_OPCODE_MUL);
- 
--   if (devinfo->ver != 7)
-+   if (true)
-       return false;
- 
-    /* Only float instructions can coissue.  We don't have a great
-@@ -1218,7 +1218,7 @@
-                                     devinfo, const_ctx);
-          }
- 
--         if (inst->src[1].file == IMM && devinfo->ver < 8) {
-+         if (inst->src[1].file == IMM && false) {
-             add_candidate_immediate(&table, inst, ip, 1, true, false, block,
-                                     devinfo, const_ctx);
-          }
-@@ -1417,7 +1417,7 @@
-    if (cfg->num_blocks != 1)
-       qsort(table.imm, table.len, sizeof(struct imm), compare);
- 
--   if (devinfo->ver > 7) {
-+   if (true) {
-       struct register_allocation *regs =
-          (struct register_allocation *) calloc(table.len, sizeof(regs[0]));
- 
-@@ -1526,7 +1526,7 @@
-        * replicating the single one we want. To avoid this, we always populate
-        * both HF slots within a DWord with the constant.
-        */
--      const uint32_t width = devinfo->ver == 8 && imm->is_half_float ? 2 : 1;
-+      const uint32_t width = true && imm->is_half_float ? 2 : 1;
-       const fs_builder ibld = fs_builder(this, width).at(insert_block, n).exec_all();
- 
-       elk_fs_reg reg(VGRF, imm->nr);
 --- a/src/intel/compiler/elk/elk_fs_copy_propagation.cpp
 +++ b/src/intel/compiler/elk/elk_fs_copy_propagation.cpp
 @@ -615,10 +615,10 @@
@@ -13573,7 +14043,7 @@
 +    hasvk_wddm_icd_read_image_level
 --- /dev/null
 +++ b/src/intel/wddm_compiler/elk_compile_probe.c
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,168 @@
 +/* Offline compiler smoke test. This does not create or advertise a Vulkan ICD. */
 +#include <stdio.h>
 +#include <stdint.h>
@@ -13583,7 +14053,9 @@
 +#include "compiler/glsl_types.h"
 +#include "compiler/nir/nir_builder.h"
 +#include "intel/compiler/elk/elk_compiler.h"
++#include "intel/compiler/elk/elk_disasm.h"
 +#include "intel/compiler/elk/elk_eu.h"
++#include "intel/compiler/elk/elk_isa_info.h"
 +#include "intel/compiler/elk/elk_nir.h"
 +#include "intel/dev/intel_device_info.h"
 +#include "spirv_probe.h"
@@ -13608,8 +14080,37 @@
 +   return true;
 +}
 +
++/* --disasm FILE [OFFSET [LENGTH]]: disassembles raw Gen8 EU code, for example
++ * a kernel of Intel's own driver found by native/tests/kernel_dump.h. */
++static int disassemble_file(int argc, wchar_t **argv)
++{
++   FILE *file = argc > 2 ? _wfopen(argv[2], L"rb") : NULL;
++   if (!file) {
++      fprintf(stderr, "Usage: IrisElkCompile.exe --disasm FILE [OFFSET [LENGTH]]\n");
++      return 2;
++   }
++   fseek(file, 0, SEEK_END);
++   const long size = ftell(file);
++   fseek(file, 0, SEEK_SET);
++   /* Room for an instruction that the given range cuts in half. */
++   uint8_t *data = calloc(size + 16, 1);
++   if (!data || fread(data, 1, size, file) != (size_t)size) return 1;
++   fclose(file);
++   const long start = argc > 3 ? wcstol(argv[3], NULL, 0) : 0;
++   const long length = argc > 4 ? wcstol(argv[4], NULL, 0) : size - start;
++   if (start < 0 || length < 0 || start + length > size) return 2;
++   struct intel_device_info devinfo;
++   if (!intel_get_device_info_for_build(0x162b, &devinfo) || devinfo.ver != 8) return 1;
++   struct elk_isa_info isa;
++   elk_init_isa_info(&isa, &devinfo);
++   elk_disassemble_with_labels(&isa, data, start, start + length, stdout);
++   free(data);
++   return 0;
++}
++
 +int wmain(int argc, wchar_t **argv)
 +{
++   if (argc > 1 && !wcscmp(argv[1], L"--disasm")) return disassemble_file(argc, argv);
 +   bool spirv_input = argc > 1 && !wcscmp(argv[1], L"--spirv");
 +   int first_output = spirv_input ? 3 : 1;
 +   if (argc != first_output + 2 && argc != first_output + 3) {

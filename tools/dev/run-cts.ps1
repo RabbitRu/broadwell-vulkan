@@ -72,7 +72,8 @@ $taskPrefix='TEST: '+($Case -split '\*')[0]; $taskRegex=[regex]::new($taskPatter
 $taskSelected=[Collections.Generic.List[string]]::new()
 if (-not $CaseFile) {   # a case file needs no scan of the gigabyte list (parallel jobs each have one)
     foreach ($line in [IO.File]::ReadLines($taskListCache)) {
-        if ($line.StartsWith($taskPrefix, [StringComparison]::Ordinal)) { $name=$line.Substring(6); if ($taskRegex.IsMatch($name)) { $taskSelected.Add($name) } }
+        # Not $name: variable names are case-insensitive, and that is the -Name parameter.
+        if ($line.StartsWith($taskPrefix, [StringComparison]::Ordinal)) { $caseName=$line.Substring(6); if ($taskRegex.IsMatch($caseName)) { $taskSelected.Add($caseName) } }
     }
 }
 $taskMatched=$taskSelected.Count

@@ -7,7 +7,9 @@
 #include "compiler/glsl_types.h"
 #include "compiler/nir/nir_builder.h"
 #include "intel/compiler/elk/elk_compiler.h"
+#include "intel/compiler/elk/elk_disasm.h"
 #include "intel/compiler/elk/elk_eu.h"
+#include "intel/compiler/elk/elk_isa_info.h"
 #include "intel/compiler/elk/elk_nir.h"
 #include "intel/dev/intel_device_info.h"
 #include "spirv_probe.h"
@@ -32,8 +34,37 @@ static bool lower_zero_dispatch_base(nir_builder *b, nir_intrinsic_instr *intrin
    return true;
 }
 
+/* --disasm FILE [OFFSET [LENGTH]]: disassembles raw Gen8 EU code, for example
+ * a kernel of Intel's own driver found by native/tests/kernel_dump.h. */
+static int disassemble_file(int argc, wchar_t **argv)
+{
+   FILE *file = argc > 2 ? _wfopen(argv[2], L"rb") : NULL;
+   if (!file) {
+      fprintf(stderr, "Usage: IrisElkCompile.exe --disasm FILE [OFFSET [LENGTH]]\n");
+      return 2;
+   }
+   fseek(file, 0, SEEK_END);
+   const long size = ftell(file);
+   fseek(file, 0, SEEK_SET);
+   /* Room for an instruction that the given range cuts in half. */
+   uint8_t *data = calloc(size + 16, 1);
+   if (!data || fread(data, 1, size, file) != (size_t)size) return 1;
+   fclose(file);
+   const long start = argc > 3 ? wcstol(argv[3], NULL, 0) : 0;
+   const long length = argc > 4 ? wcstol(argv[4], NULL, 0) : size - start;
+   if (start < 0 || length < 0 || start + length > size) return 2;
+   struct intel_device_info devinfo;
+   if (!intel_get_device_info_for_build(0x162b, &devinfo) || devinfo.ver != 8) return 1;
+   struct elk_isa_info isa;
+   elk_init_isa_info(&isa, &devinfo);
+   elk_disassemble_with_labels(&isa, data, start, start + length, stdout);
+   free(data);
+   return 0;
+}
+
 int wmain(int argc, wchar_t **argv)
 {
+   if (argc > 1 && !wcscmp(argv[1], L"--disasm")) return disassemble_file(argc, argv);
    bool spirv_input = argc > 1 && !wcscmp(argv[1], L"--spirv");
    int first_output = spirv_input ? 3 : 1;
    if (argc != first_output + 2 && argc != first_output + 3) {

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include "kernel_dump.h"
 
 static const char kShader[] = R"(
 RWStructuredBuffer<float> v : register(u0);
@@ -62,5 +63,7 @@ int main(int argc, char **argv)
       if (reps <= 20 || rep % (reps / 20) == 0)
          printf("run %d: %.2f ms -> %.0f GFLOPS%s\n", rep, ms, flop / (ms / 1000) / 1e9, dj.Disjoint ? " (disjoint)" : "");
    }
+   const uint32_t constants[] = {0x3f7ff972 /* 0.9999 */, 0x38d1b717 /* 0.0001 */};
+   DumpKernelCandidates(constants, 2);
    return 0;
 }

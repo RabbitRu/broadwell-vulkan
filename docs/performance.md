@@ -55,6 +55,9 @@ borderless, render scale 0.4, lowest settings): Vulkan 25.5–25.7 FPS against
 | Dynamic buffer surface state from a template | draw recording −5 % on the replay bench |
 | All pipelines in the driver's cache file | Dota 2 no longer compiles every pipeline on every start |
 | Command buffer memory allocated when recording begins, small first blocks | Dota 2's thousands of small command buffers fit the driver's memory |
+| ELK: constants of a loop loaded before the loop, not in every iteration | FMA loop +8 % |
+| ELK: bank conflicts of three-source instructions modelled as measured (below) | FMA loop +3 % |
+| ELK: two constants of one instruction never share a register | FMA loop +11 % |
 
 Many other ideas were measured and rejected (PMA workaround variants, MOCS and
 L3 cache settings, CCS_D fast clears, 2 MiB alignment, compiler flags, game
@@ -75,7 +78,55 @@ Talos, main thread, ms per frame (DX11 at 84.3 FPS, Vulkan at 73.5):
 
 Micro-benchmarks, this ICD relative to Intel's D3D11 driver (1.00 is equal,
 lower is slower): vertex shader with `texelFetch` 1.00; empty vertex shader
-0.89–0.94; sampler 0.95–0.98; FMA 0.84; depth fill with `discard` 0.96–1.0.
+0.89–0.94; sampler 0.95–0.98; FMA 1.05 (0.84 before the ELK changes); depth
+fill with `discard` 0.96–1.0.
+
+## ELK against Intel's compiler
+
+`flops.comp` (a loop of eight FMA chains) ran at 0.84 of Intel's driver: 4.86
+ms per dispatch against 4.09. It now takes 3.88 ms. The machine code of both
+compilers was compared (see "How to measure"); what Intel's code did
+differently was the placement of registers, not the instructions:
+
+- **Constants in a loop.** ELK loads a constant that an instruction cannot
+  take as an immediate (every `MAD` source) right before its first use. Inside
+  a loop that is two `MOV`s per iteration; they are now placed before the
+  outermost loop (at most two registers' worth).
+- **GRF bank conflicts.** The register file has four banks (g0–g63 and
+  g64–g127, even and odd). Measured with hand-placed registers: a three-source
+  instruction loses time when its **second** source is in the same bank as the
+  first or as the third; the first and the third do not disturb each other.
+  Mesa's pass knew only the second and third, and only looked at the first
+  register of each. A scalar against a SIMD16 vector therefore always
+  conflicted in one half, and two constants in one register always did. The
+  pass now counts both pairs for every SIMD8 half and can move a value into
+  unused registers of another bank (it could only exchange values of equal
+  size); constants read by one instruction get separate registers.
+
+| `flops.comp`, ms per dispatch | |
+|---|---|
+| Intel's D3D11 driver | 4.09 |
+| before | 4.86 |
+| constants before the loop | 4.49 |
+| vectors and scalars in different banks | 4.36 |
+| the two constants in different registers | 3.88 |
+
+Measured and not adopted:
+
+- Compacting three-source instructions with a scalar source (Intel's code
+  does; ELK's swizzle for a replicated source is not in the compaction table):
+  5 % less code, no time gained, and the ALU vertex shader test lost 3 % from
+  the changed layout alone.
+- Scheduling the instructions that feed a branch first after register
+  allocation: 2 % on the FMA loop, nothing measurable elsewhere.
+- Keeping 16-byte instructions on 16-byte boundaries: differences within 1 %,
+  both ways.
+- Operand order of `MAD`, a `BREAK` in place of a predicated `WHILE`: nothing.
+
+The other tests gave no lead: for the sampler and vertex shader tests Intel's
+compiler emits the same instructions as ELK (the D3D11 "ALU" vertex shader has
+two branches where the GLSL one has four, so that pair does not compare the
+compilers).
 
 Dota 2, threads in % of a logical CPU: Vulkan — main 88, worker 55, render 18,
 driver queue about 3; DX11 — main 89, worker 51, render with Intel's driver 42.
@@ -97,6 +148,23 @@ Build the driver (`tools\build-icd.ps1`) and the probes
 .\.tools\python\python.exe -I tools\dev\rip-compare.py <dx.rip.txt> <FPS> <vk.rip.txt> <FPS>
 .\.tools\python\python.exe -I tools\dev\talos-sections.py --since 2026-11-19T20:00
 ```
+
+Shader code of both compilers:
+
+```powershell
+# ELK: assembly of every shader the process compiles (stderr), cache off
+$env:INTEL_DEBUG = 'cs,vs,fs'; $env:HASVK_WDDM_INTERNAL_CACHE = '0'
+.\tools\dev\run-icd.ps1 -Executable (Resolve-Path build\probes\flops_probe.exe) -Arguments (Resolve-Path build\probes\flops.spv), 2
+# Intel: the D3D11 probes find their compiled kernel in the process's memory
+$env:D3D11_PROBE_DUMP = "$PWD\build\intel-flops"; .\build\probes\d3d11_flops_probe.exe 3
+.\build\mesa-compiler-clang\src\intel\wddm_compiler\IrisElkCompile.exe --disasm build\intel-flops-0.bin
+```
+
+The dump is every place in memory where the shader's constants occur close
+together (`native\tests\kernel_dump.h`), so several numbered files come out;
+the kernel is the one that disassembles into a program (`z-1.dll` must be on
+`PATH` for `IrisElkCompile.exe`). `flops_probe` also checks its results against
+the CPU.
 
 `run-dota.ps1` plays ticks 30000–33000 of a replay you have downloaded, saves
 the player's video settings before the run and restores them after it. For

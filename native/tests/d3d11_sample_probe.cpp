@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include "kernel_dump.h"
 #include <vector>
 
 static const char kShader[] = R"(
@@ -68,5 +69,7 @@ int main(int argc, char **argv)
       if (reps <= 20 || rep % (reps / 20) == 0)
          printf("run %d: %.3f ms -> %.2f Gsamples/s%s\n", rep, ms, 1024.0 * 1024 * 16 / (ms / 1000) / 1e9, dj.Disjoint ? " (disjoint)" : "");
    }
+   const uint32_t constants[] = {0x39bd70a4 /* 0.37 / 1024 */, 0x3a800000 /* 1 / 1024 */};
+   DumpKernelCandidates(constants, 2, 1024);
    return 0;
 }

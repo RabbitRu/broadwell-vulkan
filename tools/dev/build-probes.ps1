@@ -11,6 +11,8 @@ build\probes (they are not part of test-all):
   The same loads on Intel's own D3D11 driver:
     d3d11_depth_fill_probe, d3d11_flops_probe, d3d11_sample_probe,
     d3d11_vs_fetch_probe, d3d11_replay_probe
+    (all but the replay: D3D11_PROBE_DUMP=<prefix> saves the kernel that
+    Intel's compiler produced, see native\tests\kernel_dump.h)
   Process tools:
     rip_sampler        sampling profiler with stacks (<pid> <seconds> [symbols] [module])
     stack_dump         stacks of every thread of a hung process

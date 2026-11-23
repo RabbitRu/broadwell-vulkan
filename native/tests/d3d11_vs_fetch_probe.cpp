@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include "kernel_dump.h"
 #include <cstring>
 #include <vector>
 
@@ -79,5 +80,7 @@ int main(int argc, char **argv)
    }
    printf("d3d11 %s x%d: best %.3f ms for %u draws, %u vertices -> %.1f Mvertices/s, %.2f us per draw\n", mode ? "ALU" : "Load", count, best,
           draws, vertices, vertices / (best / 1000) / 1e6, best * 1000 / draws);
+   const uint32_t constants[] = {0x358637bd /* 1e-6 */, 0x3a83126f /* 1e-3 */};
+   DumpKernelCandidates(constants, 2, 2048);
    return 0;
 }
