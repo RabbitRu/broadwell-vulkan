@@ -54,6 +54,21 @@ expects inside the documented calls is described in
 - A descriptor set whose layout has no descriptor buffer, bound where the
   shader reads one, gets a null surface. Upstream would dereference NULL; here
   the batch was rejected and Dota 2 got `VK_ERROR_DEVICE_LOST`.
+- After `PIPELINE_SELECT` to GPGPU the driver sends a `MEDIA_VFE_STATE` with
+  one URB entry (Intel's WaSendDummyVFEafterPipelineSelect) and then the bound
+  pipeline's own again. Intel's Windows driver sends such a packet on this
+  hardware in every batch that switches to GPGPU; upstream has no such
+  workaround for Broadwell. Without it the first compute dispatch of a device
+  hung the GPU about once in 500 device creations, but only while another
+  process was drawing through the desktop compositor: the thread was never
+  dispatched. On an idle desktop 35,000 device creations passed, and 15,000
+  next to a D3D11 compute load. Later dispatches of the same device never
+  hung. With the workaround 28,000 creations passed (6,000 of them on the
+  final build) where the driver without it hung six times in about 4,000.
+  The dummy packet replaces the pipeline's state: a dispatch, a draw and
+  another dispatch of the same pipeline in one command buffer hung Dota 2 in
+  every run until the pipeline's packet was sent again (`IrisIcdProbe` has the
+  case now; the CTS groups that were run have none).
 
 Classes of porting bugs that were hit, worth checking first when something new
 breaks:
@@ -119,6 +134,25 @@ every build and with `INTEL_DEBUG`, so the first run after a rebuild is cold.
 - To find where a hang happens: emit a `PIPE_CONTROL` with a stall and a write
   of a step number into command buffer memory before every draw and BLORP
   operation; after the device is lost the last number names the step.
+- A rare hang needs a fast reproduction and a control under the same
+  conditions. `IrisIcdProbe.exe` with `ICD_PROBE_FIRST_ONLY=1` and
+  `ICD_PROBE_CYCLES=500` creates a device and makes its first dispatch about
+  100 times a second. The hang of the first dispatch (section 2) depended on
+  what else was drawing: with a window animating it came within seconds, on an
+  idle desktop never. A first "fix" (the L3 configuration programmed once per
+  device) passed 21,000 device creations only because those series happened to
+  run on an idle desktop, and the unchanged driver passed 35,000 there too.
+  Alternate the old and the new build within one run (new, old until it
+  fails, new again) before believing a fix.
+- What Intel's driver does in the same situation is the best lead for a
+  hardware hang. Its command buffers stay mapped in the process:
+  `d3d11_flops_probe.exe` with `D3D11_PROBE_DUMP=<prefix>` writes the ones with
+  a `GPGPU_WALKER` to `<prefix>-batch-<n>.bin` (raw dwords). The dummy
+  `MEDIA_VFE_STATE` was found there, after registers and counters of new
+  contexts had shown nothing (`ICD_PROBE_REGS`).
+- The driver prints the WDDM execution state of a lost device to stderr (3:
+  this context hung, 2: another one did); `gpu_reg_monitor` reads GPU registers
+  from a context of its own, `hasvk_wddm_icd_read_register` from the device's.
 - The Intel interface was taken from one driver version; on another the ICD
   does not enable itself.
 - Vulkan 1.4 is out of reach for HasVK without new features

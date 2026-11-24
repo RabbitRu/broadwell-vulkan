@@ -374,6 +374,42 @@ def small_first_bt_block(text):
     return text.replace(old, new)
 
 
+def dummy_vfe_after_pipeline_select(text):
+    """A MEDIA_VFE_STATE with one URB entry right behind PIPELINE_SELECT to
+    GPGPU, before the pipeline's own (Intel's WaSendDummyVFEafterPipelineSelect).
+    Intel's Windows driver sends it on this hardware in every batch that
+    switches to GPGPU (its command buffers stay mapped in the process:
+    native/tests/kernel_dump.h, "-batch" files of d3d11_flops_probe); its
+    packet also reserves 479 units of CURBE space, which is left out here (both
+    forms passed the stress). Without it the first dispatch of a context hung the
+    GPU about once in 500 device creations, but only while another process was
+    drawing through the desktop compositor: the thread was never dispatched.
+    Later dispatches of the same context never hung, nor did any on an idle
+    desktop or next to a D3D11 compute load. Reproduction: docs/design.md."""
+    old = ('   anv_batch_emit(&cmd_buffer->batch, GENX(PIPELINE_SELECT), ps) {\n'
+           '      ps.PipelineSelection = pipeline;\n'
+           '   }\n')
+    new = old + ('''
+#if GFX_VER == 8
+   /* WaSendDummyVFEafterPipelineSelect. It replaces the bound pipeline's
+    * MEDIA_VFE_STATE, which is sent again (cmd_buffer_flush_compute_state):
+    * without that a dispatch, a draw and another dispatch of the same
+    * pipeline in one command buffer ran with the dummy state and hung
+    * (Dota 2, every run). */
+   if (pipeline == GPGPU) {
+      anv_batch_emit(&cmd_buffer->batch, GENX(MEDIA_VFE_STATE), vfe) {
+         vfe.NumberofURBEntries   = 1;
+         vfe.BypassGatewayControl = true;
+      }
+      cmd_buffer->state.compute.pipeline_dirty = true;
+   }
+#endif
+''')
+    if text.count(old) != 1:
+        raise ValueError('genX(flush_pipeline_select): unexpected source')
+    return text.replace(old, new)
+
+
 def generate_graphics_sources(originals):
     def read(name):
         return (originals / ('src/intel/vulkan_hasvk/' + name)).read_text(encoding='utf-8')
@@ -449,6 +485,7 @@ anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct
                                 'enum anv_pipe_bits\ngenX(emit_apply_pipe_flushes)')
     hardware = hardware.replace('ALWAYS_INLINE void\ngenX(cmd_buffer_apply_pipe_flushes)',
                                 'void\ngenX(cmd_buffer_apply_pipe_flushes)')
+    hardware = dummy_vfe_after_pipeline_select(hardware)
     old = 'sba.GeneralStateBaseAddress = (struct anv_address) { NULL, 0 };'
     assert hardware.count(old) == 1
     hardware = hardware.replace(old, 'sba.GeneralStateBaseAddress = (struct anv_address) { NULL, intel_canonical_address(device->wddm->origin) };')

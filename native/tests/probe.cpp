@@ -405,6 +405,8 @@ static json compute(Device &device, const fs::path &directory, const fs::path &b
    auto emit = [&](const char *name, const Words &words) { emitted.push_back(name); batch.insert(batch.end(), words.begin(), words.end()); };
    emit("PIPE_CONTROL", pick(stream, "PIPE_CONTROL").words);
    emit("PIPELINE_SELECT", pick(stream, "PIPELINE_SELECT", [](const Packet &p) { return (p.words[0] & 3) == 2; }).words);
+   /* Intel's dummy MEDIA_VFE_STATE behind the switch to GPGPU (see gen8_compute.c). */
+   emit("MEDIA_VFE_STATE", {0x70000007, 0, 0, 0x00000140, 0, 0x000001df, 0, 0, 0});
    for (uint32_t reg : {0x20c0u, 0x7004u, 0x7034u})
       emit("MI_LOAD_REGISTER_IMM", pick(stream, "MI_LOAD_REGISTER_IMM", [&](const Packet &p) { return p.va < walker.va && p.words.size() == 3 && p.words[1] == reg; }, true).words);
    auto state_bases = bases.words;

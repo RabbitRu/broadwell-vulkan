@@ -65,5 +65,8 @@ int main(int argc, char **argv)
    }
    const uint32_t constants[] = {0x3f7ff972 /* 0.9999 */, 0x38d1b717 /* 0.0001 */};
    DumpKernelCandidates(constants, 2);
+   /* The driver's command buffers stay mapped too: the ones with a GPGPU_WALKER. */
+   const uint32_t walker[] = {0x7105000d};
+   DumpKernelCandidates(walker, 1, 256, "-batch");
    return 0;
 }

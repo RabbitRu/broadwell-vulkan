@@ -54,6 +54,15 @@ All tests run on the real GPU and need no interaction.
   `test-device-lost.ps1`, `test-kernel-limits.ps1`,
   `test-present-redirect.ps1`, `test-validation.ps1` (validation layers),
   `test-stability.ps1`.
+- `IrisIcdProbe.exe` (the probe of `test-icd.ps1` and of the installer) takes
+  `ICD_PROBE_CYCLES=<n>` for more device creation cycles than its three, and
+  `ICD_PROBE_FIRST_ONLY=1` to make a cycle nothing but the creation of the
+  device and its first dispatch: a stress, not a test (its report says so).
+  In that mode `ICD_PROBE_PRELUDE=empty` submits an empty command buffer first
+  (a number sleeps that many milliseconds instead), and
+  `ICD_PROBE_REGS=<hex offset>,...` reads those registers of the new context
+  instead of dispatching (`ICD_PROBE_REGS_AFTER=1`: before and after the
+  dispatch); the report counts every distinct set of values.
 - `test-all.ps1` compares against control data captured from Intel's own driver
   by the C# prototype (`gpu-probe\artifacts`: saved shader code and allocation
   descriptors). That data is not in the repository, so the transport and
@@ -82,7 +91,8 @@ All tests run on the real GPU and need no interaction.
   and a `d3d11.dll` proxy that breaks a DX11 frame down. With
   `D3D11_PROBE_DUMP=<prefix>` the D3D11 micro-benchmarks save the kernel that
   Intel's compiler produced; `IrisElkCompile.exe --disasm <file>` disassembles
-  it (and any raw Gen8 code).
+  it (and any raw Gen8 code). `d3d11_flops_probe.exe` also saves the driver's
+  command buffers that hold a dispatch (`<prefix>-batch-<n>.bin`).
 - `bench-frames.py` (frame tables), `talos-sections.py` (frame sections in
   milliseconds per API), `rip-compare.py` (code samples of two runs compared).
 - Commands and measurement pitfalls are in [performance.md](performance.md).

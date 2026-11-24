@@ -724,7 +724,13 @@ static int completion_main(void *data)
          if ((int32_t)(actual[0] - p->serial) < 0) error = "GPU completion counter behind";
          for (unsigned i = 1; !error && i < 1024; ++i) if (actual[i] != 0x39393939) error = "GPU guard corrupted";
       }
-      if (error && !vk_device_is_lost_no_report(&device->vk)) vk_device_set_lost(&device->vk, "HasVK/WDDM completion: %s", error);
+      if (error && !vk_device_is_lost_no_report(&device->vk)) {
+         /* Release builds of the runtime do not print the reason of a lost
+          * device; the transport's text names the WDDM execution state
+          * (2 reset, 3 hung, 7 page fault, ...). */
+         fprintf(stderr, "HasVK/WDDM completion (submission %llu): %s\n", (unsigned long long)p->serial, error);
+         vk_device_set_lost(&device->vk, "HasVK/WDDM completion: %s", error);
+      }
       /* All signals at once (one lock): a waiter woken by a fence must also
        * see the timeline points of the same submission. Mesa's timeline
        * emulation hands the driver only binary syncs of our type. */

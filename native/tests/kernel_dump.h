@@ -6,7 +6,10 @@
  * the constants match too, for example the DXBC; the disassembly tells them
  * apart). Disassemble with
  *    IrisElkCompile.exe --disasm <file> [offset [length]]
- * The D3D11 probes call this when D3D11_PROBE_DUMP=<prefix> is set. */
+ * The D3D11 probes call this when D3D11_PROBE_DUMP=<prefix> is set.
+ * The driver's command buffers stay mapped as well: a search for a command
+ * header (0x7105000d, GPGPU_WALKER) with a tag finds them
+ * (<prefix><tag>-<n>.bin, raw dwords around the match). */
 #pragma once
 #include <windows.h>
 #include <cstdint>
@@ -15,7 +18,7 @@
 #include <string>
 #include <vector>
 
-static inline void DumpKernelCandidates(const uint32_t *values, size_t count, size_t window = 256)
+static inline void DumpKernelCandidates(const uint32_t *values, size_t count, size_t window = 256, const char *tag = "")
 {
    char prefix[MAX_PATH];
    if (!GetEnvironmentVariableA("D3D11_PROBE_DUMP", prefix, sizeof(prefix))) return;
@@ -42,7 +45,7 @@ static inline void DumpKernelCandidates(const uint32_t *values, size_t count, si
             }
             if (!all) continue;
             const size_t start = (i > before ? i - before : 0) & ~(size_t)63, end = i + after < read ? i + after : read;
-            const std::string name = std::string(prefix) + "-" + std::to_string(found++) + ".bin";
+            const std::string name = std::string(prefix) + tag + "-" + std::to_string(found++) + ".bin";
             if (FILE *file = fopen(name.c_str(), "wb")) { fwrite(&chunk[start], 1, end - start, file); fclose(file); }
             printf("kernel candidate %s: address %p (match at +%zu), protect 0x%lx, type 0x%lx\n", name.c_str(),
                    (void *)((uint8_t *)info.BaseAddress + offset + start), i - start, info.Protect, info.Type);

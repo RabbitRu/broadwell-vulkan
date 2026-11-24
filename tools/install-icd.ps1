@@ -62,8 +62,15 @@ if (-not $WhatIfPreference) {
         $start = [Diagnostics.ProcessStartInfo]::new($probe, ('"' + $report + '"'))
         $start.UseShellExecute = $false; $start.WorkingDirectory = $taskPackage
         $start.EnvironmentVariables.Remove('VK_DRIVER_FILES'); $start.EnvironmentVariables.Remove('VK_ICD_FILENAMES')
-        $p = [Diagnostics.Process]::Start($start); $p.WaitForExit()
-        if ($p.ExitCode) { Write-Warning "The installed ICD did not pass IrisIcdProbe (exit $($p.ExitCode)); see $report" } else { Write-Output 'Installed ICD passes IrisIcdProbe through the system loader.' }
+        # The probe's stderr carries the driver's reason when a device is lost.
+        $start.RedirectStandardError = $true; $start.RedirectStandardOutput = $true
+        $p = [Diagnostics.Process]::Start($start)
+        $probeErrors = $p.StandardError.ReadToEndAsync(); $probeOutput = $p.StandardOutput.ReadToEndAsync(); $p.WaitForExit()
+        if ($p.ExitCode) {
+            $probeLog = Join-Path $env:TEMP 'hasvk-install-check.log'
+            [IO.File]::WriteAllText($probeLog, $probeErrors.Result)
+            Write-Warning "The installed ICD did not pass IrisIcdProbe (exit $($p.ExitCode)); see $report and $probeLog"
+        } else { Write-Output 'Installed ICD passes IrisIcdProbe through the system loader.' }
     }
 }
 if ($WhatIfPreference) { Write-Output 'Dry run: nothing was changed.' } else { Write-Output "Installed to $Destination." }

@@ -85,8 +85,9 @@ static void genX(flush_pipeline_select)(struct anv_cmd_buffer *, uint32_t);
             body, count = re.subn(r"   if \(cmd_buffer->state.conditional_render_enabled\)\n      genX\(cmd_emit_conditional_render_predicate\)\(cmd_buffer\);\n", "", body)
             assert count == 1
         hardware += body
-    from graphics_sources import empty_descriptor_buffer
+    from graphics_sources import empty_descriptor_buffer, dummy_vfe_after_pipeline_select
     hardware = empty_descriptor_buffer(hardware)
+    hardware = dummy_vfe_after_pipeline_select(hardware)
     return {
         "src/intel/wddm_compiler/anv_wddm_command_common.c": common,
         "src/intel/wddm_compiler/anv_wddm_command_gen8.c": hardware,

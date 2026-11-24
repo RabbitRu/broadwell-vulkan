@@ -10859,7 +10859,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,1145 @@
+@@ -0,0 +1,1151 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -11586,7 +11586,13 @@
 +         if ((int32_t)(actual[0] - p->serial) < 0) error = "GPU completion counter behind";
 +         for (unsigned i = 1; !error && i < 1024; ++i) if (actual[i] != 0x39393939) error = "GPU guard corrupted";
 +      }
-+      if (error && !vk_device_is_lost_no_report(&device->vk)) vk_device_set_lost(&device->vk, "HasVK/WDDM completion: %s", error);
++      if (error && !vk_device_is_lost_no_report(&device->vk)) {
++         /* Release builds of the runtime do not print the reason of a lost
++          * device; the transport's text names the WDDM execution state
++          * (2 reset, 3 hung, 7 page fault, ...). */
++         fprintf(stderr, "HasVK/WDDM completion (submission %llu): %s\n", (unsigned long long)p->serial, error);
++         vk_device_set_lost(&device->vk, "HasVK/WDDM completion: %s", error);
++      }
 +      /* All signals at once (one lock): a waiter woken by a fence must also
 +       * see the timeline points of the same submission. Mesa's timeline
 +       * emulation hands the driver only binary syncs of our type. */
@@ -12984,7 +12990,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_pools.c
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,186 @@
 +/* Initialization and hardware diagnostics for the real HasVK state pools. */
 +#include "anv_wddm.h"
 +#undef __gen_address_type
@@ -13059,6 +13065,34 @@
 +      }
 +   }
 +   return 0;
++}
++
++/* Diagnostic only: a register as the device's context holds it
++ * (MI_STORE_REGISTER_MEM in a batch of its own). Call on an idle device
++ * (vkDeviceWaitIdle): the value passes through the completion BO, whose guard
++ * words the completion thread checks. */
++PUBLIC int hasvk_wddm_icd_read_register(VkDevice handle, uint32_t offset, uint32_t *value)
++{
++   ANV_FROM_HANDLE(anv_device, device, handle);
++   if (!device || !value) return -1;
++   struct anv_wddm_device_state *w = device->wddm;
++   mtx_lock(&w->submit_mutex);
++   int status = hasvk_wddm_wait_submission(w->transport, UINT64_MAX);
++   if (!status) {
++      /* The batch fills the entry BO from offset 0, as the initialization batch does. */
++      memset(w->slot_seq, 0, sizeof(w->slot_seq));
++      uint32_t *batch = hasvk_wddm_bo_map(w->entry);
++      uint32_t *result = hasvk_wddm_bo_map(w->completion);
++      const uint64_t target = intel_canonical_address(hasvk_wddm_bo_address(w->completion) + 64);
++      batch[0] = 0x12000002;   /* MI_STORE_REGISTER_MEM */
++      batch[1] = offset; batch[2] = (uint32_t)target; batch[3] = (uint32_t)(target >> 32);
++      batch[4] = 0x05000000;   /* MI_BATCH_BUFFER_END */
++      batch[5] = 0;
++      status = hasvk_wddm_submit_wait(w->transport, w->entry, 0, 24);
++      if (!status) { *value = result[16]; result[16] = 0x39393939; }
++   }
++   mtx_unlock(&w->submit_mutex);
++   return status;
 +}
 +
 +/* Diagnostic only: call on a fresh device before any queue submissions.
@@ -14024,7 +14058,7 @@
 +#endif
 --- /dev/null
 +++ b/src/intel/wddm_compiler/vulkan_hasvk_wddm.def
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,17 @@
 +LIBRARY vulkan_hasvk_wddm
 +EXPORTS
 +    vk_icdGetInstanceProcAddr
@@ -14041,6 +14075,7 @@
 +    hasvk_wddm_icd_has_entrypoint
 +    hasvk_wddm_icd_query_command_chunks
 +    hasvk_wddm_icd_read_image_level
++    hasvk_wddm_icd_read_register
 --- /dev/null
 +++ b/src/intel/wddm_compiler/elk_compile_probe.c
 @@ -0,0 +1,168 @@
@@ -17624,7 +17659,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_command_gen8.c
-@@ -0,0 +1,1350 @@
+@@ -0,0 +1,1365 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -18959,6 +18994,21 @@
 +   anv_batch_emit(&cmd_buffer->batch, GENX(PIPELINE_SELECT), ps) {
 +      ps.PipelineSelection = pipeline;
 +   }
++
++#if GFX_VER == 8
++   /* WaSendDummyVFEafterPipelineSelect. It replaces the bound pipeline's
++    * MEDIA_VFE_STATE, which is sent again (cmd_buffer_flush_compute_state):
++    * without that a dispatch, a draw and another dispatch of the same
++    * pipeline in one command buffer ran with the dummy state and hung
++    * (Dota 2, every run). */
++   if (pipeline == GPGPU) {
++      anv_batch_emit(&cmd_buffer->batch, GENX(MEDIA_VFE_STATE), vfe) {
++         vfe.NumberofURBEntries   = 1;
++         vfe.BypassGatewayControl = true;
++      }
++      cmd_buffer->state.compute.pipeline_dirty = true;
++   }
++#endif
 +
 +   cmd_buffer->state.current_pipeline = pipeline;
 +}
@@ -22770,7 +22820,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_gen8.c
-@@ -0,0 +1,5635 @@
+@@ -0,0 +1,5648 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -27266,6 +27316,19 @@
 +
 +   anv_batch_emit(&cmd_buffer->batch, GENX(PIPELINE_SELECT), ps) {
 +      ps.PipelineSelection = pipeline;
++   }
++
++   /* WaSendDummyVFEafterPipelineSelect. It replaces the bound pipeline's
++    * MEDIA_VFE_STATE, which is sent again (cmd_buffer_flush_compute_state):
++    * without that a dispatch, a draw and another dispatch of the same
++    * pipeline in one command buffer ran with the dummy state and hung
++    * (Dota 2, every run). */
++   if (pipeline == GPGPU) {
++      anv_batch_emit(&cmd_buffer->batch, GENX(MEDIA_VFE_STATE), vfe) {
++         vfe.NumberofURBEntries   = 1;
++         vfe.BypassGatewayControl = true;
++      }
++      cmd_buffer->state.compute.pipeline_dirty = true;
 +   }
 +
 +   cmd_buffer->state.current_pipeline = pipeline;

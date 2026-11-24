@@ -95,6 +95,13 @@ size_t hasvk_gen8_constant_compute(const struct hasvk_gen8_compute_info *info,
    struct GFX8_PIPELINE_SELECT select_compute = {GFX8_PIPELINE_SELECT_header};
    select_compute.PipelineSelection = GPGPU;
    PUSH(PIPELINE_SELECT, select_compute);
+   /* WaSendDummyVFEafterPipelineSelect with the values of Intel's Windows
+    * driver: without it the first dispatch of a context hangs now and then
+    * while another process renders in 3D (mesa/graphics_sources.py,
+    * dummy_vfe_after_pipeline_select). */
+   struct GFX8_MEDIA_VFE_STATE dummy_vfe = {GFX8_MEDIA_VFE_STATE_header};
+   dummy_vfe.NumberofURBEntries = 1; dummy_vfe.BypassGatewayControl = true;
+   PUSH(MEDIA_VFE_STATE, dummy_vfe);
    struct GFX8_L3CNTLREG l3 = {0};
    l3.URBAllocation = 48; l3.AllAllocation = 48; /* Validated BDW configuration in Mesa */
    uint32_t l3_value;

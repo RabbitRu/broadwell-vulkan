@@ -74,6 +74,34 @@ int anv_wddm_flush_state_pools(struct anv_device *device)
    return 0;
 }
 
+/* Diagnostic only: a register as the device's context holds it
+ * (MI_STORE_REGISTER_MEM in a batch of its own). Call on an idle device
+ * (vkDeviceWaitIdle): the value passes through the completion BO, whose guard
+ * words the completion thread checks. */
+PUBLIC int hasvk_wddm_icd_read_register(VkDevice handle, uint32_t offset, uint32_t *value)
+{
+   ANV_FROM_HANDLE(anv_device, device, handle);
+   if (!device || !value) return -1;
+   struct anv_wddm_device_state *w = device->wddm;
+   mtx_lock(&w->submit_mutex);
+   int status = hasvk_wddm_wait_submission(w->transport, UINT64_MAX);
+   if (!status) {
+      /* The batch fills the entry BO from offset 0, as the initialization batch does. */
+      memset(w->slot_seq, 0, sizeof(w->slot_seq));
+      uint32_t *batch = hasvk_wddm_bo_map(w->entry);
+      uint32_t *result = hasvk_wddm_bo_map(w->completion);
+      const uint64_t target = intel_canonical_address(hasvk_wddm_bo_address(w->completion) + 64);
+      batch[0] = 0x12000002;   /* MI_STORE_REGISTER_MEM */
+      batch[1] = offset; batch[2] = (uint32_t)target; batch[3] = (uint32_t)(target >> 32);
+      batch[4] = 0x05000000;   /* MI_BATCH_BUFFER_END */
+      batch[5] = 0;
+      status = hasvk_wddm_submit_wait(w->transport, w->entry, 0, 24);
+      if (!status) { *value = result[16]; result[16] = 0x39393939; }
+   }
+   mtx_unlock(&w->submit_mutex);
+   return status;
+}
+
 /* Diagnostic only: call on a fresh device before any queue submissions.
  * Reads Mesa suballocations through the GPU after growing both block pools
  * and CPU state tables. This is not a Vulkan command-buffer entry point. */

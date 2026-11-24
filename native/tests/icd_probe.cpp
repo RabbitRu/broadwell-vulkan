@@ -175,6 +175,11 @@ static uint32_t compute_reference(const std::string &algorithm, uint32_t value)
    value ^= value >> 16; value *= 0x7feb352du; value ^= value >> 15; value *= 0x846ca68bu; return value ^ (value >> 16);
 }
 #include "icd_image_test.hpp"
+/* Device creation cycle of the running test: a failure report names it. */
+static unsigned probe_iteration;
+/* ICD_PROBE_FIRST_ONLY: a cycle is the creation of the device and its first
+ * queue submission (the first compute dispatch) only: a stress for those. */
+static bool probe_first_only;
 static json execute_compute(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcAddr get,
    VkPipeline pipeline, VkPipelineLayout pipeline_layout, VkDescriptorSetLayout layout,
    const std::string &algorithm, unsigned local, unsigned cache_pass)
@@ -184,11 +189,17 @@ static json execute_compute(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcA
    COMPUTE(vkAllocateMemory); COMPUTE(vkFreeMemory); COMPUTE(vkMapMemory); COMPUTE(vkUnmapMemory);
    COMPUTE(vkCreateDescriptorPool); COMPUTE(vkDestroyDescriptorPool); COMPUTE(vkAllocateDescriptorSets); COMPUTE(vkUpdateDescriptorSets);
    COMPUTE(vkCreateCommandPool); COMPUTE(vkDestroyCommandPool); COMPUTE(vkAllocateCommandBuffers); COMPUTE(vkBeginCommandBuffer); COMPUTE(vkEndCommandBuffer);
-   COMPUTE(vkCmdBindPipeline); COMPUTE(vkCmdBindDescriptorSets); COMPUTE(vkCmdDispatch); COMPUTE(vkCmdPipelineBarrier);
+   COMPUTE(vkCmdBindPipeline); COMPUTE(vkCmdBindDescriptorSets); COMPUTE(vkCmdDispatch); COMPUTE(vkCmdPipelineBarrier); COMPUTE(vkCmdCopyBuffer);
    COMPUTE(vkCreateFence); COMPUTE(vkDestroyFence); COMPUTE(vkResetFences); COMPUTE(vkQueueSubmit); COMPUTE(vkWaitForFences);
 #undef COMPUTE
    constexpr uint64_t buffer_size = 131072, bind_offset = 4096, descriptor_offset = 64;
-   VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bi.size = buffer_size; bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+   /* Local size 7: two dispatches of the pipeline in one command buffer with a
+    * buffer copy between them. The copy runs on the 3D pipeline, so the second
+    * dispatch switches back to GPGPU with the pipeline still bound: the dummy
+    * MEDIA_VFE_STATE of that switch must not stay in effect (it hung Dota 2). */
+   const bool twice = local == 7;
+   VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bi.size = buffer_size;
+   bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
    VkBuffer buffer{}; check(vkCreateBuffer(device, &bi, nullptr, &buffer), "Create GPU compute buffer");
    VkMemoryRequirements requirements{}; vkGetBufferMemoryRequirements(device, buffer, &requirements);
    const uint64_t allocation_bytes = bind_offset + ((requirements.size + 4095) & ~4095ull) + 4096;
@@ -214,6 +225,22 @@ static json execute_compute(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcA
    const std::vector<unsigned> counts = local == 1 ? std::vector<unsigned>{1} : std::vector<unsigned>{1, local - 1, local, local + 1, 257, 16381};
    json results = json::array();
    bool fence_used = false;
+   /* ICD_PROBE_PRELUDE (stress only): what precedes the device's first dispatch.
+    * "empty": a queue submission of an empty command buffer, waited for;
+    * a number: that many milliseconds of sleep. */
+   char prelude[16]{};
+   if (probe_first_only && GetEnvironmentVariableA("ICD_PROBE_PRELUDE", prelude, sizeof(prelude))) {
+      if (!strcmp(prelude, "empty")) {
+         VkCommandBuffer first{}; check(vkAllocateCommandBuffers(device, &cai, &first), "Allocate prelude command buffer");
+         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+         check(vkBeginCommandBuffer(first, &begin), "Begin prelude command buffer");
+         check(vkEndCommandBuffer(first), "Finish prelude command buffer");
+         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &first;
+         check(vkQueueSubmit(queue, 1, &submit, fence), "Submit prelude command buffer");
+         check(vkWaitForFences(device, 1, &fence, VK_TRUE, 20000000000ull), "Prelude (empty first submission) failed");
+         fence_used = true;
+      } else Sleep(static_cast<DWORD>(atoi(prelude)));
+   }
    for (unsigned count : counts) {
       std::vector<uint32_t> expected(allocation_bytes / 4, 0xcdcdef67u);
       const unsigned descriptor_start = (bind_offset + descriptor_offset) / 4;
@@ -230,6 +257,16 @@ static json execute_compute(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcA
       vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, &descriptor, 0, nullptr);
       const unsigned groups = (count + local - 1) / local;
       vkCmdDispatch(command, groups, 1, 1);
+      if (twice) {
+         VkBufferMemoryBarrier between{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER}; between.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+         between.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+         between.srcQueueFamilyIndex = between.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; between.buffer = buffer; between.size = VK_WHOLE_SIZE;
+         vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, nullptr, 1, &between, 0, nullptr);
+         const VkBufferCopy filler{98304, 102400, 64};   /* behind the data: filler onto filler */
+         vkCmdCopyBuffer(command, buffer, buffer, 1, &filler);
+         vkCmdDispatch(command, groups, 1, 1);
+      }
       VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER}; barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
       barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT; barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
       barrier.buffer = buffer; barrier.size = VK_WHOLE_SIZE;
@@ -237,7 +274,8 @@ static json execute_compute(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcA
       check(vkEndCommandBuffer(command), "Finish HasVK compute command buffer");
       for (unsigned repeat = 0; repeat < 2; ++repeat) {
          if (fence_used) check(vkResetFences(device, 1, &fence), "Reset compute fence");
-         for (unsigned i = 0; i < count; ++i) expected[data_start + i] = compute_reference(algorithm, expected[data_start + i]);
+         for (unsigned pass = 0; pass < (twice ? 2u : 1u); ++pass)
+            for (unsigned i = 0; i < count; ++i) expected[data_start + i] = compute_reference(algorithm, expected[data_start + i]);
          VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &command;
          VkResult submitted = vkQueueSubmit(queue, 1, &submit, fence);
          VkResult waited = submitted == VK_SUCCESS ? vkWaitForFences(device, 1, &fence, VK_TRUE, 20000000000ull) : submitted;
@@ -252,7 +290,8 @@ static json execute_compute(VkDevice device, VkQueue queue, PFN_vkGetDeviceProcA
             const void *data{}; uint32_t bytes{};
             if (query && !query(command, &data, &bytes)) std::ofstream(failure / "command.bin", std::ios::binary).write(static_cast<const char *>(data), bytes);
             json diagnostic = {{"algorithm", algorithm}, {"localSize", local}, {"count", count}, {"groups", groups}, {"cachePass", cache_pass},
-               {"repeat", repeat}, {"inputSeed", initial_seed}, {"waitResult", waited}, {"mismatchWord", mismatch}, {"dataStartWord", data_start}};
+               {"repeat", repeat}, {"inputSeed", initial_seed}, {"waitResult", waited}, {"mismatchWord", mismatch}, {"dataStartWord", data_start},
+               {"deviceCycle", probe_iteration}};
             if (mismatch < expected.size()) { diagnostic["expectedValue"] = expected[mismatch]; diagnostic["actualValue"] = words[mismatch]; }
             std::ofstream(failure / "failure.json") << diagnostic.dump(2);
             throw std::runtime_error("Vulkan GPU compute failed: " + failure.u8string());
@@ -313,8 +352,11 @@ static json test_compute_pipelines(VkDevice device, VkQueue queue, PFN_vkGetDevi
                {"sharedBytes", data[8]}, {"kernelOffset", data[9]}, {"pipelineBatchBytes", data[10]}, {"isaValidated", true}});
             hardware_results.push_back(execute_compute(device, queue, get, pipeline, pipeline_layout, layout, algorithm, local, pass));
             vkDestroyPipeline(device, pipeline, nullptr);
+            if (probe_first_only) break;
          }
+         if (probe_first_only) break;
       }
+      if (probe_first_only) break;
       if (pass == 0) {
          size_t bytes = 0; check(vkGetPipelineCacheData(device, cache, &bytes, nullptr), "Query pipeline cache data size");
          require(bytes > sizeof(VkPipelineCacheHeaderVersionOne), "Pipeline cache contains no compiled shader objects");
@@ -437,7 +479,13 @@ int wmain(int argc, wchar_t **argv)
       json pipeline_results = json::array();
       json compute_results = json::array();
       json storage_image_results = json::array();
-      for (unsigned iteration = 0; iteration < 3; ++iteration) {
+      /* ICD_PROBE_CYCLES: more device creation cycles than the three of the test (stress). */
+      unsigned cycles = 3;
+      char requested[16];
+      if (const DWORD length = GetEnvironmentVariableA("ICD_PROBE_CYCLES", requested, sizeof(requested)); length && length < sizeof(requested))
+         cycles = std::max(1, atoi(requested));
+      for (unsigned iteration = 0; iteration < cycles; ++iteration) {
+         probe_iteration = iteration;
          VkDevice device{}; check(vkCreateDevice(physical, &di, nullptr, &device), "vkCreateDevice");
 #define DEVICE(name) auto name = reinterpret_cast<PFN_##name>(vkGetDeviceProcAddr(device, #name)); require(name != nullptr, "Missing " #name)
          DEVICE(vkDestroyDevice); DEVICE(vkGetDeviceQueue); DEVICE(vkQueueSubmit); DEVICE(vkQueueWaitIdle); DEVICE(vkDeviceWaitIdle);
@@ -446,6 +494,40 @@ int wmain(int argc, wchar_t **argv)
          VkQueue queue{}; vkGetDeviceQueue(device, 0, 0, &queue); require(queue != VK_NULL_HANDLE, "Missing queue");
          using PoolTest = int (*)(VkDevice, uint32_t *);
          auto pool_test = reinterpret_cast<PoolTest>(GetProcAddress(GetModuleHandleW(L"vulkan_hasvk_wddm.dll"), "hasvk_wddm_icd_test_state_pools"));
+         probe_first_only = GetEnvironmentVariableA("ICD_PROBE_FIRST_ONLY", nullptr, 0) != 0;
+         using ReadRegister = int (*)(VkDevice, uint32_t, uint32_t *);
+         auto read_register = reinterpret_cast<ReadRegister>(GetProcAddress(GetModuleHandleW(L"vulkan_hasvk_wddm.dll"), "hasvk_wddm_icd_read_register"));
+         if (probe_first_only) {
+            /* Not a test run: the report says so. */
+            report["stressFirstSubmissionOnly"] = true;
+            /* ICD_PROBE_REGS=<hex offset>,...: the new context's registers instead of
+             * the dispatch; the report counts every distinct set of values. */
+            char offsets[512]{};
+            if (GetEnvironmentVariableA("ICD_PROBE_REGS", offsets, sizeof(offsets))) {
+               require(read_register != nullptr, "Missing register diagnostics");
+               std::string values;
+               /* ICD_PROBE_REGS_AFTER: again after the first dispatch. */
+               const bool after = GetEnvironmentVariableA("ICD_PROBE_REGS_AFTER", nullptr, 0) != 0;
+               for (unsigned pass = 0; pass < (after ? 2u : 1u); ++pass) {
+                  if (pass) {
+                     test_compute_pipelines(device, queue, vkGetDeviceProcAddr, compute_results);
+                     check(vkDeviceWaitIdle(device), "Device wait idle");
+                     values += "| ";
+                  }
+                  for (char *cursor = offsets; *cursor;) {
+                     char *end{}; const uint32_t offset = strtoul(cursor, &end, 16);
+                     if (end == cursor) break;
+                     uint32_t value{}; require(!read_register(device, offset, &value), "Cannot read a context register");
+                     char text[32]; snprintf(text, sizeof(text), "%x=%08x ", offset, value); values += text;
+                     cursor = *end ? end + 1 : end;
+                  }
+               }
+               json &states = report["registerStates"];
+               states[values] = (states.contains(values) ? states[values].get<int>() : 0) + 1;
+            } else test_compute_pipelines(device, queue, vkGetDeviceProcAddr, compute_results);
+            vkDestroyDevice(device, nullptr);
+            continue;
+         }
          uint32_t reads{}; require(pool_test && !pool_test(device, &reads) && reads == 90, "Mesa state pool GPU readback failed");
          pool_reads += reads;
          descriptor_checks += test_descriptors(device, vkGetDeviceProcAddr);
@@ -484,6 +566,11 @@ int wmain(int argc, wchar_t **argv)
             check(vkResetFences(device, 1, &fence), "Reset dependent fence");
          }
          check(vkQueueWaitIdle(queue), "Queue wait idle"); check(vkDeviceWaitIdle(device), "Device wait idle");
+         /* The register diagnostic (hasvk_wddm_icd_read_register): the context's L3 cache
+          * partitioning is the one these command buffers programmed (URB 48, ALL 48). */
+         uint32_t l3{}; require(read_register && !read_register(device, 0x7034, &l3), "Cannot read a context register");
+         report["l3ConfigurationAfterWork"] = l3;
+         require(l3 == 0x60000060, "Unexpected L3 configuration after the tests");
          using Stats = int (*)(VkDevice, uint64_t *, uint64_t *);
          HMODULE icd = GetModuleHandleW(L"vulkan_hasvk_wddm.dll"); require(icd != nullptr, "ICD DLL not loaded");
          auto stats = reinterpret_cast<Stats>(GetProcAddress(icd, "hasvk_wddm_icd_query_stats")); require(stats != nullptr, "Missing driver diagnostics");
@@ -494,7 +581,7 @@ int wmain(int argc, wchar_t **argv)
       }
       vkDestroyInstance(instance, nullptr);
       report["forbiddenModules"] = forbidden_modules(); require(report["forbiddenModules"].empty(), "Intel UMD/D3D12 was loaded");
-      report["deviceCreationCycles"] = 3; report["gpuConfirmedSubmissions"] = total_gpu_submits;
+      report["deviceCreationCycles"] = cycles; report["gpuConfirmedSubmissions"] = total_gpu_submits;
       report["wddmVulkanMemoryCases"] = memory_cases; report["mappedMemoryBindingAndLifetimeValidated"] = true;
       report["applicationBufferGpuShaderAccessValidated"] = true;
       report["mesaStatePoolGpuReadbacks"] = pool_reads;

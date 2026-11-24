@@ -177,6 +177,12 @@ Pitfalls:
   23.2 FPS): compare only interleaved runs within one series, at least three
   pairs. The first run after a new build is cold (pipelines are compiled) and
   does not count.
+- **Not right after a build.** Six minutes of compiling heat the laptop: the
+  first Talos block after it ran at 78.5 FPS and the same binary at 83.3 FPS
+  twenty minutes later. One binary spreads from 75 to 85 FPS between Talos
+  runs. Two builds share one shader cache file, so alternate them in blocks of
+  four runs, drop the first run of each block, start with the old build, and
+  believe only a difference that every block shows.
 - Measure thread CPU time with `QueryThreadCycleTime`; `GetThreadTimes` counts
   timer ticks and understated the main thread three times.
 - PDH counters are not found by their English names in a process with a
