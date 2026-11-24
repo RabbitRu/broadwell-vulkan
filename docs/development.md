@@ -96,7 +96,10 @@ All tests run on the real GPU and need no interaction.
   fill and vertex probes of both drivers save the ones that hold a draw, and
   with `D3D11_PROBE_FIND=<hex dword>` every place where that dword occurs.
   `vs_fetch_probe.exe` takes a sixth argument that changes fixed-function
-  state (cull mode, topology, primitive restart, ...).
+  state (cull mode, topology, primitive restart, ...); `depth_fill_probe.exe`
+  one that chooses the depth clear (1.0 sampled, reverse Z 0.0, 1.0 not
+  sampled). `run-dota.ps1` and `run-talos.ps1` take `-D3D11Proxy`; for Dota 2
+  the proxy needs `D3D11_PROXY_SEGMENTS=<n>` (no frame end is visible to it).
 - `bench-frames.py` (frame tables), `talos-sections.py` (frame sections in
   milliseconds per API), `rip-compare.py` (code samples of two runs compared).
 - Commands and measurement pitfalls are in [performance.md](performance.md).

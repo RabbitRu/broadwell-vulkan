@@ -142,10 +142,25 @@ static void bucket_add(const char *key, double ms, UINT draws, const D3D11_QUERY
    if (samples != UINT64_MAX) p.buckets[i].samples += (double)samples;
 }
 
+/* D3D11_PROXY_SEGMENTS=<n>: a "frame" is every n segments, and the report is
+ * GPU time per second of wall time (for games whose frame end is not seen:
+ * Dota 2 copies into the back buffer, and a Present hook recurses there).
+ * A segment runs from its timestamp to the next one, so time the GPU waits
+ * for commands is counted too (the total is about 1000 ms/s): compare shares
+ * of one DX11 run, not times against HASVK_WDDM_PROFILE_PASSES. */
+static UINT segments_per_frame(void)
+{
+   static int n = -1;
+   if (n < 0) { char v[16]; n = GetEnvironmentVariableA("D3D11_PROXY_SEGMENTS", v, sizeof(v)) ? atoi(v) : 0; if (n < 0 || n >= (int)SEGMENTS) n = 0; }
+   return (UINT)n;
+}
+static void end_frame(void);
+
 /* Starts a new segment (and the frame, if none is open). */
 static void mark(ID3D11DeviceContext *ctx, const char *key)
 {
    if (!p.ready || ctx != p.context) return;
+   if (segments_per_frame() && p.frames[p.frame % FRAMES].open && p.frames[p.frame % FRAMES].count >= segments_per_frame()) end_frame();
    struct frame *f = &p.frames[p.frame % FRAMES];
    if (!f->open) { o_Begin(ctx, (ID3D11Asynchronous *)f->disjoint); f->open = TRUE; f->count = 0; f->overflow = FALSE; }
    if (f->count == SEGMENTS) { f->overflow = TRUE; return; }
@@ -225,9 +240,13 @@ static void end_frame(void)
       qsort(p.buckets, p.bucket_count, sizeof(p.buckets[0]), compare);
       double total = 0;
       for (UINT i = 0; i < p.bucket_count; ++i) total += p.buckets[i].ms;
-      const double n = (double)p.window_frames;
-      logf_("D3D11 profile: %llu frames in %.1f s, GPU time %.2f ms/frame (%llu frames dropped)\n", p.window_frames,
-            (now - p.window_start) / 1000.0, total / n, p.dropped);
+      /* With D3D11_PROXY_SEGMENTS every "ms/frame" below is ms per second of
+       * the frames collected: each collected group is scaled by the window's
+       * share of groups that were not dropped. */
+      const double seconds = (now - p.window_start) / 1000.0;
+      const double n = segments_per_frame() ? seconds * (double)p.window_frames / (double)(p.window_frames + p.dropped) : (double)p.window_frames;
+      logf_("D3D11 profile: %llu frames in %.1f s, GPU time %.2f ms/%s (%llu frames dropped)\n", p.window_frames,
+            seconds, total / n, segments_per_frame() ? "s" : "frame", p.dropped);
       for (UINT i = 0; i < p.bucket_count && i < (split_enabled() ? 45u : 25u); ++i)
          logf_("  %6.2f ms/frame %5.1f/frame avg %6.3f ms draws %6.1f | %s\n", p.buckets[i].ms / n, p.buckets[i].count / n,
                p.buckets[i].ms / p.buckets[i].count, (double)p.buckets[i].draws / p.buckets[i].count, p.buckets[i].key);
@@ -545,14 +564,15 @@ static void install(ID3D11Device *device, ID3D11DeviceContext *ctx)
    for (UINT i = 0; i < FRAMES; ++i) ID3D11Device_CreateQuery(device, &qd, &p.frames[i].disjoint);
    p.device = device; p.context = ctx;
    p.vtable = (void **)ctx->lpVtbl;
-   if (hooked) { p.ready = TRUE; LeaveCriticalSection(&lock); logf_("D3D11 proxy: profiling a newer device\n"); return; }
-   o_End = ctx->lpVtbl->End; o_Begin = ctx->lpVtbl->Begin; o_GetData = ctx->lpVtbl->GetData;
+   /* A newer device: the runtime fills the context vtable again when it
+    * creates one (Dota 2 creates two), so the slots are patched again. */
+   if (!hooked) { o_End = ctx->lpVtbl->End; o_Begin = ctx->lpVtbl->Begin; o_GetData = ctx->lpVtbl->GetData; }
    PATCH_CTX(OMSetRenderTargets, h_OMSetRenderTargets, o_OMSetRenderTargets);
    PATCH_CTX(VSSetShader, h_VSSetShader, o_VSSetShader);
    PATCH_CTX(PSSetShader, h_PSSetShader, o_PSSetShader);
    PATCH_CTX(OMSetDepthStencilState, h_OMSetDepthStencilState, o_OMSetDepthStencilState);
    if (split_enabled()) {
-      InitializeCriticalSection(&code_lock);
+      if (!hooked) InitializeCriticalSection(&code_lock);
       patch((void **)device->lpVtbl, offsetof(ID3D11DeviceVtbl, CreatePixelShader), (void *)h_CreatePixelShader, (void **)&o_CreatePixelShader);
       patch((void **)device->lpVtbl, offsetof(ID3D11DeviceVtbl, CreateVertexShader), (void *)h_CreateVertexShader, (void **)&o_CreateVertexShader);
    }
@@ -574,7 +594,8 @@ static void install(ID3D11Device *device, ID3D11DeviceContext *ctx)
    PATCH_CTX(ExecuteCommandList, h_ExecuteCommandList, o_ExecuteCommandList);
    p.ready = TRUE;
    LeaveCriticalSection(&lock);
-   logf_("D3D11 proxy: profiling the immediate context\n");
+   if (segments_per_frame()) logf_("D3D11 proxy: frames are groups of %u segments; times are per second\n", segments_per_frame());
+   logf_(hooked ? "D3D11 proxy: profiling a newer device (slots patched again)\n" : "D3D11 proxy: profiling the immediate context\n");
 }
 
 __declspec(dllexport) HRESULT WINAPI D3D11CreateDevice(IDXGIAdapter *adapter, D3D_DRIVER_TYPE type, HMODULE software, UINT flags,

@@ -25,6 +25,10 @@ run (the process is killed) and it is reported as failed.
   -RipModule dll     instead, stacks with build\probes\rip_sampler.exe (with that
                      module on the stack; vulkan_hasvk_wddm.dll, igd10iumd64.dll for
                      Intel's DX11 driver); report build\dota\<Tag>.rip.txt
+  -D3D11Proxy dll    Direct3D11 only: the timing proxy (native\tests\d3d11_proxy,
+                     build\probes\d3d11-proxy\d3d11.dll) is copied next to dota2.exe
+                     for this run and removed afterwards; its GPU time per render
+                     target goes to build\dota\<Tag>.d3d11-profile.txt
 #>
 param(
    [ValidateSet('Vulkan', 'Direct3D11')][string]$Api = 'Vulkan',
@@ -40,6 +44,7 @@ param(
    [string]$RipModule = '',
    [int]$SampleDelay = 25,
    [int]$SampleSeconds = 30,
+   [string]$D3D11Proxy = '',
    [string]$Game ='C:\Program Files (x86)\Steam\steamapps\common\dota 2 beta'
 )
 $ErrorActionPreference = 'Stop'
@@ -115,6 +120,16 @@ foreach ($pair in ($Env | ForEach-Object { $_ -split ',' } | Where-Object { $_ }
    "  env $name=$value"
 }
 
+$proxyTarget = Join-Path (Split-Path $exe) 'd3d11.dll'
+$proxyPlaced = $false
+if ($D3D11Proxy) {
+   if ($Api -ne 'Direct3D11') { throw '-D3D11Proxy needs -Api Direct3D11' }
+   if (Test-Path -LiteralPath $proxyTarget) { throw "$proxyTarget already exists; not overwriting the game's file" }
+   $proxyLog = Join-Path $out "$Tag.d3d11-profile.txt"
+   if (Test-Path -LiteralPath $proxyLog) { Remove-Item -LiteralPath $proxyLog -Force }
+   $startInfo.EnvironmentVariables['D3D11_PROFILE_LOG'] = $proxyLog
+}
+
 $sampler = $null; $sampleOut = $null
 if ($Sample -or $RipModule) {
    $mode = if ($RipModule) { 'rip' } else { 'counters' }
@@ -128,6 +143,7 @@ if ($Sample -or $RipModule) {
 }
 $verdict = ''
 try {
+   if ($D3D11Proxy) { Copy-Item -LiteralPath $D3D11Proxy -Destination $proxyTarget; $proxyPlaced = $true }
    $watch = [Diagnostics.Stopwatch]::StartNew()
    $p = [Diagnostics.Process]::Start($startInfo)
    $stdout = $p.StandardOutput.ReadToEndAsync()
@@ -141,6 +157,7 @@ try {
    }
 } finally {
    if ($p -and -not $p.HasExited) { try { $p.Kill() } catch {}; $p.WaitForExit() }
+   if ($proxyPlaced) { Remove-Item -LiteralPath $proxyTarget -Force; "  proxy removed: $proxyTarget" }
    foreach ($path in $saved.Keys) { [IO.File]::WriteAllBytes($path, $saved[$path]) }
 }
 $wall = [math]::Round($watch.Elapsed.TotalSeconds)
@@ -153,6 +170,7 @@ if (Test-Path -LiteralPath $profile) { Copy-Item -LiteralPath $profile (Join-Pat
 $result = Get-Content -LiteralPath $console -ErrorAction SilentlyContinue | Select-String '\[Demo\] \d+ frames .* fps' | Select-Object -Last 1
 if ($result) { '  ' + ($result.Line -replace '^.*\[Demo\]\s*', '') }
 else { '  no timedemo result in console.log'; if (-not $verdict) { $verdict = 'no result' } }
+if ($D3D11Proxy) { "  D3D11 profile: $proxyLog" }
 if ($sampler) {
    if (-not $sampler.WaitForExit(120000)) { try { $sampler.Kill() } catch {} }
    if (Test-Path -LiteralPath $sampleOut) {

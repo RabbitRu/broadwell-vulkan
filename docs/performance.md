@@ -22,9 +22,10 @@ there are no per-game profiles.
   against 114–117: the whole gap is shadows, not the driver.
 
 **Dota 2** (a match replay as a timedemo, 2,999 frames, window 2560×1600
-borderless, render scale 0.4, lowest settings): Vulkan 25.5–25.7 FPS against
-25.4–26.1 on DX11. Before presentation without a copy it was 23.2–24.7 against
-26.0–26.9.
+borderless, render scale 0.4, lowest settings): Vulkan 25.5–26.3 FPS against
+25.4–26.2 on DX11 (24.11.2026, fans at full speed: 26.04, 26.31, 25.77 against
+25.97, 26.18, 26.06). Before presentation without a copy it was 23.2–24.7
+against 26.0–26.9.
 
 - The frame is bound by the CPU time of the game's own code. The game submits
   the whole frame with one `vkQueueSubmit`; the GPU needs about 22–25 ms for it
@@ -87,12 +88,45 @@ lower is slower):
 | `sample.comp`, 16 bilinear samples per invocation, ms | 0.905 | 0.83–0.88 (0.92–0.97) |
 | `vs_fetch.vert`, `texelFetch` in the vertex shader, ms | 6.46 | 6.46 (1.00) |
 | `vs_fetch.vert`, no loop iterations, 3 million vertices, ms | 3.32 | 2.95 (0.89) |
-| depth fill, no fragment shader, 8 layers of 1536², ms | 0.405 | 0.362 (0.89) |
+| depth fill, no fragment shader, 8 layers of 1536², ms | 0.405 (reverse Z 0.359) | 0.362 (0.89; 1.01) |
 | depth fill, empty fragment shader, ms | 0.460 | 0.457 (0.99) |
-| depth fill, `depth_fill_kill.frag` (one compare and `discard`), ms | 4.6–4.8 | 4.17 (0.87–0.90) |
-| depth fill, `depth_fill_discard.frag` (sample and `discard`), ms | 5.55–5.67 | 5.09–5.23 (0.91–0.93) |
+| depth fill, `depth_fill_kill.frag` (one compare and `discard`), ms | 4.6–4.9 (reverse Z 4.33) | 4.17 (0.87–0.90; 0.96) |
+| depth fill, `depth_fill_discard.frag` (sample and `discard`), ms | 5.55–5.90 (reverse Z 5.31) | 5.09–5.23 (0.91–0.93; 0.96–0.98) |
 | depth fill, `depth_fill_light.frag`, ms | 4.74–4.82 | 4.19–4.25 (0.88) |
 | depth fill, `depth_fill_mad.frag` (64 multiply-adds), ms | 5.80 | 5.54–5.61 (0.96; 5.98 before) |
+
+## Where the GPU time goes
+
+GPU time per render pass, every pass bracketed by timestamps (which
+serialize the GPU, so the sum is a little more than the frame's real GPU
+time). Dota 2 renders with `vkCmdBeginRendering`; a profiler that only sees
+`vkCmdBeginRenderPass` (the debug branch's) sees none of its passes.
+
+Dota 2, replay window, 25.3 FPS, 25.1 ms of passes per frame:
+
+| Pass | ms/frame | Note |
+|---|---|---|
+| 1024×640 RGBA8 sRGB + D24S8, ×3.6 per frame, ~117 draws | 10.4 | the scene; ~7.6 M fragment shader invocations per frame, spread over many pipelines (the largest 1.9 ms: VS ~990, FS ~470 instructions, 17 sends) |
+| 1024×640 RGBA16F + D24S8, ×2.6, ~76 draws | 4.3 | |
+| 2560×1600 BGRA8 sRGB + D24S8, ×20.6, ~13 draws | 2.7 | interface |
+| 2560×1600 BGRA8 sRGB, ×2 (one draw of a 4-instruction shader: 1.31 ms) | 1.5 | upscale to the window |
+| 2560×1600 RGBA8 sRGB, clear only | 1.0 | 16 MB at 16 GB/s, the GPU's write speed |
+| 2560×1600 depth/stencil clears, ×2 | 1.1 | sampled depth cleared to 1.0: not fast (see below) |
+| copies, small passes | ~4 | |
+
+The full-window passes run at memory speed (a 2560×1600 clear at 16 GB/s,
+`bandwidth_probe`: buffer fill 7–9 GB/s, copy 12 GB/s read + write), and the
+scene has no single expensive pipeline. Under DX11 the GPU time per frame is
+the same (see Results), and Intel's driver splits its submissions, so the
+DX11 proxy cannot give comparable times per pass (`D3D11_PROXY_SEGMENTS`
+counts the GPU's waits as well; shares only).
+
+The Talos Principle, 80 FPS, 9.7 ms of passes per frame: the two shadow maps
+(1536², D16, alpha test, 3.7 M fragment shader invocations each) 4.9 ms, the
+main pass 2.5, the depth prepass 1.0, the rest under 0.4 each. The shadow
+maps are reverse Z and get HiZ fast clears; on the same draw Intel's driver
+is not faster (registry of the debug branch, C6): the gap to DX11 is the
+game's own work.
 
 ## ELK against Intel's compiler
 
@@ -162,19 +196,36 @@ never happens (`depth_fill_probe` with `depth_fill_kill.frag`,
   (`SignedZeroInfNanPreserve`, `FPFastMathDefault` or `FPFastMathMode`
   without `NotNaN`); without such a request the discard is one compare, as in
   Intel's kernels (5.85 → 5.80 ms).
-- **What remains is not in the shader.** A pixel that goes through a shader
-  with a `discard` costs 4.6–4.8 ms per pass here and 4.17 ms on Intel's driver
-  with five instructions on each side, and the lighting shader costs the same
-  as that minimal one on both. Changing these to Intel's values, one at a
-  time, made no difference: "pixel shader does not write to a render target"
+- **What remained was the depth clear, not the shader.** A pixel that goes
+  through a shader with a `discard` cost 4.6–4.8 ms per pass here and 4.17 ms
+  on Intel's driver with five instructions on each side. The probe clears its
+  D16 buffer to 1.0, and this ICD fast-clears (HiZ) depth only to 0.0
+  (`anv_image_hiz_clear_value`); Intel's driver fast-clears to 1.0. With a
+  full clear the pass after it costs 12 % more. With reverse Z (cleared to
+  0.0, `GREATER_OR_EQUAL`: `depth_fill_probe` argument 6 = 1) the probe is
+  where Intel's driver is: no fragment shader 0.359 ms against 0.362, the
+  `discard` test 4.33 against 4.17, sample and `discard` 5.31 against
+  5.09–5.23. Before that was found, these were set to Intel's values one at a
+  time with no effect: "pixel shader does not write to a render target"
   (3DSTATE_PS_EXTRA bit 30, not in Mesa's Gen8 description), forced thread
   dispatch off, double-sided stencil off, single program flow, the vector
   mask, the denormal mode, depth MOCS 0x69/0x79/0x68, CACHE_MODE_1 bit 14,
   the default L3 configuration (Intel's driver never writes L3CNTLREG in 3D
-  mode), the DX10 rasterization mode, statistics counters. Not tried: Intel's
-  driver fast-clears the sampled depth buffer to 1.0 (this ICD cannot, the
-  Gen8 sampler returns 0.0 for fast-cleared HiZ blocks), and its vertex is 64
-  bytes in the URB against 128 here.
+  mode), the DX10 rasterization mode, statistics counters.
+- **Fast clears to 1.0** (measured, not adopted):
+  - The Gen8 sampler returns 0.0 for fast-cleared HiZ blocks also with Red
+    Clear Color = 1 in the sampling surface state (`depth_sample_probe`: the
+    four cases cleared to 1.0 read 0.0). A depth buffer that is sampled can
+    therefore be fast-cleared only to 0.0, or to 1.0 with a depth resolve
+    before every sampling. Dota 2 clears its depth buffers of 2560×1600 and
+    draws mostly into 1024×640 of them (render scale 0.4), so the resolve
+    would write more than the clear costs now.
+  - Images that are never sampled (no SAMPLED, TRANSFER_SRC or
+    INPUT_ATTACHMENT usage) could use 1.0: the probe without SAMPLED went
+    from 0.405/4.88/5.93 ms to 0.359/4.29/5.41. Neither game gains: all of
+    Dota's depth buffers are sampled, and the one depth buffer of Talos that
+    is not sampled is reverse Z and would lose its fast clear (it would need
+    the value chosen per image at its first clear).
 - **Vertices.** With no work in the shader this ICD passes exactly one vertex
   per GPU clock (950 MHz) whatever the shader and the topology. Intel's driver
   does the same for points and strips, and nine vertices in eight clocks for
@@ -202,6 +253,8 @@ Build the driver (`tools\build-icd.ps1`) and the probes
 .\tools\dev\run-dota.ps1 -Api Direct3D11 -Tag d1
 .\tools\dev\run-dota.ps1 -Tag s1 -Sample                               # threads, CPU frequency, GPU load
 .\tools\dev\run-dota.ps1 -Tag r1 -RipModule vulkan_hasvk_wddm.dll      # sampled stacks
+# DX11 GPU shares per render target (Dota 2 needs pseudo-frames of N segments)
+.\tools\dev\run-dota.ps1 -Api Direct3D11 -Tag p1 -Env D3D11_PROXY_SEGMENTS=600 -D3D11Proxy build\probes\d3d11-proxy\d3d11.dll
 # The Talos Principle (Steam must be signed in to the account that owns the game)
 .\tools\dev\run-talos.ps1 -Api Vulkan -Tag v1    # -Sample, -RipModule, -D3D11Proxy build\probes\d3d11-proxy\d3d11.dll
 # analysis
