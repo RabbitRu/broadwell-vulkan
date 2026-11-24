@@ -31,6 +31,11 @@ against 26.0–26.9.
   the whole frame with one `vkQueueSubmit`; the GPU needs about 22–25 ms for it
   and idles for about 14 ms per frame. GPU time per frame is the same under
   both APIs.
+- Less GPU work would not speed the CPU up here: during the replay it runs at
+  about 3.0 GHz (111 % of its base clock) with no performance limit in any of
+  the 30 samples (`-Sample`, 24.11.2026, fans at full speed). In Talos, with
+  the GPU 86–91 % busy, it runs at 2.56–2.68 GHz and is limited in most
+  samples.
 - The driver is almost absent from the critical path: 0.3 % of the main
   thread's samples. Command recording takes about 2.8 ms per frame on the
   game's render thread, which mostly waits. Under DX11 Intel's driver thread
