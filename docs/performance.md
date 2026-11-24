@@ -65,7 +65,11 @@ against 26.0–26.9.
 The ELK changes (`acfef37`, `5bdf740`) do not show in the games: interleaved
 against the build before them (`0c68e55`) on 24.11.2026, after a warm-up run
 of each, Talos 85.8 against 86.0 FPS (six runs each, 84.0–87.0) and Dota 2
-25.87 against 25.96 (three runs each, 25.72–26.42).
+25.87 against 25.96 (three runs each, 25.72–26.42). Nor does the GPU time
+per frame (the game's GPU 3D load times the frame time, `-Sample`): Talos
+10.67 against 10.67 ms (GPU 85–90 % busy), Dota 26.3 against 26.9 ms (the
+old build alone spread 24.6–27.6). What these changes speed up (three-source
+arithmetic, the compare of a `discard`) is a small part of either frame.
 
 Many other ideas were measured and rejected (PMA workaround variants, MOCS and
 L3 cache settings, CCS_D fast clears, 2 MiB alignment, compiler flags, game
