@@ -1,16 +1,16 @@
 ﻿{
     "schema":  1,
-    "testedUtc":  "2026-11-24T04:30:26.9051075Z",
+    "testedUtc":  "2026-11-24T08:46:20.5904523Z",
     "hardware":  "8086:162b",
     "driverVersion":  "20.19.15.5171",
-    "compilerSha256":  "62b30e0c2a221ae875317a41ae5a92adf4872641eeff49765f5d0f38a4ca6bf8",
-    "probeSha256":  "5ea5fbc19477d291913c8695309e5041a1a86274ebb311ad7dddcf0d9f4bc1d7",
+    "compilerSha256":  "a12cfaa0c4c1b43908e97e4f51c24b6f963ceec69bf51a33feea2bfa0558b9fb",
+    "probeSha256":  "f6421c1e3e6ff23c161b6b682726ce8f679d104e21ae2d916fd7192a50357c2a",
     "cases":  [
                   {
                       "name":  "xor32-0",
-                      "initialValue":  3443261991,
-                      "expectedValue":  1393261470,
-                      "actualValue":  1393261470,
+                      "initialValue":  2147146179,
+                      "expectedValue":  3788349562,
+                      "actualValue":  3788349562,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -21,14 +21,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1023,
                       "moduleSha256":  "4cf12f3f27eb5a78c2107ecd21d44f2a261af73b2b262e36aec0ecf2afdd2227",
-                      "kernelSha256":  "230c20b485a5889f8ea0479ba4fcd92f84da4810785946e1a8745fe319181914",
+                      "kernelSha256":  "6d661d6aad1c560d62b0c0c0c3c926430634c3000da39d43d0c9944d5745e45b",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-1",
-                      "initialValue":  1547852394,
-                      "expectedValue":  3262456787,
-                      "actualValue":  3262456787,
+                      "initialValue":  585514283,
+                      "expectedValue":  3167831186,
+                      "actualValue":  3167831186,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -39,14 +39,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1023,
                       "moduleSha256":  "4cf12f3f27eb5a78c2107ecd21d44f2a261af73b2b262e36aec0ecf2afdd2227",
-                      "kernelSha256":  "230c20b485a5889f8ea0479ba4fcd92f84da4810785946e1a8745fe319181914",
+                      "kernelSha256":  "6d661d6aad1c560d62b0c0c0c3c926430634c3000da39d43d0c9944d5745e45b",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-2",
-                      "initialValue":  297073050,
-                      "expectedValue":  2407759907,
-                      "actualValue":  2407759907,
+                      "initialValue":  3063266400,
+                      "expectedValue":  681756121,
+                      "actualValue":  681756121,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -57,14 +57,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1023,
                       "moduleSha256":  "4cf12f3f27eb5a78c2107ecd21d44f2a261af73b2b262e36aec0ecf2afdd2227",
-                      "kernelSha256":  "230c20b485a5889f8ea0479ba4fcd92f84da4810785946e1a8745fe319181914",
+                      "kernelSha256":  "6d661d6aad1c560d62b0c0c0c3c926430634c3000da39d43d0c9944d5745e45b",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-0",
-                      "initialValue":  3638122432,
-                      "expectedValue":  1781458975,
-                      "actualValue":  1781458975,
+                      "initialValue":  3850781322,
+                      "expectedValue":  3795669089,
+                      "actualValue":  3795669089,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -75,14 +75,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1023,
                       "moduleSha256":  "17653402147bc8ee4c5426f84a4fdece3ec31292df78d3b53f972cfb75d103f7",
-                      "kernelSha256":  "9b4b0f492365ad1f656f3f2866e8770d5091c7d255a98ddcb39ff37c8820c254",
+                      "kernelSha256":  "559b4d7cb9c09c5d1743d4b17cf5eb430c30ba943fa468d4323fe4ee5849a901",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-1",
-                      "initialValue":  2449410043,
-                      "expectedValue":  185818398,
-                      "actualValue":  185818398,
+                      "initialValue":  2889700017,
+                      "expectedValue":  2110237788,
+                      "actualValue":  2110237788,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -93,14 +93,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1023,
                       "moduleSha256":  "17653402147bc8ee4c5426f84a4fdece3ec31292df78d3b53f972cfb75d103f7",
-                      "kernelSha256":  "9b4b0f492365ad1f656f3f2866e8770d5091c7d255a98ddcb39ff37c8820c254",
+                      "kernelSha256":  "559b4d7cb9c09c5d1743d4b17cf5eb430c30ba943fa468d4323fe4ee5849a901",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-2",
-                      "initialValue":  2206599806,
-                      "expectedValue":  1488564165,
-                      "actualValue":  1488564165,
+                      "initialValue":  3043658352,
+                      "expectedValue":  1794153231,
+                      "actualValue":  1794153231,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -111,14 +111,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1023,
                       "moduleSha256":  "17653402147bc8ee4c5426f84a4fdece3ec31292df78d3b53f972cfb75d103f7",
-                      "kernelSha256":  "9b4b0f492365ad1f656f3f2866e8770d5091c7d255a98ddcb39ff37c8820c254",
+                      "kernelSha256":  "559b4d7cb9c09c5d1743d4b17cf5eb430c30ba943fa468d4323fe4ee5849a901",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-0",
-                      "initialValue":  481063516,
-                      "expectedValue":  479739346,
-                      "actualValue":  479739346,
+                      "initialValue":  4195582201,
+                      "expectedValue":  1332857433,
+                      "actualValue":  1332857433,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -129,14 +129,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1023,
                       "moduleSha256":  "3e3d32095f8fca0e82113c3a9e859aa6afb3e94ba786efcf856a9810bfce29bc",
-                      "kernelSha256":  "6ffaf0cd7131a71685a9175d2cb0c0def6aed2f4b8c97459c4104378ebc4d439",
+                      "kernelSha256":  "52616dbaef2a2bc11ca446a8acb94f0e057bde4cc9e9f9c77d5070ac2c062f5c",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-1",
-                      "initialValue":  1104232361,
-                      "expectedValue":  3497778239,
-                      "actualValue":  3497778239,
+                      "initialValue":  1214261091,
+                      "expectedValue":  2227356847,
+                      "actualValue":  2227356847,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -147,14 +147,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1023,
                       "moduleSha256":  "3e3d32095f8fca0e82113c3a9e859aa6afb3e94ba786efcf856a9810bfce29bc",
-                      "kernelSha256":  "6ffaf0cd7131a71685a9175d2cb0c0def6aed2f4b8c97459c4104378ebc4d439",
+                      "kernelSha256":  "52616dbaef2a2bc11ca446a8acb94f0e057bde4cc9e9f9c77d5070ac2c062f5c",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-2",
-                      "initialValue":  4284344801,
-                      "expectedValue":  1801777129,
-                      "actualValue":  1801777129,
+                      "initialValue":  2683618692,
+                      "expectedValue":  2283469108,
+                      "actualValue":  2283469108,
                       "elementCount":  1,
                       "localSize":  [
                                         1,
@@ -165,14 +165,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1023,
                       "moduleSha256":  "3e3d32095f8fca0e82113c3a9e859aa6afb3e94ba786efcf856a9810bfce29bc",
-                      "kernelSha256":  "6ffaf0cd7131a71685a9175d2cb0c0def6aed2f4b8c97459c4104378ebc4d439",
+                      "kernelSha256":  "52616dbaef2a2bc11ca446a8acb94f0e057bde4cc9e9f9c77d5070ac2c062f5c",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local7-count1",
                       "initialValue":  null,
-                      "expectedValue":  3402412155,
-                      "actualValue":  3402412155,
+                      "expectedValue":  870752950,
+                      "actualValue":  870752950,
                       "elementCount":  1,
                       "localSize":  [
                                         7,
@@ -183,14 +183,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1022,
                       "moduleSha256":  "f5fbe6e79686b622cd588128cdc7822ce4a166241c3c45c8680af560672174e3",
-                      "kernelSha256":  "df6e5b590a7acb188adf502fa9410be489e42f915c99b687eebfb4c514f7240f",
+                      "kernelSha256":  "f7aaedefc0186f428a8f50e79af8367f2dd9f5d9ba0e54f89f9349f5155be991",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local7-count6",
                       "initialValue":  null,
-                      "expectedValue":  2528888167,
-                      "actualValue":  2528888167,
+                      "expectedValue":  58532664,
+                      "actualValue":  58532664,
                       "elementCount":  6,
                       "localSize":  [
                                         7,
@@ -201,14 +201,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1017,
                       "moduleSha256":  "f5fbe6e79686b622cd588128cdc7822ce4a166241c3c45c8680af560672174e3",
-                      "kernelSha256":  "df6e5b590a7acb188adf502fa9410be489e42f915c99b687eebfb4c514f7240f",
+                      "kernelSha256":  "f7aaedefc0186f428a8f50e79af8367f2dd9f5d9ba0e54f89f9349f5155be991",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local7-count7",
                       "initialValue":  null,
-                      "expectedValue":  38573558,
-                      "actualValue":  38573558,
+                      "expectedValue":  2717657223,
+                      "actualValue":  2717657223,
                       "elementCount":  7,
                       "localSize":  [
                                         7,
@@ -219,14 +219,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1016,
                       "moduleSha256":  "f5fbe6e79686b622cd588128cdc7822ce4a166241c3c45c8680af560672174e3",
-                      "kernelSha256":  "df6e5b590a7acb188adf502fa9410be489e42f915c99b687eebfb4c514f7240f",
+                      "kernelSha256":  "f7aaedefc0186f428a8f50e79af8367f2dd9f5d9ba0e54f89f9349f5155be991",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local7-count8",
                       "initialValue":  null,
-                      "expectedValue":  545339997,
-                      "actualValue":  545339997,
+                      "expectedValue":  1174050092,
+                      "actualValue":  1174050092,
                       "elementCount":  8,
                       "localSize":  [
                                         7,
@@ -237,14 +237,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1015,
                       "moduleSha256":  "f5fbe6e79686b622cd588128cdc7822ce4a166241c3c45c8680af560672174e3",
-                      "kernelSha256":  "df6e5b590a7acb188adf502fa9410be489e42f915c99b687eebfb4c514f7240f",
+                      "kernelSha256":  "f7aaedefc0186f428a8f50e79af8367f2dd9f5d9ba0e54f89f9349f5155be991",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local7-count257",
                       "initialValue":  null,
-                      "expectedValue":  2580574532,
-                      "actualValue":  2580574532,
+                      "expectedValue":  2227518565,
+                      "actualValue":  2227518565,
                       "elementCount":  257,
                       "localSize":  [
                                         7,
@@ -255,14 +255,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  766,
                       "moduleSha256":  "f5fbe6e79686b622cd588128cdc7822ce4a166241c3c45c8680af560672174e3",
-                      "kernelSha256":  "df6e5b590a7acb188adf502fa9410be489e42f915c99b687eebfb4c514f7240f",
+                      "kernelSha256":  "f7aaedefc0186f428a8f50e79af8367f2dd9f5d9ba0e54f89f9349f5155be991",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local7-count16381",
                       "initialValue":  null,
-                      "expectedValue":  2495954296,
-                      "actualValue":  2495954296,
+                      "expectedValue":  1944467455,
+                      "actualValue":  1944467455,
                       "elementCount":  16381,
                       "localSize":  [
                                         7,
@@ -273,14 +273,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1026,
                       "moduleSha256":  "f5fbe6e79686b622cd588128cdc7822ce4a166241c3c45c8680af560672174e3",
-                      "kernelSha256":  "df6e5b590a7acb188adf502fa9410be489e42f915c99b687eebfb4c514f7240f",
+                      "kernelSha256":  "f7aaedefc0186f428a8f50e79af8367f2dd9f5d9ba0e54f89f9349f5155be991",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local32-count1",
                       "initialValue":  null,
-                      "expectedValue":  242337722,
-                      "actualValue":  242337722,
+                      "expectedValue":  781349714,
+                      "actualValue":  781349714,
                       "elementCount":  1,
                       "localSize":  [
                                         32,
@@ -291,14 +291,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  1022,
                       "moduleSha256":  "86a21c70389dce6c929f07d724bc590ae8471b3d26d4b1321802ce6981bf7ccf",
-                      "kernelSha256":  "91ae55fb52a45c321baab4d0c97b0e34b050c0c9853f92dd51adb319b2cf0d66",
+                      "kernelSha256":  "688a6896cddbd9f78ceee889eee04af657c8ce016c925d876615c4d86b7ab250",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local32-count31",
                       "initialValue":  null,
-                      "expectedValue":  545023543,
-                      "actualValue":  545023543,
+                      "expectedValue":  597133678,
+                      "actualValue":  597133678,
                       "elementCount":  31,
                       "localSize":  [
                                         32,
@@ -309,14 +309,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  992,
                       "moduleSha256":  "86a21c70389dce6c929f07d724bc590ae8471b3d26d4b1321802ce6981bf7ccf",
-                      "kernelSha256":  "91ae55fb52a45c321baab4d0c97b0e34b050c0c9853f92dd51adb319b2cf0d66",
+                      "kernelSha256":  "688a6896cddbd9f78ceee889eee04af657c8ce016c925d876615c4d86b7ab250",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local32-count32",
                       "initialValue":  null,
-                      "expectedValue":  3218531587,
-                      "actualValue":  3218531587,
+                      "expectedValue":  2368665117,
+                      "actualValue":  2368665117,
                       "elementCount":  32,
                       "localSize":  [
                                         32,
@@ -327,14 +327,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  991,
                       "moduleSha256":  "86a21c70389dce6c929f07d724bc590ae8471b3d26d4b1321802ce6981bf7ccf",
-                      "kernelSha256":  "91ae55fb52a45c321baab4d0c97b0e34b050c0c9853f92dd51adb319b2cf0d66",
+                      "kernelSha256":  "688a6896cddbd9f78ceee889eee04af657c8ce016c925d876615c4d86b7ab250",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local32-count33",
                       "initialValue":  null,
-                      "expectedValue":  699051279,
-                      "actualValue":  699051279,
+                      "expectedValue":  797484425,
+                      "actualValue":  797484425,
                       "elementCount":  33,
                       "localSize":  [
                                         32,
@@ -345,14 +345,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  990,
                       "moduleSha256":  "86a21c70389dce6c929f07d724bc590ae8471b3d26d4b1321802ce6981bf7ccf",
-                      "kernelSha256":  "91ae55fb52a45c321baab4d0c97b0e34b050c0c9853f92dd51adb319b2cf0d66",
+                      "kernelSha256":  "688a6896cddbd9f78ceee889eee04af657c8ce016c925d876615c4d86b7ab250",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local32-count257",
                       "initialValue":  null,
-                      "expectedValue":  659583631,
-                      "actualValue":  659583631,
+                      "expectedValue":  3551685554,
+                      "actualValue":  3551685554,
                       "elementCount":  257,
                       "localSize":  [
                                         32,
@@ -363,14 +363,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  766,
                       "moduleSha256":  "86a21c70389dce6c929f07d724bc590ae8471b3d26d4b1321802ce6981bf7ccf",
-                      "kernelSha256":  "91ae55fb52a45c321baab4d0c97b0e34b050c0c9853f92dd51adb319b2cf0d66",
+                      "kernelSha256":  "688a6896cddbd9f78ceee889eee04af657c8ce016c925d876615c4d86b7ab250",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local32-count16381",
                       "initialValue":  null,
-                      "expectedValue":  956716862,
-                      "actualValue":  956716862,
+                      "expectedValue":  2735052769,
+                      "actualValue":  2735052769,
                       "elementCount":  16381,
                       "localSize":  [
                                         32,
@@ -381,14 +381,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  1026,
                       "moduleSha256":  "86a21c70389dce6c929f07d724bc590ae8471b3d26d4b1321802ce6981bf7ccf",
-                      "kernelSha256":  "91ae55fb52a45c321baab4d0c97b0e34b050c0c9853f92dd51adb319b2cf0d66",
+                      "kernelSha256":  "688a6896cddbd9f78ceee889eee04af657c8ce016c925d876615c4d86b7ab250",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local64-count1",
                       "initialValue":  null,
-                      "expectedValue":  1658624574,
-                      "actualValue":  1658624574,
+                      "expectedValue":  3337569914,
+                      "actualValue":  3337569914,
                       "elementCount":  1,
                       "localSize":  [
                                         64,
@@ -399,14 +399,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  1022,
                       "moduleSha256":  "7c496d38dfef20b95717b2ac7c7ae1f73f7dbb269260c52598a047069da58eef",
-                      "kernelSha256":  "bfea4ea10a83f4a0251bd99ed896acc84d62398b6ed1b59e9e6b84f89ee49140",
+                      "kernelSha256":  "da17063073bf934ba137f3af7c9cc10b50c7f226a6a83a36ec179cfc521795ee",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local64-count63",
                       "initialValue":  null,
-                      "expectedValue":  1303673535,
-                      "actualValue":  1303673535,
+                      "expectedValue":  1313154752,
+                      "actualValue":  1313154752,
                       "elementCount":  63,
                       "localSize":  [
                                         64,
@@ -417,14 +417,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  960,
                       "moduleSha256":  "7c496d38dfef20b95717b2ac7c7ae1f73f7dbb269260c52598a047069da58eef",
-                      "kernelSha256":  "bfea4ea10a83f4a0251bd99ed896acc84d62398b6ed1b59e9e6b84f89ee49140",
+                      "kernelSha256":  "da17063073bf934ba137f3af7c9cc10b50c7f226a6a83a36ec179cfc521795ee",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local64-count64",
                       "initialValue":  null,
-                      "expectedValue":  4028031660,
-                      "actualValue":  4028031660,
+                      "expectedValue":  3697955637,
+                      "actualValue":  3697955637,
                       "elementCount":  64,
                       "localSize":  [
                                         64,
@@ -435,14 +435,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  959,
                       "moduleSha256":  "7c496d38dfef20b95717b2ac7c7ae1f73f7dbb269260c52598a047069da58eef",
-                      "kernelSha256":  "bfea4ea10a83f4a0251bd99ed896acc84d62398b6ed1b59e9e6b84f89ee49140",
+                      "kernelSha256":  "da17063073bf934ba137f3af7c9cc10b50c7f226a6a83a36ec179cfc521795ee",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local64-count65",
                       "initialValue":  null,
-                      "expectedValue":  2663605089,
-                      "actualValue":  2663605089,
+                      "expectedValue":  185076169,
+                      "actualValue":  185076169,
                       "elementCount":  65,
                       "localSize":  [
                                         64,
@@ -453,14 +453,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  958,
                       "moduleSha256":  "7c496d38dfef20b95717b2ac7c7ae1f73f7dbb269260c52598a047069da58eef",
-                      "kernelSha256":  "bfea4ea10a83f4a0251bd99ed896acc84d62398b6ed1b59e9e6b84f89ee49140",
+                      "kernelSha256":  "da17063073bf934ba137f3af7c9cc10b50c7f226a6a83a36ec179cfc521795ee",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local64-count257",
                       "initialValue":  null,
-                      "expectedValue":  400689670,
-                      "actualValue":  400689670,
+                      "expectedValue":  105365950,
+                      "actualValue":  105365950,
                       "elementCount":  257,
                       "localSize":  [
                                         64,
@@ -471,14 +471,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  766,
                       "moduleSha256":  "7c496d38dfef20b95717b2ac7c7ae1f73f7dbb269260c52598a047069da58eef",
-                      "kernelSha256":  "bfea4ea10a83f4a0251bd99ed896acc84d62398b6ed1b59e9e6b84f89ee49140",
+                      "kernelSha256":  "da17063073bf934ba137f3af7c9cc10b50c7f226a6a83a36ec179cfc521795ee",
                       "passed":  true
                   },
                   {
                       "name":  "xor32-local64-count16381",
                       "initialValue":  null,
-                      "expectedValue":  542317946,
-                      "actualValue":  542317946,
+                      "expectedValue":  3697445359,
+                      "actualValue":  3697445359,
                       "elementCount":  16381,
                       "localSize":  [
                                         64,
@@ -489,14 +489,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  1026,
                       "moduleSha256":  "7c496d38dfef20b95717b2ac7c7ae1f73f7dbb269260c52598a047069da58eef",
-                      "kernelSha256":  "bfea4ea10a83f4a0251bd99ed896acc84d62398b6ed1b59e9e6b84f89ee49140",
+                      "kernelSha256":  "da17063073bf934ba137f3af7c9cc10b50c7f226a6a83a36ec179cfc521795ee",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local7-count1",
                       "initialValue":  null,
-                      "expectedValue":  2528801892,
-                      "actualValue":  2528801892,
+                      "expectedValue":  3977212107,
+                      "actualValue":  3977212107,
                       "elementCount":  1,
                       "localSize":  [
                                         7,
@@ -507,14 +507,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1022,
                       "moduleSha256":  "7f2afb9c57eda825f84f429bd9e8bcf75ead0841ac036e92a4a7289eb06fa19e",
-                      "kernelSha256":  "b087060a2eeabce52e190ee7f2a66c68d156bb821cc1cb3d44530ae13c8c6fa1",
+                      "kernelSha256":  "e9dc5e8fc65d740988e2b036e06de2f248575770a3953f203ada4bc8e7a6bc64",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local7-count6",
                       "initialValue":  null,
-                      "expectedValue":  2795881722,
-                      "actualValue":  2795881722,
+                      "expectedValue":  1787981831,
+                      "actualValue":  1787981831,
                       "elementCount":  6,
                       "localSize":  [
                                         7,
@@ -525,14 +525,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1017,
                       "moduleSha256":  "7f2afb9c57eda825f84f429bd9e8bcf75ead0841ac036e92a4a7289eb06fa19e",
-                      "kernelSha256":  "b087060a2eeabce52e190ee7f2a66c68d156bb821cc1cb3d44530ae13c8c6fa1",
+                      "kernelSha256":  "e9dc5e8fc65d740988e2b036e06de2f248575770a3953f203ada4bc8e7a6bc64",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local7-count7",
                       "initialValue":  null,
-                      "expectedValue":  1235670726,
-                      "actualValue":  1235670726,
+                      "expectedValue":  1140233981,
+                      "actualValue":  1140233981,
                       "elementCount":  7,
                       "localSize":  [
                                         7,
@@ -543,14 +543,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1016,
                       "moduleSha256":  "7f2afb9c57eda825f84f429bd9e8bcf75ead0841ac036e92a4a7289eb06fa19e",
-                      "kernelSha256":  "b087060a2eeabce52e190ee7f2a66c68d156bb821cc1cb3d44530ae13c8c6fa1",
+                      "kernelSha256":  "e9dc5e8fc65d740988e2b036e06de2f248575770a3953f203ada4bc8e7a6bc64",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local7-count8",
                       "initialValue":  null,
-                      "expectedValue":  570570343,
-                      "actualValue":  570570343,
+                      "expectedValue":  1858430924,
+                      "actualValue":  1858430924,
                       "elementCount":  8,
                       "localSize":  [
                                         7,
@@ -561,14 +561,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1015,
                       "moduleSha256":  "7f2afb9c57eda825f84f429bd9e8bcf75ead0841ac036e92a4a7289eb06fa19e",
-                      "kernelSha256":  "b087060a2eeabce52e190ee7f2a66c68d156bb821cc1cb3d44530ae13c8c6fa1",
+                      "kernelSha256":  "e9dc5e8fc65d740988e2b036e06de2f248575770a3953f203ada4bc8e7a6bc64",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local7-count257",
                       "initialValue":  null,
-                      "expectedValue":  1937414855,
-                      "actualValue":  1937414855,
+                      "expectedValue":  1517302681,
+                      "actualValue":  1517302681,
                       "elementCount":  257,
                       "localSize":  [
                                         7,
@@ -579,14 +579,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  766,
                       "moduleSha256":  "7f2afb9c57eda825f84f429bd9e8bcf75ead0841ac036e92a4a7289eb06fa19e",
-                      "kernelSha256":  "b087060a2eeabce52e190ee7f2a66c68d156bb821cc1cb3d44530ae13c8c6fa1",
+                      "kernelSha256":  "e9dc5e8fc65d740988e2b036e06de2f248575770a3953f203ada4bc8e7a6bc64",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local7-count16381",
                       "initialValue":  null,
-                      "expectedValue":  3733933555,
-                      "actualValue":  3733933555,
+                      "expectedValue":  3665771539,
+                      "actualValue":  3665771539,
                       "elementCount":  16381,
                       "localSize":  [
                                         7,
@@ -597,14 +597,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1026,
                       "moduleSha256":  "7f2afb9c57eda825f84f429bd9e8bcf75ead0841ac036e92a4a7289eb06fa19e",
-                      "kernelSha256":  "b087060a2eeabce52e190ee7f2a66c68d156bb821cc1cb3d44530ae13c8c6fa1",
+                      "kernelSha256":  "e9dc5e8fc65d740988e2b036e06de2f248575770a3953f203ada4bc8e7a6bc64",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local32-count1",
                       "initialValue":  null,
-                      "expectedValue":  1730431188,
-                      "actualValue":  1730431188,
+                      "expectedValue":  2251555884,
+                      "actualValue":  2251555884,
                       "elementCount":  1,
                       "localSize":  [
                                         32,
@@ -615,14 +615,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  1022,
                       "moduleSha256":  "2cc140af6d2ff0d1d0c5828b5566a2367bc0ec87a17f276d2ff54dca7ea69f3d",
-                      "kernelSha256":  "32a95893a6f940d0ebe1d0f5fcea6c4c9da5aa25578b43c6757fa23346facd03",
+                      "kernelSha256":  "4df06fb179e8a459f1436945d3916628c2f374e7452f98f663f0c5b52c25f6a9",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local32-count31",
                       "initialValue":  null,
-                      "expectedValue":  2561523072,
-                      "actualValue":  2561523072,
+                      "expectedValue":  450918076,
+                      "actualValue":  450918076,
                       "elementCount":  31,
                       "localSize":  [
                                         32,
@@ -633,14 +633,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  992,
                       "moduleSha256":  "2cc140af6d2ff0d1d0c5828b5566a2367bc0ec87a17f276d2ff54dca7ea69f3d",
-                      "kernelSha256":  "32a95893a6f940d0ebe1d0f5fcea6c4c9da5aa25578b43c6757fa23346facd03",
+                      "kernelSha256":  "4df06fb179e8a459f1436945d3916628c2f374e7452f98f663f0c5b52c25f6a9",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local32-count32",
                       "initialValue":  null,
-                      "expectedValue":  3646099513,
-                      "actualValue":  3646099513,
+                      "expectedValue":  17285027,
+                      "actualValue":  17285027,
                       "elementCount":  32,
                       "localSize":  [
                                         32,
@@ -651,14 +651,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  991,
                       "moduleSha256":  "2cc140af6d2ff0d1d0c5828b5566a2367bc0ec87a17f276d2ff54dca7ea69f3d",
-                      "kernelSha256":  "32a95893a6f940d0ebe1d0f5fcea6c4c9da5aa25578b43c6757fa23346facd03",
+                      "kernelSha256":  "4df06fb179e8a459f1436945d3916628c2f374e7452f98f663f0c5b52c25f6a9",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local32-count33",
                       "initialValue":  null,
-                      "expectedValue":  2577754880,
-                      "actualValue":  2577754880,
+                      "expectedValue":  2134892874,
+                      "actualValue":  2134892874,
                       "elementCount":  33,
                       "localSize":  [
                                         32,
@@ -669,14 +669,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  990,
                       "moduleSha256":  "2cc140af6d2ff0d1d0c5828b5566a2367bc0ec87a17f276d2ff54dca7ea69f3d",
-                      "kernelSha256":  "32a95893a6f940d0ebe1d0f5fcea6c4c9da5aa25578b43c6757fa23346facd03",
+                      "kernelSha256":  "4df06fb179e8a459f1436945d3916628c2f374e7452f98f663f0c5b52c25f6a9",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local32-count257",
                       "initialValue":  null,
-                      "expectedValue":  2586110868,
-                      "actualValue":  2586110868,
+                      "expectedValue":  3592664829,
+                      "actualValue":  3592664829,
                       "elementCount":  257,
                       "localSize":  [
                                         32,
@@ -687,14 +687,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  766,
                       "moduleSha256":  "2cc140af6d2ff0d1d0c5828b5566a2367bc0ec87a17f276d2ff54dca7ea69f3d",
-                      "kernelSha256":  "32a95893a6f940d0ebe1d0f5fcea6c4c9da5aa25578b43c6757fa23346facd03",
+                      "kernelSha256":  "4df06fb179e8a459f1436945d3916628c2f374e7452f98f663f0c5b52c25f6a9",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local32-count16381",
                       "initialValue":  null,
-                      "expectedValue":  4218866001,
-                      "actualValue":  4218866001,
+                      "expectedValue":  4256923952,
+                      "actualValue":  4256923952,
                       "elementCount":  16381,
                       "localSize":  [
                                         32,
@@ -705,14 +705,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  1026,
                       "moduleSha256":  "2cc140af6d2ff0d1d0c5828b5566a2367bc0ec87a17f276d2ff54dca7ea69f3d",
-                      "kernelSha256":  "32a95893a6f940d0ebe1d0f5fcea6c4c9da5aa25578b43c6757fa23346facd03",
+                      "kernelSha256":  "4df06fb179e8a459f1436945d3916628c2f374e7452f98f663f0c5b52c25f6a9",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local64-count1",
                       "initialValue":  null,
-                      "expectedValue":  564732656,
-                      "actualValue":  564732656,
+                      "expectedValue":  1503644717,
+                      "actualValue":  1503644717,
                       "elementCount":  1,
                       "localSize":  [
                                         64,
@@ -723,14 +723,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  1022,
                       "moduleSha256":  "35649f2755444197fb1598ca4afd109788afba3a0b0aa45939b6a21064b47bd1",
-                      "kernelSha256":  "f1feb4994c2058b0b03df81650ab450cdc2829f3fefdaab03f5c34dfbde9e4cc",
+                      "kernelSha256":  "033f794cb4f455fbd08e456691229a60020e46a12064f73b1341870cd433f3c0",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local64-count63",
                       "initialValue":  null,
-                      "expectedValue":  3402734320,
-                      "actualValue":  3402734320,
+                      "expectedValue":  1301591973,
+                      "actualValue":  1301591973,
                       "elementCount":  63,
                       "localSize":  [
                                         64,
@@ -741,14 +741,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  960,
                       "moduleSha256":  "35649f2755444197fb1598ca4afd109788afba3a0b0aa45939b6a21064b47bd1",
-                      "kernelSha256":  "f1feb4994c2058b0b03df81650ab450cdc2829f3fefdaab03f5c34dfbde9e4cc",
+                      "kernelSha256":  "033f794cb4f455fbd08e456691229a60020e46a12064f73b1341870cd433f3c0",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local64-count64",
                       "initialValue":  null,
-                      "expectedValue":  115034828,
-                      "actualValue":  115034828,
+                      "expectedValue":  371480593,
+                      "actualValue":  371480593,
                       "elementCount":  64,
                       "localSize":  [
                                         64,
@@ -759,14 +759,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  959,
                       "moduleSha256":  "35649f2755444197fb1598ca4afd109788afba3a0b0aa45939b6a21064b47bd1",
-                      "kernelSha256":  "f1feb4994c2058b0b03df81650ab450cdc2829f3fefdaab03f5c34dfbde9e4cc",
+                      "kernelSha256":  "033f794cb4f455fbd08e456691229a60020e46a12064f73b1341870cd433f3c0",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local64-count65",
                       "initialValue":  null,
-                      "expectedValue":  13018649,
-                      "actualValue":  13018649,
+                      "expectedValue":  2447651522,
+                      "actualValue":  2447651522,
                       "elementCount":  65,
                       "localSize":  [
                                         64,
@@ -777,14 +777,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  958,
                       "moduleSha256":  "35649f2755444197fb1598ca4afd109788afba3a0b0aa45939b6a21064b47bd1",
-                      "kernelSha256":  "f1feb4994c2058b0b03df81650ab450cdc2829f3fefdaab03f5c34dfbde9e4cc",
+                      "kernelSha256":  "033f794cb4f455fbd08e456691229a60020e46a12064f73b1341870cd433f3c0",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local64-count257",
                       "initialValue":  null,
-                      "expectedValue":  1305331933,
-                      "actualValue":  1305331933,
+                      "expectedValue":  2418981716,
+                      "actualValue":  2418981716,
                       "elementCount":  257,
                       "localSize":  [
                                         64,
@@ -795,14 +795,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  766,
                       "moduleSha256":  "35649f2755444197fb1598ca4afd109788afba3a0b0aa45939b6a21064b47bd1",
-                      "kernelSha256":  "f1feb4994c2058b0b03df81650ab450cdc2829f3fefdaab03f5c34dfbde9e4cc",
+                      "kernelSha256":  "033f794cb4f455fbd08e456691229a60020e46a12064f73b1341870cd433f3c0",
                       "passed":  true
                   },
                   {
                       "name":  "lcg32-local64-count16381",
                       "initialValue":  null,
-                      "expectedValue":  704581006,
-                      "actualValue":  704581006,
+                      "expectedValue":  2989563267,
+                      "actualValue":  2989563267,
                       "elementCount":  16381,
                       "localSize":  [
                                         64,
@@ -813,14 +813,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  1026,
                       "moduleSha256":  "35649f2755444197fb1598ca4afd109788afba3a0b0aa45939b6a21064b47bd1",
-                      "kernelSha256":  "f1feb4994c2058b0b03df81650ab450cdc2829f3fefdaab03f5c34dfbde9e4cc",
+                      "kernelSha256":  "033f794cb4f455fbd08e456691229a60020e46a12064f73b1341870cd433f3c0",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local7-count1",
                       "initialValue":  null,
-                      "expectedValue":  3571919544,
-                      "actualValue":  3571919544,
+                      "expectedValue":  3844784594,
+                      "actualValue":  3844784594,
                       "elementCount":  1,
                       "localSize":  [
                                         7,
@@ -831,14 +831,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1022,
                       "moduleSha256":  "379458ed000b0bd4370520060a595a4a77b5f91343e536b2fb096779e694a7cb",
-                      "kernelSha256":  "64e96e143b0d643042b0dfdcee00a88e87774e0b84ca7bf0b39e6adf276d76f8",
+                      "kernelSha256":  "87d92629a224017b1c0b60bb49f985ebb3e046dc04053466da35b03dbdd6311f",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local7-count6",
                       "initialValue":  null,
-                      "expectedValue":  2258440874,
-                      "actualValue":  2258440874,
+                      "expectedValue":  3946584276,
+                      "actualValue":  3946584276,
                       "elementCount":  6,
                       "localSize":  [
                                         7,
@@ -849,14 +849,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1017,
                       "moduleSha256":  "379458ed000b0bd4370520060a595a4a77b5f91343e536b2fb096779e694a7cb",
-                      "kernelSha256":  "64e96e143b0d643042b0dfdcee00a88e87774e0b84ca7bf0b39e6adf276d76f8",
+                      "kernelSha256":  "87d92629a224017b1c0b60bb49f985ebb3e046dc04053466da35b03dbdd6311f",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local7-count7",
                       "initialValue":  null,
-                      "expectedValue":  1179280369,
-                      "actualValue":  1179280369,
+                      "expectedValue":  3117657795,
+                      "actualValue":  3117657795,
                       "elementCount":  7,
                       "localSize":  [
                                         7,
@@ -867,14 +867,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1016,
                       "moduleSha256":  "379458ed000b0bd4370520060a595a4a77b5f91343e536b2fb096779e694a7cb",
-                      "kernelSha256":  "64e96e143b0d643042b0dfdcee00a88e87774e0b84ca7bf0b39e6adf276d76f8",
+                      "kernelSha256":  "87d92629a224017b1c0b60bb49f985ebb3e046dc04053466da35b03dbdd6311f",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local7-count8",
                       "initialValue":  null,
-                      "expectedValue":  3711524401,
-                      "actualValue":  3711524401,
+                      "expectedValue":  677391264,
+                      "actualValue":  677391264,
                       "elementCount":  8,
                       "localSize":  [
                                         7,
@@ -885,14 +885,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1015,
                       "moduleSha256":  "379458ed000b0bd4370520060a595a4a77b5f91343e536b2fb096779e694a7cb",
-                      "kernelSha256":  "64e96e143b0d643042b0dfdcee00a88e87774e0b84ca7bf0b39e6adf276d76f8",
+                      "kernelSha256":  "87d92629a224017b1c0b60bb49f985ebb3e046dc04053466da35b03dbdd6311f",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local7-count257",
                       "initialValue":  null,
-                      "expectedValue":  1360216034,
-                      "actualValue":  1360216034,
+                      "expectedValue":  3556837914,
+                      "actualValue":  3556837914,
                       "elementCount":  257,
                       "localSize":  [
                                         7,
@@ -903,14 +903,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  766,
                       "moduleSha256":  "379458ed000b0bd4370520060a595a4a77b5f91343e536b2fb096779e694a7cb",
-                      "kernelSha256":  "64e96e143b0d643042b0dfdcee00a88e87774e0b84ca7bf0b39e6adf276d76f8",
+                      "kernelSha256":  "87d92629a224017b1c0b60bb49f985ebb3e046dc04053466da35b03dbdd6311f",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local7-count16381",
                       "initialValue":  null,
-                      "expectedValue":  3153062705,
-                      "actualValue":  3153062705,
+                      "expectedValue":  2121207873,
+                      "actualValue":  2121207873,
                       "elementCount":  16381,
                       "localSize":  [
                                         7,
@@ -921,14 +921,14 @@
                       "simdWidth":  8,
                       "guardWordsVerified":  1026,
                       "moduleSha256":  "379458ed000b0bd4370520060a595a4a77b5f91343e536b2fb096779e694a7cb",
-                      "kernelSha256":  "64e96e143b0d643042b0dfdcee00a88e87774e0b84ca7bf0b39e6adf276d76f8",
+                      "kernelSha256":  "87d92629a224017b1c0b60bb49f985ebb3e046dc04053466da35b03dbdd6311f",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local32-count1",
                       "initialValue":  null,
-                      "expectedValue":  1271585668,
-                      "actualValue":  1271585668,
+                      "expectedValue":  196191872,
+                      "actualValue":  196191872,
                       "elementCount":  1,
                       "localSize":  [
                                         32,
@@ -939,14 +939,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  1022,
                       "moduleSha256":  "4a21835b02e392923d04e390c124c632cc823daa7898e3b3be3ae7dc598a6ad8",
-                      "kernelSha256":  "c70dcff2fcfe3b372219011f5ec28586c5f738bd1ce4f5a6d15a0275f923b2de",
+                      "kernelSha256":  "06d168038f8b9092f9fe90893b88d55cadf09aea00b84f324b07f4268b2af195",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local32-count31",
                       "initialValue":  null,
-                      "expectedValue":  3249003618,
-                      "actualValue":  3249003618,
+                      "expectedValue":  934998574,
+                      "actualValue":  934998574,
                       "elementCount":  31,
                       "localSize":  [
                                         32,
@@ -957,14 +957,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  992,
                       "moduleSha256":  "4a21835b02e392923d04e390c124c632cc823daa7898e3b3be3ae7dc598a6ad8",
-                      "kernelSha256":  "c70dcff2fcfe3b372219011f5ec28586c5f738bd1ce4f5a6d15a0275f923b2de",
+                      "kernelSha256":  "06d168038f8b9092f9fe90893b88d55cadf09aea00b84f324b07f4268b2af195",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local32-count32",
                       "initialValue":  null,
-                      "expectedValue":  2381980198,
-                      "actualValue":  2381980198,
+                      "expectedValue":  2169100254,
+                      "actualValue":  2169100254,
                       "elementCount":  32,
                       "localSize":  [
                                         32,
@@ -975,14 +975,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  991,
                       "moduleSha256":  "4a21835b02e392923d04e390c124c632cc823daa7898e3b3be3ae7dc598a6ad8",
-                      "kernelSha256":  "c70dcff2fcfe3b372219011f5ec28586c5f738bd1ce4f5a6d15a0275f923b2de",
+                      "kernelSha256":  "06d168038f8b9092f9fe90893b88d55cadf09aea00b84f324b07f4268b2af195",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local32-count33",
                       "initialValue":  null,
-                      "expectedValue":  1871340516,
-                      "actualValue":  1871340516,
+                      "expectedValue":  2373315849,
+                      "actualValue":  2373315849,
                       "elementCount":  33,
                       "localSize":  [
                                         32,
@@ -993,14 +993,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  990,
                       "moduleSha256":  "4a21835b02e392923d04e390c124c632cc823daa7898e3b3be3ae7dc598a6ad8",
-                      "kernelSha256":  "c70dcff2fcfe3b372219011f5ec28586c5f738bd1ce4f5a6d15a0275f923b2de",
+                      "kernelSha256":  "06d168038f8b9092f9fe90893b88d55cadf09aea00b84f324b07f4268b2af195",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local32-count257",
                       "initialValue":  null,
-                      "expectedValue":  3305372803,
-                      "actualValue":  3305372803,
+                      "expectedValue":  3410034211,
+                      "actualValue":  3410034211,
                       "elementCount":  257,
                       "localSize":  [
                                         32,
@@ -1011,14 +1011,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  766,
                       "moduleSha256":  "4a21835b02e392923d04e390c124c632cc823daa7898e3b3be3ae7dc598a6ad8",
-                      "kernelSha256":  "c70dcff2fcfe3b372219011f5ec28586c5f738bd1ce4f5a6d15a0275f923b2de",
+                      "kernelSha256":  "06d168038f8b9092f9fe90893b88d55cadf09aea00b84f324b07f4268b2af195",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local32-count16381",
                       "initialValue":  null,
-                      "expectedValue":  4265114532,
-                      "actualValue":  4265114532,
+                      "expectedValue":  3714564524,
+                      "actualValue":  3714564524,
                       "elementCount":  16381,
                       "localSize":  [
                                         32,
@@ -1029,14 +1029,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  1026,
                       "moduleSha256":  "4a21835b02e392923d04e390c124c632cc823daa7898e3b3be3ae7dc598a6ad8",
-                      "kernelSha256":  "c70dcff2fcfe3b372219011f5ec28586c5f738bd1ce4f5a6d15a0275f923b2de",
+                      "kernelSha256":  "06d168038f8b9092f9fe90893b88d55cadf09aea00b84f324b07f4268b2af195",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local64-count1",
                       "initialValue":  null,
-                      "expectedValue":  1989831,
-                      "actualValue":  1989831,
+                      "expectedValue":  136563980,
+                      "actualValue":  136563980,
                       "elementCount":  1,
                       "localSize":  [
                                         64,
@@ -1047,14 +1047,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  1022,
                       "moduleSha256":  "6ef30d603512390d7db809a65ea07b1eaec7fe454a6852fa5c64defbf58bf173",
-                      "kernelSha256":  "13983d33aea90569caaabf8511cc881818b55f8bb536a6142715ada2abe8ae1f",
+                      "kernelSha256":  "6b75e5d8ab93a9823bab3eabe654454e773beef71b7911969bd117601f74c08a",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local64-count63",
                       "initialValue":  null,
-                      "expectedValue":  1446050116,
-                      "actualValue":  1446050116,
+                      "expectedValue":  1081586246,
+                      "actualValue":  1081586246,
                       "elementCount":  63,
                       "localSize":  [
                                         64,
@@ -1065,14 +1065,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  960,
                       "moduleSha256":  "6ef30d603512390d7db809a65ea07b1eaec7fe454a6852fa5c64defbf58bf173",
-                      "kernelSha256":  "13983d33aea90569caaabf8511cc881818b55f8bb536a6142715ada2abe8ae1f",
+                      "kernelSha256":  "6b75e5d8ab93a9823bab3eabe654454e773beef71b7911969bd117601f74c08a",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local64-count64",
                       "initialValue":  null,
-                      "expectedValue":  2307528990,
-                      "actualValue":  2307528990,
+                      "expectedValue":  3511621595,
+                      "actualValue":  3511621595,
                       "elementCount":  64,
                       "localSize":  [
                                         64,
@@ -1083,14 +1083,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  959,
                       "moduleSha256":  "6ef30d603512390d7db809a65ea07b1eaec7fe454a6852fa5c64defbf58bf173",
-                      "kernelSha256":  "13983d33aea90569caaabf8511cc881818b55f8bb536a6142715ada2abe8ae1f",
+                      "kernelSha256":  "6b75e5d8ab93a9823bab3eabe654454e773beef71b7911969bd117601f74c08a",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local64-count65",
                       "initialValue":  null,
-                      "expectedValue":  3728909976,
-                      "actualValue":  3728909976,
+                      "expectedValue":  1116307321,
+                      "actualValue":  1116307321,
                       "elementCount":  65,
                       "localSize":  [
                                         64,
@@ -1101,14 +1101,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  958,
                       "moduleSha256":  "6ef30d603512390d7db809a65ea07b1eaec7fe454a6852fa5c64defbf58bf173",
-                      "kernelSha256":  "13983d33aea90569caaabf8511cc881818b55f8bb536a6142715ada2abe8ae1f",
+                      "kernelSha256":  "6b75e5d8ab93a9823bab3eabe654454e773beef71b7911969bd117601f74c08a",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local64-count257",
                       "initialValue":  null,
-                      "expectedValue":  3917937870,
-                      "actualValue":  3917937870,
+                      "expectedValue":  1419656252,
+                      "actualValue":  1419656252,
                       "elementCount":  257,
                       "localSize":  [
                                         64,
@@ -1119,14 +1119,14 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  766,
                       "moduleSha256":  "6ef30d603512390d7db809a65ea07b1eaec7fe454a6852fa5c64defbf58bf173",
-                      "kernelSha256":  "13983d33aea90569caaabf8511cc881818b55f8bb536a6142715ada2abe8ae1f",
+                      "kernelSha256":  "6b75e5d8ab93a9823bab3eabe654454e773beef71b7911969bd117601f74c08a",
                       "passed":  true
                   },
                   {
                       "name":  "mix32-local64-count16381",
                       "initialValue":  null,
-                      "expectedValue":  1860694494,
-                      "actualValue":  1860694494,
+                      "expectedValue":  1850027901,
+                      "actualValue":  1850027901,
                       "elementCount":  16381,
                       "localSize":  [
                                         64,
@@ -1137,7 +1137,7 @@
                       "simdWidth":  16,
                       "guardWordsVerified":  1026,
                       "moduleSha256":  "6ef30d603512390d7db809a65ea07b1eaec7fe454a6852fa5c64defbf58bf173",
-                      "kernelSha256":  "13983d33aea90569caaabf8511cc881818b55f8bb536a6142715ada2abe8ae1f",
+                      "kernelSha256":  "6b75e5d8ab93a9823bab3eabe654454e773beef71b7911969bd117601f74c08a",
                       "passed":  true
                   }
               ],

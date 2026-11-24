@@ -29,6 +29,9 @@ names = {
     'src/intel/compiler/elk/elk_eu_validate.c',
     'src/intel/compiler/elk/elk_fs_bank_conflicts.cpp',
     'src/intel/compiler/elk/elk_fs.cpp',
+    'src/intel/compiler/elk/elk_fs_reg_allocate.cpp',
+    'src/util/register_allocate.c', 'src/util/register_allocate.h', 'src/util/register_allocate_internal.h',
+    'src/compiler/spirv/spirv_to_nir.c', 'src/compiler/spirv/vtn_alu.c', 'src/intel/compiler/elk/elk_fs_nir.cpp',
     'src/intel/mda/debug_archiver.c',
     'src/intel/compiler/elk/elk_eu_defines.h',
     'src/intel/compiler/elk/elk_reg_type.h',
@@ -1435,6 +1438,153 @@ edit("src/intel/compiler/elk/elk_fs_bank_conflicts.cpp", [
 edit("src/intel/compiler/elk/elk_fs.cpp", [
     ('#include "util/u_math.h"', '#include "util/u_math.h"\n#include "util/u_string.h"'),
 ])
+# Where registers go, for three-source instructions (see the bank conflicts
+# above): a scalar source stays in one register while a SIMD16 vector takes two
+# of opposite parity, so one half of the instruction conflicts whatever the
+# parities are, unless the scalar and the vector are in different halves of
+# the register file. The allocator spread the vectors over g7..g113 (round
+# robin), half of them next to the constants. Intel's compiler keeps the
+# vectors in g64..g127 and the scalars below; the allocator now searches the
+# upper half first for every value and the lower half first for the scalars
+# that three-source instructions read. The round robin goes on inside a half.
+edit('src/util/register_allocate_internal.h', [
+    ('''   /* Register, if assigned, or NO_REG. */
+   unsigned int reg;
+''', '''   /* Register, if assigned, or NO_REG. */
+   unsigned int reg;
+
+   /** Half of the register set that ra_select() searches first (enum ra_half). */
+   unsigned int half;
+'''),
+])
+edit('src/util/register_allocate.h', [
+    ('''void ra_set_node_class(struct ra_graph *g, unsigned int n, struct ra_class *c);
+''', '''void ra_set_node_class(struct ra_graph *g, unsigned int n, struct ra_class *c);
+
+/** The half of the register set in which a register for a node is looked for
+ * first; the other half is searched when that one has none.
+ */
+enum ra_half { RA_HALF_ANY, RA_HALF_LOWER, RA_HALF_UPPER };
+void ra_set_node_half(struct ra_graph *g, unsigned int n, enum ra_half half);
+'''),
+])
+edit('src/util/register_allocate.c', [
+    ('''struct ra_class *
+ra_get_node_class(struct ra_graph *g,
+''', '''void
+ra_set_node_half(struct ra_graph *g, unsigned int n, enum ra_half half)
+{
+   g->nodes[n].half = half;
+}
+
+struct ra_class *
+ra_get_node_class(struct ra_graph *g,
+'''),
+    ('''         for (ri = 0; ri < g->regs->count; ri++) {
+            r = (start_search_reg + ri) % g->regs->count;
+            if (!reg_belongs_to_class(r, c))
+''', '''         const unsigned half = g->regs->count / 2;
+         const unsigned prefer = g->nodes[n].half;
+
+         for (ri = 0; ri < g->regs->count; ri++) {
+            if (prefer) {
+               /* The preferred half, then the other one, both from the
+                * rotating start.
+                */
+               const bool upper = (prefer == RA_HALF_UPPER) != (ri >= half);
+               r = (upper ? half : 0) + (start_search_reg + ri) % half;
+            } else {
+               r = (start_search_reg + ri) % g->regs->count;
+            }
+            if (!reg_belongs_to_class(r, c))
+'''),
+    ('''               assert(conflicting_end >= r);
+               ri += conflicting_end - r;
+''', '''               assert(conflicting_end >= r);
+               unsigned skip = conflicting_end - r;
+               if (prefer) {
+                  /* Not past the end of the half, where the order wraps. */
+                  skip = MIN2(skip, half - 1 - (start_search_reg + ri) % half);
+                  skip = MIN2(skip, half - 1 - ri % half);
+               }
+               ri += skip;
+'''),
+])
+edit('src/intel/compiler/elk/elk_fs_reg_allocate.cpp', [
+    ('''   /* Add interference based on the live range of the register */
+''', '''   /* Vectors in the upper half of the register file, the scalars read by
+    * three-source instructions in the lower one: such an instruction loses
+    * a cycle for every SIMD8 half in which two sources come from one bank,
+    * and a scalar against a SIMD16 vector conflicts in one half wherever
+    * the two are, unless they are in different halves of the file
+    * (elk_fs_bank_conflicts.cpp).
+    */
+   for (unsigned i = 0; i < fs->alloc.count; i++)
+      ra_set_node_half(g, first_vgrf_node + i, RA_HALF_UPPER);
+
+   foreach_block_and_inst(block, elk_fs_inst, inst, fs->cfg) {
+      if (!inst->elk_is_3src(compiler))
+         continue;
+
+      for (unsigned i = 0; i < 3; i++) {
+         if (inst->src[i].file == VGRF && inst->src[i].stride == 0)
+            ra_set_node_half(g, first_vgrf_node + inst->src[i].nr, RA_HALF_LOWER);
+      }
+   }
+
+   /* Add interference based on the live range of the register */
+'''),
+])
+# A discard on a float comparison ("if (alpha < 0.5) discard", every alpha
+# test) took two compares: the comparison into a register and a test of that
+# register for zero, because the negated comparison in one instruction
+# discards a NaN that the original keeps. Vulkan lets a shader's NaNs be
+# ignored unless the module asks for them (SignedZeroInfNanPreserve,
+# FPFastMathDefault or FPFastMathMode without NotNaN, OpenCL kernels); the
+# module's wish is recorded (FLOAT_CONTROLS_NAN_PRESERVE; the comparison's own
+# fp_math_ctrl always says "preserve", spirv_to_nir sets that for every ordered
+# comparison) and without it the discard is one compare, as in the kernels of
+# Intel's Windows driver. The fixed cost of a pixel with a discard in a depth
+# pass (native/tests/depth_fill_kill.frag) was 0.87 of that driver's.
+edit('src/compiler/spirv/spirv_to_nir.c', [
+    ('''      *vtn_fp_math_ctrl_for_base_type(b, GLSL_TYPE_DOUBLE) |= nir_fp_preserve_sz_inf_nan;
+''', '''      *vtn_fp_math_ctrl_for_base_type(b, GLSL_TYPE_DOUBLE) |= nir_fp_preserve_sz_inf_nan;
+      b->shader->info.float_controls_execution_mode |= FLOAT_CONTROLS_NAN_PRESERVE;
+'''),
+    ('''      *fp_math_ctrl |= nir_fp_preserve_sz_inf_nan;
+      break;
+''', '''      *fp_math_ctrl |= nir_fp_preserve_sz_inf_nan;
+      b->shader->info.float_controls_execution_mode |= FLOAT_CONTROLS_NAN_PRESERVE;
+      break;
+'''),
+    ('''      if (!(flags & SpvFPFastMathModeNotNaNMask))
+         *fp_math_ctrl |= nir_fp_preserve_nan;
+''', '''      if (!(flags & SpvFPFastMathModeNotNaNMask)) {
+         *fp_math_ctrl |= nir_fp_preserve_nan;
+         b->shader->info.float_controls_execution_mode |= FLOAT_CONTROLS_NAN_PRESERVE;
+      }
+'''),
+])
+edit('src/compiler/spirv/vtn_alu.c', [
+    ('''   if (!(dec->operands[0] & SpvFPFastMathModeNotNaNMask))
+      b->nb.fp_math_ctrl |= nir_fp_preserve_nan;
+''', '''   if (!(dec->operands[0] & SpvFPFastMathModeNotNaNMask)) {
+      b->nb.fp_math_ctrl |= nir_fp_preserve_nan;
+      b->shader->info.float_controls_execution_mode |= FLOAT_CONTROLS_NAN_PRESERVE;
+   }
+'''),
+])
+edit('src/intel/compiler/elk/elk_fs_nir.cpp', [
+    ('''               if (elk_type_is_float(cmp->src[0].type) &&
+                   cmp->conditional_mod != ELK_CONDITIONAL_EQ &&
+                   cmp->conditional_mod != ELK_CONDITIONAL_NEQ) {
+''', '''               if (elk_type_is_float(cmp->src[0].type) &&
+                   cmp->conditional_mod != ELK_CONDITIONAL_EQ &&
+                   cmp->conditional_mod != ELK_CONDITIONAL_NEQ &&
+                   (s.nir->info.float_controls_execution_mode &
+                    FLOAT_CONTROLS_NAN_PRESERVE)) {
+'''),
+])
 # Constants that an instruction cannot take as an immediate (every MAD source,
 # for one) are loaded into a register by a MOV. Upstream puts that MOV before
 # the first use, or into the common dominator of the uses; for uses inside a
@@ -1692,6 +1842,12 @@ for name, enum_names in {
 # with it: DERIVATIVE_GROUP_LINEAR and SHADER_INFO_HASH_TYPE_DXBC (2, two
 # bits), FRAG_STENCIL_LAYOUT_UNCHANGED (4, three bits).
 edit("src/compiler/shader_enums.h", [
+    # FLOAT_CONTROLS_NAN_PRESERVE: see the discard edit of elk_fs_nir.cpp above.
+    ('''   FLOAT_CONTROLS_ROUNDING_MODE_RTZ_FP64     = BITFIELD_BIT(11),
+''', '''   FLOAT_CONTROLS_ROUNDING_MODE_RTZ_FP64     = BITFIELD_BIT(11),
+   /* The module asks for NaNs to be preserved, for any float type. */
+   FLOAT_CONTROLS_NAN_PRESERVE               = BITFIELD_BIT(12),
+'''),
     ('#ifndef SHADER_ENUMS_H\n#define SHADER_ENUMS_H\n', '''#ifndef SHADER_ENUMS_H
 #define SHADER_ENUMS_H
 

@@ -1,9 +1,10 @@
 /* depth_fill_probe's load on Intel's own D3D11 driver: D16 1536x1536,
  * <layers> full-screen triangles back to front. Pixel shader: none, empty,
- * or an alpha test (one sample + discard).
+ * an alpha test (one sample + discard), or arithmetic only (light, mad, kill:
+ * the HLSL of depth_fill_light.frag, depth_fill_mad.frag, depth_fill_kill.frag).
  * [order] 1 = front to back (only the first layer passes); PS invocations
  * are reported (pipeline statistics).
- * Usage: d3d11_depth_fill_probe.exe none|empty|discard [reps] [layers] [order] */
+ * Usage: d3d11_depth_fill_probe.exe none|empty|discard|light|mad|kill [reps] [layers] [order] */
 #define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
@@ -36,6 +37,36 @@ void main(float4 pos : SV_Position, float2 uv : TEXCOORD0)
 }
 )";
 
+static const char kLight[] = R"(
+void main(float4 pos : SV_Position, float2 uv : TEXCOORD0)
+{
+   float3 n = normalize(float3(uv * 2.0 - 1.0, 0.37));
+   const float3 l = float3(0.3, 0.61, 0.73);
+   float d = max(dot(n, l), 0.0);
+   float3 h = normalize(l + float3(uv.y, uv.x, 1.0));
+   float s = pow(max(dot(n, h), 0.0), 16.0);
+   float3 c = float3(0.2, 0.3, 0.4) * d + s;
+   c = c * (1.0 - uv.x * 0.1) + uv.y * 0.05;
+   if (c.x + c.y + c.z < -1.0) discard;
+}
+)";
+static const char kKill[] = R"(
+void main(float4 pos : SV_Position, float2 uv : TEXCOORD0)
+{
+   if (uv.x < -1.0) discard;
+}
+)";
+static const char kMad[] = R"(
+void main(float4 pos : SV_Position, float2 uv : TEXCOORD0)
+{
+   float a = uv.x, b = uv.y, c = uv.x * 0.37, d = uv.y * 0.61;
+   for (int i = 0; i < 16; ++i) {
+      a = a * 0.9999 + b; b = b * 0.9998 + c; c = c * 0.9997 + d; d = d * 0.9996 + a * 0.0001;
+   }
+   if (a + b + c + d < -1.0) discard;
+}
+)";
+
 #define CHECK(x) do { HRESULT h_ = (x); if (FAILED(h_)) { printf("%s = 0x%08lx\n", #x, (unsigned long)h_); return 1; } } while (0)
 
 static ID3DBlob *compile(const char *src, const char *target)
@@ -58,7 +89,7 @@ int main(int argc, char **argv)
    ID3D11VertexShader *vs; CHECK(dev->CreateVertexShader(vsb->GetBufferPointer(), vsb->GetBufferSize(), nullptr, &vs));
    ID3D11PixelShader *pixel = nullptr;
    if (strcmp(mode, "none")) {
-      ID3DBlob *psb = compile(strcmp(mode, "empty") ? kDiscard : kEmpty, "ps_5_0"); if (!psb) return 1;
+      ID3DBlob *psb = compile(!strcmp(mode, "empty") ? kEmpty : !strcmp(mode, "light") ? kLight : !strcmp(mode, "mad") ? kMad : !strcmp(mode, "kill") ? kKill : kDiscard, "ps_5_0"); if (!psb) return 1;
       CHECK(dev->CreatePixelShader(psb->GetBufferPointer(), psb->GetBufferSize(), nullptr, &pixel));
    }
    D3D11_TEXTURE2D_DESC td{}; td.Width = td.Height = size; td.MipLevels = td.ArraySize = 1; td.Format = DXGI_FORMAT_R16_TYPELESS;
@@ -115,7 +146,9 @@ int main(int argc, char **argv)
    }
    printf("d3d11 %s %s: best %.3f ms for %u layers -> %.2f Gpixels/s, %.2fM PS invocations, %.2fM samples passed\n", mode, front_to_back ? "front-to-back" : "back-to-front",
           best, layers, (double)size * size * layers / (best / 1000) / 1e9, ps.PSInvocations / 1e6, samples / 1e6);
-   const uint32_t constants[] = {0x40800000 /* 4.0 */, 0x3f000000 /* 0.5 */};
-   DumpKernelCandidates(constants, 2, 128);
+   const uint32_t constants[] = {0x40800000 /* 4.0 */, 0x3f000000 /* 0.5 */}, arithmetic[] = {0x3ebd70a4 /* 0.37 */, 0x3f1c28f6 /* 0.61 */};
+   if (!strcmp(mode, "light") || !strcmp(mode, "mad")) DumpKernelCandidates(arithmetic, 2, 512);
+   else DumpKernelCandidates(constants, 2, 128);
+   const uint32_t primitive[] = {0x7b000005}; DumpKernelCandidates(primitive, 1, 256, "-batch", 8192); DumpFoundWords();
    return 0;
 }

@@ -13,7 +13,8 @@ build\probes (they are not part of test-all):
     d3d11_vs_fetch_probe, d3d11_replay_probe
     (all but the replay: D3D11_PROBE_DUMP=<prefix> saves the kernel that
     Intel's compiler produced, see native\tests\kernel_dump.h; the flops
-    probe also saves the driver's command buffers that hold a dispatch)
+    probe also saves the driver's command buffers that hold a dispatch, the
+    depth fill and vertex probes of both drivers the ones that hold a draw)
   Process tools:
     rip_sampler        sampling profiler with stacks (<pid> <seconds> [symbols] [module])
     stack_dump         stacks of every thread of a hung process
@@ -80,6 +81,7 @@ else { "  built d3d11-proxy\d3d11.dll" }
 if (Test-Path -LiteralPath $Glslang) {
    $shaders = [ordered]@{ 'flops.comp' = 'flops.spv'; 'sample.comp' = 'sample.spv'; 'depth_fill.vert' = 'depth_fill.vert.spv';
       'depth_fill_discard.frag' = 'depth_fill_discard.frag.spv'; 'depth_fill_empty.frag' = 'depth_fill_empty.frag.spv';
+      'depth_fill_light.frag' = 'depth_fill_light.frag.spv'; 'depth_fill_mad.frag' = 'depth_fill_mad.frag.spv'; 'depth_fill_kill.frag' = 'depth_fill_kill.frag.spv';
       'vs_fetch.vert' = 'vs_fetch.vert.spv'; 'replay_pos.vert' = 'replay_pos.spv'; 'replay_t4.vert' = 'replay_t4.spv';
       'replay_trivial.vert' = 'replay_trivial.spv'; 'replay_v4.vert' = 'replay_v4.spv' }
    foreach ($shader in $shaders.Keys) {

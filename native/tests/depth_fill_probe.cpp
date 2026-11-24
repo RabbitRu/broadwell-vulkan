@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include "kernel_dump.h"
 
 #define CHECK(x) do { VkResult r_ = (x); if (r_) { printf("%s = %d\n", #x, r_); return 1; } } while (0)
 
@@ -172,5 +173,6 @@ int main(int argc, char **argv)
    }
    printf("vulkan %s %s: best %.3f ms for %u layers -> %.2f Gpixels/s, %.2fM FS invocations\n", has_fs ? strrchr(argv[2], '\\') ? strrchr(argv[2], '\\') + 1 : argv[2] : "no FS",
           front_to_back ? "front-to-back" : "back-to-front", best, layers, (double)size * size * layers / (best / 1000) / 1e9, fs_invocations / 1e6);
+   const uint32_t primitive[] = {0x7b000005}; DumpKernelCandidates(primitive, 1, 256, "-batch", 8192); DumpFoundWords();
    return 0;
 }

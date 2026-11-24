@@ -4464,6 +4464,642 @@
  
     /* The thread ID should be stored in the last param dword */
     assert(subgroup_id_index == -1 ||
+--- a/src/util/register_allocate_internal.h
++++ b/src/util/register_allocate_internal.h
+@@ -107,6 +107,9 @@
+    /* Register, if assigned, or NO_REG. */
+    unsigned int reg;
+ 
++   /** Half of the register set that ra_select() searches first (enum ra_half). */
++   unsigned int half;
++
+    /**
+     * The q total, as defined in the Runeson/Nyström paper, for all the
+     * interfering nodes not in the stack.
+--- a/src/util/register_allocate.h
++++ b/src/util/register_allocate.h
+@@ -89,6 +89,12 @@
+                                              unsigned int count);
+ void ra_resize_interference_graph(struct ra_graph *g, unsigned int count);
+ void ra_set_node_class(struct ra_graph *g, unsigned int n, struct ra_class *c);
++
++/** The half of the register set in which a register for a node is looked for
++ * first; the other half is searched when that one has none.
++ */
++enum ra_half { RA_HALF_ANY, RA_HALF_LOWER, RA_HALF_UPPER };
++void ra_set_node_half(struct ra_graph *g, unsigned int n, enum ra_half half);
+ struct ra_class *ra_get_node_class(struct ra_graph *g, unsigned int n);
+ unsigned int ra_add_node(struct ra_graph *g, struct ra_class *c);
+ 
+--- a/src/util/register_allocate.c
++++ b/src/util/register_allocate.c
+@@ -651,6 +651,12 @@
+                   unsigned int n, struct ra_class *class)
+ {
+    g->nodes[n].class = class->index;
++}
++
++void
++ra_set_node_half(struct ra_graph *g, unsigned int n, enum ra_half half)
++{
++   g->nodes[n].half = half;
+ }
+ 
+ struct ra_class *
+@@ -971,8 +977,19 @@
+          /* Find the lowest-numbered reg which is not used by a member
+           * of the graph adjacent to us.
+           */
++         const unsigned half = g->regs->count / 2;
++         const unsigned prefer = g->nodes[n].half;
++
+          for (ri = 0; ri < g->regs->count; ri++) {
+-            r = (start_search_reg + ri) % g->regs->count;
++            if (prefer) {
++               /* The preferred half, then the other one, both from the
++                * rotating start.
++                */
++               const bool upper = (prefer == RA_HALF_UPPER) != (ri >= half);
++               r = (upper ? half : 0) + (start_search_reg + ri) % half;
++            } else {
++               r = (start_search_reg + ri) % g->regs->count;
++            }
+             if (!reg_belongs_to_class(r, c))
+                continue;
+ 
+@@ -989,7 +1006,13 @@
+                unsigned conflicting_end = (conflicting->reg +
+                                            g->regs->classes[conflicting->class]->contig_len - 1);
+                assert(conflicting_end >= r);
+-               ri += conflicting_end - r;
++               unsigned skip = conflicting_end - r;
++               if (prefer) {
++                  /* Not past the end of the half, where the order wraps. */
++                  skip = MIN2(skip, half - 1 - (start_search_reg + ri) % half);
++                  skip = MIN2(skip, half - 1 - ri % half);
++               }
++               ri += skip;
+             }
+          }
+ 
+--- a/src/intel/compiler/elk/elk_fs_reg_allocate.cpp
++++ b/src/intel/compiler/elk/elk_fs_reg_allocate.cpp
+@@ -71,7 +71,7 @@
+    int base_reg_count = ELK_MAX_GRF;
+    const int index = util_logbase2(dispatch_width / 8);
+ 
+-   if (dispatch_width > 8 && devinfo->ver >= 7) {
++   if (dispatch_width > 8 && true) {
+       /* For IVB+, we don't need the PLN hacks or the even-reg alignment in
+        * SIMD16.  Therefore, we can use the exact same register sets for
+        * SIMD16 as we do for SIMD8 and we don't need to recalculate them.
+@@ -101,7 +101,7 @@
+       class_sizes[i] = i + 1;
+ 
+    struct ra_regs *regs = ra_alloc_reg_set(compiler, ELK_MAX_GRF, false);
+-   if (devinfo->ver >= 6)
++   if (true)
+       ra_set_allocate_round_robin(regs);
+    struct ra_class **classes = ralloc_array(compiler, struct ra_class *,
+                                             REG_CLASS_COUNT);
+@@ -113,7 +113,7 @@
+    for (int i = 0; i < REG_CLASS_COUNT; i++) {
+       classes[i] = ra_alloc_contig_reg_class(regs, class_sizes[i]);
+ 
+-      if (devinfo->ver <= 5 && dispatch_width >= 16) {
++      if (false && dispatch_width >= 16) {
+          /* From the G45 PRM:
+           *
+           * In order to reduce the hardware complexity, the following
+@@ -135,8 +135,8 @@
+    /* Add a special class for aligned barycentrics, which we'll put the
+     * first source of LINTERP on so that we can do PLN on Gen <= 6.
+     */
+-   if (devinfo->has_pln && (devinfo->ver == 6 ||
+-                            (dispatch_width == 8 && devinfo->ver <= 5))) {
++   if (devinfo->has_pln && (false ||
++                            (dispatch_width == 8 && false))) {
+       int contig_len = aligned_bary_size(dispatch_width);
+       aligned_bary_class = ra_alloc_contig_reg_class(regs, contig_len);
+ 
+@@ -616,13 +616,13 @@
+    node_count = 0;
+    first_payload_node = node_count;
+    node_count += payload_node_count;
+-   if (devinfo->ver >= 7 && allow_spilling) {
++   if (true && allow_spilling) {
+       first_mrf_hack_node = node_count;
+       node_count += ELK_MAX_GRF - GFX7_MRF_HACK_START;
+    } else {
+       first_mrf_hack_node = -1;
+    }
+-   if (devinfo->ver >= 8) {
++   if (true) {
+       grf127_send_hack_node = node_count;
+       node_count ++;
+    } else {
+@@ -686,6 +686,26 @@
+       }
+    }
+ 
++   /* Vectors in the upper half of the register file, the scalars read by
++    * three-source instructions in the lower one: such an instruction loses
++    * a cycle for every SIMD8 half in which two sources come from one bank,
++    * and a scalar against a SIMD16 vector conflicts in one half wherever
++    * the two are, unless they are in different halves of the file
++    * (elk_fs_bank_conflicts.cpp).
++    */
++   for (unsigned i = 0; i < fs->alloc.count; i++)
++      ra_set_node_half(g, first_vgrf_node + i, RA_HALF_UPPER);
++
++   foreach_block_and_inst(block, elk_fs_inst, inst, fs->cfg) {
++      if (!inst->elk_is_3src(compiler))
++         continue;
++
++      for (unsigned i = 0; i < 3; i++) {
++         if (inst->src[i].file == VGRF && inst->src[i].stride == 0)
++            ra_set_node_half(g, first_vgrf_node + inst->src[i].nr, RA_HALF_LOWER);
++      }
++   }
++
+    /* Add interference based on the live range of the register */
+    for (unsigned i = 0; i < fs->alloc.count; i++) {
+       setup_live_interference(first_vgrf_node + i,
+@@ -770,7 +790,7 @@
+       ++stats->fill_count;
+ 
+       elk_fs_inst *unspill_inst;
+-      if (devinfo->ver >= 7 && spill_offset < (1 << 12) * REG_SIZE) {
++      if (true && spill_offset < (1 << 12) * REG_SIZE) {
+          /* The Gfx7 descriptor-based offset is 12 bits of HWORD units.
+           * Because the Gfx7-style scratch block read is hardwired to BTI 255,
+           * on Gfx9+ it would cause the DC to do an IA-coherent read, what
+--- a/src/compiler/spirv/spirv_to_nir.c
++++ b/src/compiler/spirv/spirv_to_nir.c
+@@ -5615,6 +5615,7 @@
+       *vtn_fp_math_ctrl_for_base_type(b, GLSL_TYPE_FLOAT16) |= nir_fp_preserve_sz_inf_nan;
+       *vtn_fp_math_ctrl_for_base_type(b, GLSL_TYPE_FLOAT) |= nir_fp_preserve_sz_inf_nan;
+       *vtn_fp_math_ctrl_for_base_type(b, GLSL_TYPE_DOUBLE) |= nir_fp_preserve_sz_inf_nan;
++      b->shader->info.float_controls_execution_mode |= FLOAT_CONTROLS_NAN_PRESERVE;
+    }
+ }
+ 
+@@ -6071,6 +6072,7 @@
+       const struct glsl_type *type = glsl_floatN_t_type(mode->operands[0]);
+       unsigned *fp_math_ctrl = vtn_fp_math_ctrl_for_base_type(b, glsl_get_base_type(type));
+       *fp_math_ctrl |= nir_fp_preserve_sz_inf_nan;
++      b->shader->info.float_controls_execution_mode |= FLOAT_CONTROLS_NAN_PRESERVE;
+       break;
+    }
+ 
+@@ -6276,8 +6278,10 @@
+        * It's always allowed for VK/GL.
+        */
+ 
+-      if (!(flags & SpvFPFastMathModeNotNaNMask))
++      if (!(flags & SpvFPFastMathModeNotNaNMask)) {
+          *fp_math_ctrl |= nir_fp_preserve_nan;
++         b->shader->info.float_controls_execution_mode |= FLOAT_CONTROLS_NAN_PRESERVE;
++      }
+ 
+       if (!(flags & SpvFPFastMathModeNotInfMask))
+          *fp_math_ctrl |= nir_fp_preserve_inf;
+--- a/src/compiler/spirv/vtn_alu.c
++++ b/src/compiler/spirv/vtn_alu.c
+@@ -408,8 +408,10 @@
+       b->nb.fp_math_ctrl |= nir_fp_no_transform;
+    if (!(dec->operands[0] & SpvFPFastMathModeNSZMask))
+       b->nb.fp_math_ctrl |= nir_fp_preserve_signed_zero;
+-   if (!(dec->operands[0] & SpvFPFastMathModeNotNaNMask))
++   if (!(dec->operands[0] & SpvFPFastMathModeNotNaNMask)) {
+       b->nb.fp_math_ctrl |= nir_fp_preserve_nan;
++      b->shader->info.float_controls_execution_mode |= FLOAT_CONTROLS_NAN_PRESERVE;
++   }
+    if (!(dec->operands[0] & SpvFPFastMathModeNotInfMask))
+       b->nb.fp_math_ctrl |= nir_fp_preserve_inf;
+ }
+--- a/src/intel/compiler/elk/elk_fs_nir.cpp
++++ b/src/intel/compiler/elk/elk_fs_nir.cpp
+@@ -215,7 +215,7 @@
+ 
+       case nir_intrinsic_load_sample_mask_in:
+          assert(s.stage == MESA_SHADER_FRAGMENT);
+-         assert(s.devinfo->ver >= 7);
++         assert(true);
+          reg = &ntb.system_values[SYSTEM_VALUE_SAMPLE_MASK_IN];
+          if (reg->file == BAD_FILE)
+             *reg = emit_samplemaskin_setup(ntb);
+@@ -270,7 +270,7 @@
+              * a NOT instruction.
+              */
+             elk_fs_reg inverted = negate(shifted);
+-            if (s.devinfo->ver < 8) {
++            if (false) {
+                inverted = abld.vgrf(ELK_REGISTER_TYPE_UW);
+                abld.NOT(inverted, shifted);
+             }
+@@ -383,7 +383,7 @@
+       cond_reg = get_nir_src(ntb, cond->src[0].src);
+       cond_reg = offset(cond_reg, bld, cond->src[0].swizzle[0]);
+ 
+-      if (devinfo->ver <= 5 &&
++      if (false &&
+ 	  (cond->instr.pass_flags & ELK_NIR_BOOLEAN_MASK) == ELK_NIR_BOOLEAN_NEEDS_RESOLVE) {
+          /* redo boolean resolve on gen5 */
+          elk_fs_reg masked = ntb.s.vgrf(glsl_int_type());
+@@ -414,7 +414,7 @@
+ 
+    bld.emit(ELK_OPCODE_ENDIF);
+ 
+-   if (devinfo->ver < 7)
++   if (false)
+       ntb.s.limit_dispatch_width(16, "Non-uniform control flow unsupported "
+                                    "in SIMD32 mode.");
+ }
+@@ -432,7 +432,7 @@
+ 
+    bld.emit(ELK_OPCODE_WHILE);
+ 
+-   if (devinfo->ver < 7)
++   if (false)
+       ntb.s.limit_dispatch_width(16, "Non-uniform control flow unsupported "
+                                    "in SIMD32 mode.");
+ }
+@@ -548,7 +548,7 @@
+ 
+    elk_fs_reg tmp = s.vgrf(glsl_int_type());
+ 
+-   if (devinfo->ver >= 6) {
++   if (true) {
+       /* Bit 15 of g0.0 is 0 if the polygon is front facing. */
+       elk_fs_reg g0 = elk_fs_reg(retype(elk_vec1_grf(0, 0), ELK_REGISTER_TYPE_W));
+ 
+@@ -719,7 +719,7 @@
+ {
+    const intel_device_info *devinfo = bld.shader->devinfo;
+ 
+-   if (devinfo->ver < 6)
++   if (false)
+       return false;
+ 
+    nir_alu_instr *inot_instr = nir_src_as_alu(instr->src[0].src);
+@@ -1201,7 +1201,7 @@
+       assert(instr->def.bit_size < 64);
+       elk_fs_reg tmp = bld.vgrf(result.type);
+ 
+-      if (devinfo->ver >= 8) {
++      if (true) {
+          op[0] = resolve_source_modifiers(bld, op[0]);
+          op[1] = resolve_source_modifiers(bld, op[1]);
+       }
+@@ -1257,7 +1257,7 @@
+ 
+       op[1] = subscript(op[1], word_type, 0);
+ 
+-      if (devinfo->ver >= 7)
++      if (true)
+          bld.MUL(result, retype(op[0], dword_type), op[1]);
+       else
+          bld.MUL(result, op[1], retype(op[0], dword_type));
+@@ -1395,7 +1395,7 @@
+    }
+ 
+    case nir_op_inot:
+-      if (devinfo->ver >= 8) {
++      if (true) {
+          nir_alu_instr *inot_src_instr = nir_src_as_alu(instr->src[0].src);
+ 
+          if (inot_src_instr != NULL &&
+@@ -1455,19 +1455,19 @@
+       bld.NOT(result, op[0]);
+       break;
+    case nir_op_ixor:
+-      if (devinfo->ver >= 8) {
++      if (true) {
+          resolve_inot_sources(ntb, bld, instr, op);
+       }
+       bld.XOR(result, op[0], op[1]);
+       break;
+    case nir_op_ior:
+-      if (devinfo->ver >= 8) {
++      if (true) {
+          resolve_inot_sources(ntb, bld, instr, op);
+       }
+       bld.OR(result, op[0], op[1]);
+       break;
+    case nir_op_iand:
+-      if (devinfo->ver >= 8) {
++      if (true) {
+          resolve_inot_sources(ntb, bld, instr, op);
+       }
+       bld.AND(result, op[0], op[1]);
+@@ -1503,7 +1503,7 @@
+ 
+    case nir_op_ftrunc:
+       inst = bld.RNDZ(result, op[0]);
+-      if (devinfo->ver < 6) {
++      if (false) {
+          set_condmod(ELK_CONDITIONAL_R, inst);
+          set_predicate(ELK_PREDICATE_NORMAL,
+                        bld.ADD(result, result, elk_imm_f(1.0f)));
+@@ -1527,7 +1527,7 @@
+       break;
+    case nir_op_fround_even:
+       inst = bld.RNDE(result, op[0]);
+-      if (devinfo->ver < 6) {
++      if (false) {
+          set_condmod(ELK_CONDITIONAL_R, inst);
+          set_predicate(ELK_PREDICATE_NORMAL,
+                        bld.ADD(result, result, elk_imm_f(1.0f)));
+@@ -1611,7 +1611,7 @@
+    case nir_op_ifind_msb: {
+       assert(instr->def.bit_size == 32);
+       assert(nir_src_bit_size(instr->src[0].src) == 32);
+-      assert(devinfo->ver >= 7);
++      assert(true);
+ 
+       bld.FBH(retype(result, ELK_REGISTER_TYPE_UD), op[0]);
+ 
+@@ -1631,7 +1631,7 @@
+    case nir_op_find_lsb:
+       assert(instr->def.bit_size == 32);
+       assert(nir_src_bit_size(instr->src[0].src) == 32);
+-      assert(devinfo->ver >= 7);
++      assert(true);
+       bld.FBL(result, op[0]);
+       break;
+ 
+@@ -1790,7 +1790,7 @@
+    /* If we need to do a boolean resolve, replace the result with -(x & 1)
+     * to sign extend the low bit to 0/~0
+     */
+-   if (devinfo->ver <= 5 &&
++   if (false &&
+        !result.is_null() &&
+        (instr->instr.pass_flags & ELK_NIR_BOOLEAN_MASK) == ELK_NIR_BOOLEAN_NEEDS_RESOLVE) {
+       elk_fs_reg masked = s.vgrf(glsl_int_type());
+@@ -1828,7 +1828,7 @@
+       break;
+ 
+    case 64:
+-      assert(devinfo->ver >= 7);
++      assert(true);
+       if (!devinfo->has_64bit_int) {
+          for (unsigned i = 0; i < instr->def.num_components; i++) {
+             bld.MOV(retype(offset(reg, bld, i), ELK_REGISTER_TYPE_DF),
+@@ -1893,7 +1893,7 @@
+       reg = ntb.ssa_values[decl_reg->def.index];
+    }
+ 
+-   if (nir_src_bit_size(src) == 64 && devinfo->ver == 7) {
++   if (nir_src_bit_size(src) == 64 && false) {
+       /* The only 64-bit type available on gfx7 is DF, so use that. */
+       reg.type = ELK_REGISTER_TYPE_DF;
+    } else {
+@@ -3106,7 +3106,7 @@
+ static elk_fs_reg
+ fetch_render_target_array_index(const fs_builder &bld)
+ {
+-   if (bld.shader->devinfo->ver >= 6) {
++   if (true) {
+       /* The render target array index is provided in the thread payload as
+        * bits 26:16 of r0.0.
+        */
+@@ -3307,7 +3307,7 @@
+ 
+    elk_fs_reg ff = bld.vgrf(ELK_REGISTER_TYPE_D);
+ 
+-   if (devinfo->ver >= 6) {
++   if (true) {
+       /* Bit 15 of g0.0 is 0 if the polygon is front facing. We want to create
+        * a boolean result from this (~0/true or 0/false).
+        *
+@@ -3352,7 +3352,7 @@
+ 
+    assert(s.stage == MESA_SHADER_FRAGMENT);
+    struct elk_fs_prog_data *fs_prog_data = elk_fs_prog_data(s.prog_data);
+-   assert(devinfo->ver >= 6);
++   assert(true);
+ 
+    const fs_builder abld = bld.annotate("compute sample position");
+    elk_fs_reg pos = abld.vgrf(ELK_REGISTER_TYPE_F, 2);
+@@ -3405,14 +3405,14 @@
+    assert(s.stage == MESA_SHADER_FRAGMENT);
+    ASSERTED elk_fs_prog_key *key = (elk_fs_prog_key*) s.key;
+    struct elk_fs_prog_data *fs_prog_data = elk_fs_prog_data(s.prog_data);
+-   assert(devinfo->ver >= 6);
++   assert(true);
+ 
+    const fs_builder abld = bld.annotate("compute sample id");
+    elk_fs_reg sample_id = abld.vgrf(ELK_REGISTER_TYPE_UD);
+ 
+    assert(key->multisample_fbo != ELK_NEVER);
+ 
+-   if (devinfo->ver >= 8) {
++   if (true) {
+       /* Sample ID comes in as 4-bit numbers in g1.0:
+        *
+        *    15:12 Slot 3 SampleID (only used in SIMD16)
+@@ -3493,7 +3493,7 @@
+        * FINISHME: One day, we could come up with a way to do this that
+        * actually works on gfx7.
+        */
+-      if (devinfo->ver >= 7)
++      if (true)
+          s.limit_dispatch_width(16, "gl_SampleId is unsupported in SIMD32 on gfx7");
+       abld.exec_all().group(8, 0).MOV(t2, elk_imm_v(0x32103210));
+ 
+@@ -3522,7 +3522,7 @@
+ 
+    assert(s.stage == MESA_SHADER_FRAGMENT);
+    struct elk_fs_prog_data *fs_prog_data = elk_fs_prog_data(s.prog_data);
+-   assert(devinfo->ver >= 6);
++   assert(true);
+ 
+    elk_fs_reg coverage_mask =
+       fetch_payload_reg(bld, s.fs_payload().sample_mask_in_reg, ELK_REGISTER_TYPE_D);
+@@ -3656,7 +3656,7 @@
+ 
+          if (alu != NULL &&
+              alu->op != nir_op_bcsel &&
+-             (devinfo->ver > 5 ||
++             (true ||
+               (alu->instr.pass_flags & ELK_NIR_BOOLEAN_MASK) != ELK_NIR_BOOLEAN_NEEDS_RESOLVE ||
+               alu->op == nir_op_fneu32 || alu->op == nir_op_feq32 ||
+               alu->op == nir_op_flt32 || alu->op == nir_op_fge32 ||
+@@ -3706,7 +3706,9 @@
+                 */
+                if (elk_type_is_float(cmp->src[0].type) &&
+                    cmp->conditional_mod != ELK_CONDITIONAL_EQ &&
+-                   cmp->conditional_mod != ELK_CONDITIONAL_NEQ) {
++                   cmp->conditional_mod != ELK_CONDITIONAL_NEQ &&
++                   (s.nir->info.float_controls_execution_mode &
++                    FLOAT_CONTROLS_NAN_PRESERVE)) {
+                   cmp = NULL;
+                } else {
+                   cmp->conditional_mod = elk_negate_cmod(cmp->conditional_mod);
+@@ -3741,7 +3743,7 @@
+          jump->predicate = ELK_PREDICATE_ALIGN1_ANY4H;
+       }
+ 
+-      if (devinfo->ver < 7)
++      if (false)
+          s.limit_dispatch_width(
+             16, "Fragment discard/demote not implemented in SIMD32 mode.\n");
+       break;
+@@ -3879,7 +3881,7 @@
+ 
+    case nir_intrinsic_load_frag_coord_w:
+       /* Lowered to interpolation pre-gen6. */
+-      assert(devinfo->ver >= 6);
++      assert(true);
+       bld.emit(ELK_SHADER_OPCODE_RCP, dest, fetch_payload_reg(bld, s.fs_payload().source_w_reg));
+       break;
+ 
+@@ -3990,7 +3992,7 @@
+       break;
+ 
+    case nir_intrinsic_load_shared: {
+-      assert(devinfo->ver >= 7);
++      assert(true);
+ 
+       const unsigned bit_size = instr->def.bit_size;
+       elk_fs_reg srcs[SURFACE_LOGICAL_NUM_SRCS];
+@@ -4036,7 +4038,7 @@
+    }
+ 
+    case nir_intrinsic_store_shared: {
+-      assert(devinfo->ver >= 7);
++      assert(true);
+ 
+       const unsigned bit_size = nir_src_bit_size(instr->src[0]);
+       elk_fs_reg srcs[SURFACE_LOGICAL_NUM_SRCS];
+@@ -4488,7 +4490,7 @@
+    elk_fs_visitor &s = *bld.shader;
+    const intel_device_info *devinfo = s.devinfo;
+ 
+-   assert(devinfo->ver >= 7);
++   assert(true);
+ 
+    elk_fs_reg ts = elk_fs_reg(retype(elk_vec4_reg(ELK_ARCHITECTURE_REGISTER_FILE,
+                                           ELK_ARF_TIMESTAMP,
+@@ -4806,7 +4808,7 @@
+        * the render cache.  There, we need both fences because we may
+        * access storage images as either typed or untyped.
+        */
+-      const bool render_fence = tgm_fence && devinfo->verx10 == 70;
++      const bool render_fence = tgm_fence && false;
+ 
+       const bool commit_enable = render_fence ||
+          instr->intrinsic == nir_intrinsic_end_invocation_interlock;
+@@ -5097,7 +5099,7 @@
+ 
+    case nir_intrinsic_load_global:
+    case nir_intrinsic_load_global_constant: {
+-      assert(devinfo->ver >= 8);
++      assert(true);
+ 
+       assert(instr->def.bit_size <= 32);
+       assert(nir_intrinsic_align(instr) > 0);
+@@ -5133,7 +5135,7 @@
+    }
+ 
+    case nir_intrinsic_store_global: {
+-      assert(devinfo->ver >= 8);
++      assert(true);
+ 
+       assert(nir_src_bit_size(instr->src[0]) <= 32);
+       assert(nir_intrinsic_write_mask(instr) ==
+@@ -5219,7 +5221,7 @@
+    }
+ 
+    case nir_intrinsic_load_ssbo: {
+-      assert(devinfo->ver >= 7);
++      assert(true);
+ 
+       const unsigned bit_size = instr->def.bit_size;
+       elk_fs_reg srcs[SURFACE_LOGICAL_NUM_SRCS];
+@@ -5258,7 +5260,7 @@
+    }
+ 
+    case nir_intrinsic_store_ssbo: {
+-      assert(devinfo->ver >= 7);
++      assert(true);
+ 
+       const unsigned bit_size = nir_src_bit_size(instr->src[0]);
+       elk_fs_reg srcs[SURFACE_LOGICAL_NUM_SRCS];
+@@ -5448,13 +5450,13 @@
+    }
+ 
+    case nir_intrinsic_load_scratch: {
+-      assert(devinfo->ver >= 7);
++      assert(true);
+ 
+       assert(instr->def.num_components == 1);
+       const unsigned bit_size = instr->def.bit_size;
+       elk_fs_reg srcs[SURFACE_LOGICAL_NUM_SRCS];
+ 
+-      if (devinfo->ver >= 8) {
++      if (true) {
+          srcs[SURFACE_LOGICAL_SRC_SURFACE] =
+             elk_imm_ud(GFX8_BTI_STATELESS_NON_COHERENT);
+       } else {
+@@ -5496,13 +5498,13 @@
+    }
+ 
+    case nir_intrinsic_store_scratch: {
+-      assert(devinfo->ver >= 7);
++      assert(true);
+ 
+       assert(nir_src_num_components(instr->src[0]) == 1);
+       const unsigned bit_size = nir_src_bit_size(instr->src[0]);
+       elk_fs_reg srcs[SURFACE_LOGICAL_NUM_SRCS];
+ 
+-      if (devinfo->ver >= 8) {
++      if (true) {
+          srcs[SURFACE_LOGICAL_SRC_SURFACE] =
+             elk_imm_ud(GFX8_BTI_STATELESS_NON_COHERENT);
+       } else {
+@@ -5773,7 +5775,7 @@
+    case nir_intrinsic_quad_swap_horizontal: {
+       const elk_fs_reg value = get_nir_src(ntb, instr->src[0]);
+       const elk_fs_reg tmp = bld.vgrf(value.type);
+-      if (devinfo->ver <= 7) {
++      if (false) {
+          /* The hardware doesn't seem to support these crazy regions with
+           * compressed instructions on gfx7 and earlier so we fall back to
+           * using quad swizzles.  Fortunately, we don't support 64-bit
+@@ -6457,7 +6459,7 @@
+    if (srcs[TEX_LOGICAL_SRC_MCS].file == BAD_FILE &&
+        (instr->op == nir_texop_txf_ms ||
+         instr->op == nir_texop_samples_identical)) {
+-      if (devinfo->ver >= 7) {
++      if (true) {
+          srcs[TEX_LOGICAL_SRC_MCS] =
+             emit_mcs_fetch(ntb, srcs[TEX_LOGICAL_SRC_COORDINATE],
+                            instr->coord_components,
+@@ -6585,7 +6587,7 @@
+       elk_fs_inst *sel = bld.SEL(nir_dest[0], offset(dst, bld, 3), elk_imm_d(0));
+       sel->predicate = ELK_PREDICATE_NORMAL;
+    } else if (instr->op == nir_texop_txs &&
+-              dest_size >= 3 && devinfo->ver < 7) {
++              dest_size >= 3 && false) {
+       /* Gfx4-6 return 0 instead of 1 for single layer surfaces. */
+       elk_fs_reg depth = offset(dst, bld, 2);
+       nir_dest[2] = s.vgrf(glsl_int_type());
+@@ -6744,9 +6746,9 @@
+ elk_setup_imm_df(const fs_builder &bld, double v)
+ {
+    const struct intel_device_info *devinfo = bld.shader->devinfo;
+-   assert(devinfo->ver >= 7);
+-
+-   if (devinfo->ver >= 8)
++   assert(true);
++
++   if (true)
+       return elk_imm_df(v);
+ 
+    /* gfx7.5 does not support DF immediates straightforward but the DIM
 --- a/src/intel/compiler/elk/elk_fs_combine_constants.cpp
 +++ b/src/intel/compiler/elk/elk_fs_combine_constants.cpp
 @@ -20,6 +20,7 @@
@@ -4897,6 +5533,15 @@
     DERIVATIVE_GROUP_NONE = 0,
     DERIVATIVE_GROUP_QUADS,
     DERIVATIVE_GROUP_LINEAR,
+@@ -1586,6 +1595,8 @@
+    FLOAT_CONTROLS_ROUNDING_MODE_RTZ_FP16     = BITFIELD_BIT(9),
+    FLOAT_CONTROLS_ROUNDING_MODE_RTZ_FP32     = BITFIELD_BIT(10),
+    FLOAT_CONTROLS_ROUNDING_MODE_RTZ_FP64     = BITFIELD_BIT(11),
++   /* The module asks for NaNs to be preserved, for any float type. */
++   FLOAT_CONTROLS_NAN_PRESERVE               = BITFIELD_BIT(12),
+ };
+ 
+ /**
 --- a/src/compiler/shader_info.h
 +++ b/src/compiler/shader_info.h
 @@ -37,7 +37,7 @@
@@ -7899,482 +8544,6 @@
            inst->opcode == ELK_OPCODE_MAD &&
            inst->src[i].type == ELK_REGISTER_TYPE_HF &&
            reg_offset(inst->src[i]) % REG_SIZE > 0 &&
---- a/src/intel/compiler/elk/elk_fs_nir.cpp
-+++ b/src/intel/compiler/elk/elk_fs_nir.cpp
-@@ -215,7 +215,7 @@
- 
-       case nir_intrinsic_load_sample_mask_in:
-          assert(s.stage == MESA_SHADER_FRAGMENT);
--         assert(s.devinfo->ver >= 7);
-+         assert(true);
-          reg = &ntb.system_values[SYSTEM_VALUE_SAMPLE_MASK_IN];
-          if (reg->file == BAD_FILE)
-             *reg = emit_samplemaskin_setup(ntb);
-@@ -270,7 +270,7 @@
-              * a NOT instruction.
-              */
-             elk_fs_reg inverted = negate(shifted);
--            if (s.devinfo->ver < 8) {
-+            if (false) {
-                inverted = abld.vgrf(ELK_REGISTER_TYPE_UW);
-                abld.NOT(inverted, shifted);
-             }
-@@ -383,7 +383,7 @@
-       cond_reg = get_nir_src(ntb, cond->src[0].src);
-       cond_reg = offset(cond_reg, bld, cond->src[0].swizzle[0]);
- 
--      if (devinfo->ver <= 5 &&
-+      if (false &&
- 	  (cond->instr.pass_flags & ELK_NIR_BOOLEAN_MASK) == ELK_NIR_BOOLEAN_NEEDS_RESOLVE) {
-          /* redo boolean resolve on gen5 */
-          elk_fs_reg masked = ntb.s.vgrf(glsl_int_type());
-@@ -414,7 +414,7 @@
- 
-    bld.emit(ELK_OPCODE_ENDIF);
- 
--   if (devinfo->ver < 7)
-+   if (false)
-       ntb.s.limit_dispatch_width(16, "Non-uniform control flow unsupported "
-                                    "in SIMD32 mode.");
- }
-@@ -432,7 +432,7 @@
- 
-    bld.emit(ELK_OPCODE_WHILE);
- 
--   if (devinfo->ver < 7)
-+   if (false)
-       ntb.s.limit_dispatch_width(16, "Non-uniform control flow unsupported "
-                                    "in SIMD32 mode.");
- }
-@@ -548,7 +548,7 @@
- 
-    elk_fs_reg tmp = s.vgrf(glsl_int_type());
- 
--   if (devinfo->ver >= 6) {
-+   if (true) {
-       /* Bit 15 of g0.0 is 0 if the polygon is front facing. */
-       elk_fs_reg g0 = elk_fs_reg(retype(elk_vec1_grf(0, 0), ELK_REGISTER_TYPE_W));
- 
-@@ -719,7 +719,7 @@
- {
-    const intel_device_info *devinfo = bld.shader->devinfo;
- 
--   if (devinfo->ver < 6)
-+   if (false)
-       return false;
- 
-    nir_alu_instr *inot_instr = nir_src_as_alu(instr->src[0].src);
-@@ -1201,7 +1201,7 @@
-       assert(instr->def.bit_size < 64);
-       elk_fs_reg tmp = bld.vgrf(result.type);
- 
--      if (devinfo->ver >= 8) {
-+      if (true) {
-          op[0] = resolve_source_modifiers(bld, op[0]);
-          op[1] = resolve_source_modifiers(bld, op[1]);
-       }
-@@ -1257,7 +1257,7 @@
- 
-       op[1] = subscript(op[1], word_type, 0);
- 
--      if (devinfo->ver >= 7)
-+      if (true)
-          bld.MUL(result, retype(op[0], dword_type), op[1]);
-       else
-          bld.MUL(result, op[1], retype(op[0], dword_type));
-@@ -1395,7 +1395,7 @@
-    }
- 
-    case nir_op_inot:
--      if (devinfo->ver >= 8) {
-+      if (true) {
-          nir_alu_instr *inot_src_instr = nir_src_as_alu(instr->src[0].src);
- 
-          if (inot_src_instr != NULL &&
-@@ -1455,19 +1455,19 @@
-       bld.NOT(result, op[0]);
-       break;
-    case nir_op_ixor:
--      if (devinfo->ver >= 8) {
-+      if (true) {
-          resolve_inot_sources(ntb, bld, instr, op);
-       }
-       bld.XOR(result, op[0], op[1]);
-       break;
-    case nir_op_ior:
--      if (devinfo->ver >= 8) {
-+      if (true) {
-          resolve_inot_sources(ntb, bld, instr, op);
-       }
-       bld.OR(result, op[0], op[1]);
-       break;
-    case nir_op_iand:
--      if (devinfo->ver >= 8) {
-+      if (true) {
-          resolve_inot_sources(ntb, bld, instr, op);
-       }
-       bld.AND(result, op[0], op[1]);
-@@ -1503,7 +1503,7 @@
- 
-    case nir_op_ftrunc:
-       inst = bld.RNDZ(result, op[0]);
--      if (devinfo->ver < 6) {
-+      if (false) {
-          set_condmod(ELK_CONDITIONAL_R, inst);
-          set_predicate(ELK_PREDICATE_NORMAL,
-                        bld.ADD(result, result, elk_imm_f(1.0f)));
-@@ -1527,7 +1527,7 @@
-       break;
-    case nir_op_fround_even:
-       inst = bld.RNDE(result, op[0]);
--      if (devinfo->ver < 6) {
-+      if (false) {
-          set_condmod(ELK_CONDITIONAL_R, inst);
-          set_predicate(ELK_PREDICATE_NORMAL,
-                        bld.ADD(result, result, elk_imm_f(1.0f)));
-@@ -1611,7 +1611,7 @@
-    case nir_op_ifind_msb: {
-       assert(instr->def.bit_size == 32);
-       assert(nir_src_bit_size(instr->src[0].src) == 32);
--      assert(devinfo->ver >= 7);
-+      assert(true);
- 
-       bld.FBH(retype(result, ELK_REGISTER_TYPE_UD), op[0]);
- 
-@@ -1631,7 +1631,7 @@
-    case nir_op_find_lsb:
-       assert(instr->def.bit_size == 32);
-       assert(nir_src_bit_size(instr->src[0].src) == 32);
--      assert(devinfo->ver >= 7);
-+      assert(true);
-       bld.FBL(result, op[0]);
-       break;
- 
-@@ -1790,7 +1790,7 @@
-    /* If we need to do a boolean resolve, replace the result with -(x & 1)
-     * to sign extend the low bit to 0/~0
-     */
--   if (devinfo->ver <= 5 &&
-+   if (false &&
-        !result.is_null() &&
-        (instr->instr.pass_flags & ELK_NIR_BOOLEAN_MASK) == ELK_NIR_BOOLEAN_NEEDS_RESOLVE) {
-       elk_fs_reg masked = s.vgrf(glsl_int_type());
-@@ -1828,7 +1828,7 @@
-       break;
- 
-    case 64:
--      assert(devinfo->ver >= 7);
-+      assert(true);
-       if (!devinfo->has_64bit_int) {
-          for (unsigned i = 0; i < instr->def.num_components; i++) {
-             bld.MOV(retype(offset(reg, bld, i), ELK_REGISTER_TYPE_DF),
-@@ -1893,7 +1893,7 @@
-       reg = ntb.ssa_values[decl_reg->def.index];
-    }
- 
--   if (nir_src_bit_size(src) == 64 && devinfo->ver == 7) {
-+   if (nir_src_bit_size(src) == 64 && false) {
-       /* The only 64-bit type available on gfx7 is DF, so use that. */
-       reg.type = ELK_REGISTER_TYPE_DF;
-    } else {
-@@ -3106,7 +3106,7 @@
- static elk_fs_reg
- fetch_render_target_array_index(const fs_builder &bld)
- {
--   if (bld.shader->devinfo->ver >= 6) {
-+   if (true) {
-       /* The render target array index is provided in the thread payload as
-        * bits 26:16 of r0.0.
-        */
-@@ -3307,7 +3307,7 @@
- 
-    elk_fs_reg ff = bld.vgrf(ELK_REGISTER_TYPE_D);
- 
--   if (devinfo->ver >= 6) {
-+   if (true) {
-       /* Bit 15 of g0.0 is 0 if the polygon is front facing. We want to create
-        * a boolean result from this (~0/true or 0/false).
-        *
-@@ -3352,7 +3352,7 @@
- 
-    assert(s.stage == MESA_SHADER_FRAGMENT);
-    struct elk_fs_prog_data *fs_prog_data = elk_fs_prog_data(s.prog_data);
--   assert(devinfo->ver >= 6);
-+   assert(true);
- 
-    const fs_builder abld = bld.annotate("compute sample position");
-    elk_fs_reg pos = abld.vgrf(ELK_REGISTER_TYPE_F, 2);
-@@ -3405,14 +3405,14 @@
-    assert(s.stage == MESA_SHADER_FRAGMENT);
-    ASSERTED elk_fs_prog_key *key = (elk_fs_prog_key*) s.key;
-    struct elk_fs_prog_data *fs_prog_data = elk_fs_prog_data(s.prog_data);
--   assert(devinfo->ver >= 6);
-+   assert(true);
- 
-    const fs_builder abld = bld.annotate("compute sample id");
-    elk_fs_reg sample_id = abld.vgrf(ELK_REGISTER_TYPE_UD);
- 
-    assert(key->multisample_fbo != ELK_NEVER);
- 
--   if (devinfo->ver >= 8) {
-+   if (true) {
-       /* Sample ID comes in as 4-bit numbers in g1.0:
-        *
-        *    15:12 Slot 3 SampleID (only used in SIMD16)
-@@ -3493,7 +3493,7 @@
-        * FINISHME: One day, we could come up with a way to do this that
-        * actually works on gfx7.
-        */
--      if (devinfo->ver >= 7)
-+      if (true)
-          s.limit_dispatch_width(16, "gl_SampleId is unsupported in SIMD32 on gfx7");
-       abld.exec_all().group(8, 0).MOV(t2, elk_imm_v(0x32103210));
- 
-@@ -3522,7 +3522,7 @@
- 
-    assert(s.stage == MESA_SHADER_FRAGMENT);
-    struct elk_fs_prog_data *fs_prog_data = elk_fs_prog_data(s.prog_data);
--   assert(devinfo->ver >= 6);
-+   assert(true);
- 
-    elk_fs_reg coverage_mask =
-       fetch_payload_reg(bld, s.fs_payload().sample_mask_in_reg, ELK_REGISTER_TYPE_D);
-@@ -3656,7 +3656,7 @@
- 
-          if (alu != NULL &&
-              alu->op != nir_op_bcsel &&
--             (devinfo->ver > 5 ||
-+             (true ||
-               (alu->instr.pass_flags & ELK_NIR_BOOLEAN_MASK) != ELK_NIR_BOOLEAN_NEEDS_RESOLVE ||
-               alu->op == nir_op_fneu32 || alu->op == nir_op_feq32 ||
-               alu->op == nir_op_flt32 || alu->op == nir_op_fge32 ||
-@@ -3741,7 +3741,7 @@
-          jump->predicate = ELK_PREDICATE_ALIGN1_ANY4H;
-       }
- 
--      if (devinfo->ver < 7)
-+      if (false)
-          s.limit_dispatch_width(
-             16, "Fragment discard/demote not implemented in SIMD32 mode.\n");
-       break;
-@@ -3879,7 +3879,7 @@
- 
-    case nir_intrinsic_load_frag_coord_w:
-       /* Lowered to interpolation pre-gen6. */
--      assert(devinfo->ver >= 6);
-+      assert(true);
-       bld.emit(ELK_SHADER_OPCODE_RCP, dest, fetch_payload_reg(bld, s.fs_payload().source_w_reg));
-       break;
- 
-@@ -3990,7 +3990,7 @@
-       break;
- 
-    case nir_intrinsic_load_shared: {
--      assert(devinfo->ver >= 7);
-+      assert(true);
- 
-       const unsigned bit_size = instr->def.bit_size;
-       elk_fs_reg srcs[SURFACE_LOGICAL_NUM_SRCS];
-@@ -4036,7 +4036,7 @@
-    }
- 
-    case nir_intrinsic_store_shared: {
--      assert(devinfo->ver >= 7);
-+      assert(true);
- 
-       const unsigned bit_size = nir_src_bit_size(instr->src[0]);
-       elk_fs_reg srcs[SURFACE_LOGICAL_NUM_SRCS];
-@@ -4488,7 +4488,7 @@
-    elk_fs_visitor &s = *bld.shader;
-    const intel_device_info *devinfo = s.devinfo;
- 
--   assert(devinfo->ver >= 7);
-+   assert(true);
- 
-    elk_fs_reg ts = elk_fs_reg(retype(elk_vec4_reg(ELK_ARCHITECTURE_REGISTER_FILE,
-                                           ELK_ARF_TIMESTAMP,
-@@ -4806,7 +4806,7 @@
-        * the render cache.  There, we need both fences because we may
-        * access storage images as either typed or untyped.
-        */
--      const bool render_fence = tgm_fence && devinfo->verx10 == 70;
-+      const bool render_fence = tgm_fence && false;
- 
-       const bool commit_enable = render_fence ||
-          instr->intrinsic == nir_intrinsic_end_invocation_interlock;
-@@ -5097,7 +5097,7 @@
- 
-    case nir_intrinsic_load_global:
-    case nir_intrinsic_load_global_constant: {
--      assert(devinfo->ver >= 8);
-+      assert(true);
- 
-       assert(instr->def.bit_size <= 32);
-       assert(nir_intrinsic_align(instr) > 0);
-@@ -5133,7 +5133,7 @@
-    }
- 
-    case nir_intrinsic_store_global: {
--      assert(devinfo->ver >= 8);
-+      assert(true);
- 
-       assert(nir_src_bit_size(instr->src[0]) <= 32);
-       assert(nir_intrinsic_write_mask(instr) ==
-@@ -5219,7 +5219,7 @@
-    }
- 
-    case nir_intrinsic_load_ssbo: {
--      assert(devinfo->ver >= 7);
-+      assert(true);
- 
-       const unsigned bit_size = instr->def.bit_size;
-       elk_fs_reg srcs[SURFACE_LOGICAL_NUM_SRCS];
-@@ -5258,7 +5258,7 @@
-    }
- 
-    case nir_intrinsic_store_ssbo: {
--      assert(devinfo->ver >= 7);
-+      assert(true);
- 
-       const unsigned bit_size = nir_src_bit_size(instr->src[0]);
-       elk_fs_reg srcs[SURFACE_LOGICAL_NUM_SRCS];
-@@ -5448,13 +5448,13 @@
-    }
- 
-    case nir_intrinsic_load_scratch: {
--      assert(devinfo->ver >= 7);
-+      assert(true);
- 
-       assert(instr->def.num_components == 1);
-       const unsigned bit_size = instr->def.bit_size;
-       elk_fs_reg srcs[SURFACE_LOGICAL_NUM_SRCS];
- 
--      if (devinfo->ver >= 8) {
-+      if (true) {
-          srcs[SURFACE_LOGICAL_SRC_SURFACE] =
-             elk_imm_ud(GFX8_BTI_STATELESS_NON_COHERENT);
-       } else {
-@@ -5496,13 +5496,13 @@
-    }
- 
-    case nir_intrinsic_store_scratch: {
--      assert(devinfo->ver >= 7);
-+      assert(true);
- 
-       assert(nir_src_num_components(instr->src[0]) == 1);
-       const unsigned bit_size = nir_src_bit_size(instr->src[0]);
-       elk_fs_reg srcs[SURFACE_LOGICAL_NUM_SRCS];
- 
--      if (devinfo->ver >= 8) {
-+      if (true) {
-          srcs[SURFACE_LOGICAL_SRC_SURFACE] =
-             elk_imm_ud(GFX8_BTI_STATELESS_NON_COHERENT);
-       } else {
-@@ -5773,7 +5773,7 @@
-    case nir_intrinsic_quad_swap_horizontal: {
-       const elk_fs_reg value = get_nir_src(ntb, instr->src[0]);
-       const elk_fs_reg tmp = bld.vgrf(value.type);
--      if (devinfo->ver <= 7) {
-+      if (false) {
-          /* The hardware doesn't seem to support these crazy regions with
-           * compressed instructions on gfx7 and earlier so we fall back to
-           * using quad swizzles.  Fortunately, we don't support 64-bit
-@@ -6457,7 +6457,7 @@
-    if (srcs[TEX_LOGICAL_SRC_MCS].file == BAD_FILE &&
-        (instr->op == nir_texop_txf_ms ||
-         instr->op == nir_texop_samples_identical)) {
--      if (devinfo->ver >= 7) {
-+      if (true) {
-          srcs[TEX_LOGICAL_SRC_MCS] =
-             emit_mcs_fetch(ntb, srcs[TEX_LOGICAL_SRC_COORDINATE],
-                            instr->coord_components,
-@@ -6585,7 +6585,7 @@
-       elk_fs_inst *sel = bld.SEL(nir_dest[0], offset(dst, bld, 3), elk_imm_d(0));
-       sel->predicate = ELK_PREDICATE_NORMAL;
-    } else if (instr->op == nir_texop_txs &&
--              dest_size >= 3 && devinfo->ver < 7) {
-+              dest_size >= 3 && false) {
-       /* Gfx4-6 return 0 instead of 1 for single layer surfaces. */
-       elk_fs_reg depth = offset(dst, bld, 2);
-       nir_dest[2] = s.vgrf(glsl_int_type());
-@@ -6744,9 +6744,9 @@
- elk_setup_imm_df(const fs_builder &bld, double v)
- {
-    const struct intel_device_info *devinfo = bld.shader->devinfo;
--   assert(devinfo->ver >= 7);
--
--   if (devinfo->ver >= 8)
-+   assert(true);
-+
-+   if (true)
-       return elk_imm_df(v);
- 
-    /* gfx7.5 does not support DF immediates straightforward but the DIM
---- a/src/intel/compiler/elk/elk_fs_reg_allocate.cpp
-+++ b/src/intel/compiler/elk/elk_fs_reg_allocate.cpp
-@@ -71,7 +71,7 @@
-    int base_reg_count = ELK_MAX_GRF;
-    const int index = util_logbase2(dispatch_width / 8);
- 
--   if (dispatch_width > 8 && devinfo->ver >= 7) {
-+   if (dispatch_width > 8 && true) {
-       /* For IVB+, we don't need the PLN hacks or the even-reg alignment in
-        * SIMD16.  Therefore, we can use the exact same register sets for
-        * SIMD16 as we do for SIMD8 and we don't need to recalculate them.
-@@ -101,7 +101,7 @@
-       class_sizes[i] = i + 1;
- 
-    struct ra_regs *regs = ra_alloc_reg_set(compiler, ELK_MAX_GRF, false);
--   if (devinfo->ver >= 6)
-+   if (true)
-       ra_set_allocate_round_robin(regs);
-    struct ra_class **classes = ralloc_array(compiler, struct ra_class *,
-                                             REG_CLASS_COUNT);
-@@ -113,7 +113,7 @@
-    for (int i = 0; i < REG_CLASS_COUNT; i++) {
-       classes[i] = ra_alloc_contig_reg_class(regs, class_sizes[i]);
- 
--      if (devinfo->ver <= 5 && dispatch_width >= 16) {
-+      if (false && dispatch_width >= 16) {
-          /* From the G45 PRM:
-           *
-           * In order to reduce the hardware complexity, the following
-@@ -135,8 +135,8 @@
-    /* Add a special class for aligned barycentrics, which we'll put the
-     * first source of LINTERP on so that we can do PLN on Gen <= 6.
-     */
--   if (devinfo->has_pln && (devinfo->ver == 6 ||
--                            (dispatch_width == 8 && devinfo->ver <= 5))) {
-+   if (devinfo->has_pln && (false ||
-+                            (dispatch_width == 8 && false))) {
-       int contig_len = aligned_bary_size(dispatch_width);
-       aligned_bary_class = ra_alloc_contig_reg_class(regs, contig_len);
- 
-@@ -616,13 +616,13 @@
-    node_count = 0;
-    first_payload_node = node_count;
-    node_count += payload_node_count;
--   if (devinfo->ver >= 7 && allow_spilling) {
-+   if (true && allow_spilling) {
-       first_mrf_hack_node = node_count;
-       node_count += ELK_MAX_GRF - GFX7_MRF_HACK_START;
-    } else {
-       first_mrf_hack_node = -1;
-    }
--   if (devinfo->ver >= 8) {
-+   if (true) {
-       grf127_send_hack_node = node_count;
-       node_count ++;
-    } else {
-@@ -770,7 +770,7 @@
-       ++stats->fill_count;
- 
-       elk_fs_inst *unspill_inst;
--      if (devinfo->ver >= 7 && spill_offset < (1 << 12) * REG_SIZE) {
-+      if (true && spill_offset < (1 << 12) * REG_SIZE) {
-          /* The Gfx7 descriptor-based offset is 12 bits of HWORD units.
-           * Because the Gfx7-style scratch block read is hardwired to BTI 255,
-           * on Gfx9+ it would cause the DC to do an IA-coherent read, what
 --- a/src/intel/compiler/elk/elk_fs_thread_payload.cpp
 +++ b/src/intel/compiler/elk/elk_fs_thread_payload.cpp
 @@ -145,7 +145,7 @@

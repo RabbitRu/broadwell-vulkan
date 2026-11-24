@@ -58,6 +58,8 @@ borderless, render scale 0.4, lowest settings): Vulkan 25.5–25.7 FPS against
 | ELK: constants of a loop loaded before the loop, not in every iteration | FMA loop +8 % |
 | ELK: bank conflicts of three-source instructions modelled as measured (below) | FMA loop +3 % |
 | ELK: two constants of one instruction never share a register | FMA loop +11 % |
+| ELK: vectors in the upper half of the register file, scalars of three-source instructions in the lower | fragment multiply-add chains +2 % |
+| ELK: one compare for a `discard` on a float comparison | fragment multiply-add chains +1 % |
 
 Many other ideas were measured and rejected (PMA workaround variants, MOCS and
 L3 cache settings, CCS_D fast clears, 2 MiB alignment, compiler flags, game
@@ -77,9 +79,20 @@ Talos, main thread, ms per frame (DX11 at 84.3 FPS, Vulkan at 73.5):
 | `ntdll` (waits) | 2.10 | 2.48 |
 
 Micro-benchmarks, this ICD relative to Intel's D3D11 driver (1.00 is equal,
-lower is slower): vertex shader with `texelFetch` 1.00; empty vertex shader
-0.89–0.94; sampler 0.95–0.98; FMA 1.05 (0.84 before the ELK changes); depth
-fill with `discard` 0.96–1.0.
+lower is slower):
+
+| Test | This ICD | Intel |
+|---|---|---|
+| `flops.comp`, FMA loop, ms per dispatch | 3.88 | 4.09 (1.05) |
+| `sample.comp`, 16 bilinear samples per invocation, ms | 0.905 | 0.83–0.88 (0.92–0.97) |
+| `vs_fetch.vert`, `texelFetch` in the vertex shader, ms | 6.46 | 6.46 (1.00) |
+| `vs_fetch.vert`, no loop iterations, 3 million vertices, ms | 3.32 | 2.95 (0.89) |
+| depth fill, no fragment shader, 8 layers of 1536², ms | 0.405 | 0.362 (0.89) |
+| depth fill, empty fragment shader, ms | 0.460 | 0.457 (0.99) |
+| depth fill, `depth_fill_kill.frag` (one compare and `discard`), ms | 4.6–4.8 | 4.17 (0.87–0.90) |
+| depth fill, `depth_fill_discard.frag` (sample and `discard`), ms | 5.55–5.67 | 5.09–5.23 (0.91–0.93) |
+| depth fill, `depth_fill_light.frag`, ms | 4.74–4.82 | 4.19–4.25 (0.88) |
+| depth fill, `depth_fill_mad.frag` (64 multiply-adds), ms | 5.80 | 5.54–5.61 (0.96; 5.98 before) |
 
 ## ELK against Intel's compiler
 
@@ -128,6 +141,53 @@ compiler emits the same instructions as ELK (the D3D11 "ALU" vertex shader has
 two branches where the GLSL one has four, so that pair does not compare the
 compilers).
 
+## Fragment and vertex stages against Intel's driver
+
+The fragment tests are depth-only passes whose shader ends in a `discard` that
+never happens (`depth_fill_probe` with `depth_fill_kill.frag`,
+`depth_fill_light.frag`, `depth_fill_mad.frag`; the HLSL twins are in
+`d3d11_depth_fill_probe`).
+
+- **Register placement.** In `depth_fill_mad.frag` ELK and Intel's compiler
+  emit the same instructions. Intel keeps every vector in g64–g127 and the
+  constants below; ELK's allocator (round robin over the whole file) spread
+  the vectors over g7–g113, so half of the multiply-adds read a SIMD16 vector
+  and a scalar from one bank in one of their halves. The allocator now looks
+  in the upper half first, and in the lower half first for the scalars that
+  three-source instructions read (5.98 → 5.85 ms).
+- **`discard` on a comparison.** `if (a < b) discard;` took two compares (the
+  comparison into a register, then a test of the register for zero): the
+  negated comparison in one instruction discards a NaN that the original
+  keeps. Vulkan allows NaNs to be ignored unless the module asks for them
+  (`SignedZeroInfNanPreserve`, `FPFastMathDefault` or `FPFastMathMode`
+  without `NotNaN`); without such a request the discard is one compare, as in
+  Intel's kernels (5.85 → 5.80 ms).
+- **What remains is not in the shader.** A pixel that goes through a shader
+  with a `discard` costs 4.6–4.8 ms per pass here and 4.17 ms on Intel's driver
+  with five instructions on each side, and the lighting shader costs the same
+  as that minimal one on both. Changing these to Intel's values, one at a
+  time, made no difference: "pixel shader does not write to a render target"
+  (3DSTATE_PS_EXTRA bit 30, not in Mesa's Gen8 description), forced thread
+  dispatch off, double-sided stencil off, single program flow, the vector
+  mask, the denormal mode, depth MOCS 0x69/0x79/0x68, CACHE_MODE_1 bit 14,
+  the default L3 configuration (Intel's driver never writes L3CNTLREG in 3D
+  mode), the DX10 rasterization mode, statistics counters. Not tried: Intel's
+  driver fast-clears the sampled depth buffer to 1.0 (this ICD cannot, the
+  Gen8 sampler returns 0.0 for fast-cleared HiZ blocks), and its vertex is 64
+  bytes in the URB against 128 here.
+- **Vertices.** With no work in the shader this ICD passes exactly one vertex
+  per GPU clock (950 MHz) whatever the shader and the topology. Intel's driver
+  does the same for points and strips, and nine vertices in eight clocks for
+  a non-indexed triangle list. Not the cause: the vertex buffer read for
+  `gl_VertexIndex`, cull mode and winding, primitive restart, rasterizer
+  discard, depth clamp, the "vertex URB entry output" fields of 3DSTATE_VS
+  (upstream leaves them 0, Intel sends offset 1 and length 1), the statistics
+  of VF, VS and the clipper, the topology field of 3DPRIMITIVE.
+- **`pow` with a constant exponent** is four multiplications in Intel's
+  kernel (the HLSL compiler may do that) and one POW here. Replacing it did
+  not change the time of `depth_fill_light.frag`, which is bound by the fixed
+  cost above; not adopted without a test that shows it.
+
 Dota 2, threads in % of a logical CPU: Vulkan — main 88, worker 55, render 18,
 driver queue about 3; DX11 — main 89, worker 51, render with Intel's driver 42.
 
@@ -159,6 +219,12 @@ $env:INTEL_DEBUG = 'cs,vs,fs'; $env:HASVK_WDDM_INTERNAL_CACHE = '0'
 $env:D3D11_PROBE_DUMP = "$PWD\build\intel-flops"; .\build\probes\d3d11_flops_probe.exe 3
 .\build\mesa-compiler-clang\src\intel\wddm_compiler\IrisElkCompile.exe --disasm build\intel-flops-0.bin
 ```
+
+The probes of both drivers also save the command buffers that hold a draw
+(`-batch` files: the driver's 3DSTATE commands are in front of the
+3DPRIMITIVE, 0x7b000005), and with `D3D11_PROBE_FIND=11000001` every place
+with an MI_LOAD_REGISTER_IMM (`-find` files), which is how the register
+writes of Intel's driver were listed.
 
 The dump is every place in memory where the shader's constants occur close
 together (`native\tests\kernel_dump.h`), so several numbered files come out;

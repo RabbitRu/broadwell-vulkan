@@ -4,7 +4,7 @@
  * d3d11_vs_fetch_probe (same shader in HLSL on Intel's D3D11 driver).
  * [draws] [vertices per draw]: many small draws instead, for the fixed cost
  * of a draw.
- * Usage: vs_fetch_probe.exe <vs_fetch.vert.spv> [iterations] [mode 0=loads 1=ALU] [draws] [vertices] */
+ * Usage: vs_fetch_probe.exe <vs_fetch.vert.spv> [iterations] [mode 0=loads 1=ALU] [draws] [vertices] [variant] */
 #define NOMINMAX
 #define VK_NO_PROTOTYPES
 #include <windows.h>
@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+#include "kernel_dump.h"
 
 #define CHECK(x) do { VkResult r_ = (x); if (r_) { printf("%s = %d\n", #x, r_); return 1; } } while (0)
 
@@ -20,6 +21,10 @@ int main(int argc, char **argv)
    if (argc < 2) return 2;
    const int count = argc > 2 ? atoi(argv[2]) : 4, mode = argc > 3 ? atoi(argv[3]) : 0;
    const uint32_t draws = argc > 4 ? atoi(argv[4]) : 1, per_draw = argc > 5 ? atoi(argv[5]) : 3u << 20;
+   /* [variant]: bits changing fixed-function state, to find what a per-vertex cost depends on:
+    * 1 cull back, 2 rasterizer discard, 4 primitive restart, 8 point list, 16 triangle strip, 32 depth clamp,
+    * 64 front face clockwise, 128 cull front */
+   const int variant = argc > 6 ? atoi(argv[6]) : 0;
    FILE *file = fopen(argv[1], "rb"); if (!file) return 2;
    fseek(file, 0, SEEK_END); long size = ftell(file); fseek(file, 0, SEEK_SET);
    std::vector<uint32_t> code(size / 4); fread(code.data(), 1, size, file); fclose(file);
@@ -75,11 +80,16 @@ int main(int argc, char **argv)
    VkShaderModule vmod; CHECK(vkCreateShaderModule(d, &smi, nullptr, &vmod));
    VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vmod, "main", nullptr};
    VkPipelineVertexInputStateCreateInfo vin{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-   VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO}; ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO}; ia.topology = variant & 8 ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : variant & 16 ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   ia.primitiveRestartEnable = (variant & 4) != 0;
    VkViewport viewport{0, 0, 64, 64, 0, 1}; VkRect2D scissor{{0, 0}, {64, 64}};
    VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO}; vp.viewportCount = 1; vp.pViewports = &viewport;
    vp.scissorCount = 1; vp.pScissors = &scissor;
    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO}; rs.lineWidth = 1;
+   if (variant & 1) rs.cullMode |= VK_CULL_MODE_BACK_BIT;
+   if (variant & 128) rs.cullMode |= VK_CULL_MODE_FRONT_BIT;
+   if (variant & 64) rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
+   rs.rasterizerDiscardEnable = (variant & 2) != 0; rs.depthClampEnable = (variant & 32) != 0;
    VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO}; ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
    VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
    VkGraphicsPipelineCreateInfo gpi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO}; gpi.stageCount = 1; gpi.pStages = &stage;
@@ -129,5 +139,6 @@ int main(int argc, char **argv)
    }
    printf("vulkan %s x%d: best %.3f ms for %u draws, %u vertices -> %.1f Mvertices/s, %.2f us per draw\n", mode == 0 ? "texelFetch varying" : mode == 1 ? "ALU" : mode == 2 ? "texelFetch uniform" : "UBO uniform", count, best,
           draws, vertices, vertices / (best / 1000) / 1e6, best * 1000 / draws);
+   const uint32_t primitive[] = {0x7b000005}; DumpKernelCandidates(primitive, 1, 256, "-batch", 8192);
    return 0;
 }

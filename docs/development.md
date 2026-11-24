@@ -92,7 +92,11 @@ All tests run on the real GPU and need no interaction.
   `D3D11_PROBE_DUMP=<prefix>` the D3D11 micro-benchmarks save the kernel that
   Intel's compiler produced; `IrisElkCompile.exe --disasm <file>` disassembles
   it (and any raw Gen8 code). `d3d11_flops_probe.exe` also saves the driver's
-  command buffers that hold a dispatch (`<prefix>-batch-<n>.bin`).
+  command buffers that hold a dispatch (`<prefix>-batch-<n>.bin`); the depth
+  fill and vertex probes of both drivers save the ones that hold a draw, and
+  with `D3D11_PROBE_FIND=<hex dword>` every place where that dword occurs.
+  `vs_fetch_probe.exe` takes a sixth argument that changes fixed-function
+  state (cull mode, topology, primitive restart, ...).
 - `bench-frames.py` (frame tables), `talos-sections.py` (frame sections in
   milliseconds per API), `rip-compare.py` (code samples of two runs compared).
 - Commands and measurement pitfalls are in [performance.md](performance.md).

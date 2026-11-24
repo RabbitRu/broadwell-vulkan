@@ -1,28 +1,28 @@
 ﻿{
     "schema":  1,
-    "testedUtc":  "2026-11-24T04:30:15.9543695Z",
+    "testedUtc":  "2026-11-24T08:46:12.2455653Z",
     "hardware":  "8086:162b",
     "driverVersion":  "20.19.15.5171",
-    "compilerSha256":  "62b30e0c2a221ae875317a41ae5a92adf4872641eeff49765f5d0f38a4ca6bf8",
-    "probeSha256":  "5ea5fbc19477d291913c8695309e5041a1a86274ebb311ad7dddcf0d9f4bc1d7",
+    "compilerSha256":  "a12cfaa0c4c1b43908e97e4f51c24b6f963ceec69bf51a33feea2bfa0558b9fb",
+    "probeSha256":  "f6421c1e3e6ff23c161b6b682726ce8f679d104e21ae2d916fd7192a50357c2a",
     "cases":  [
                   {
                       "value":  "0",
                       "passed":  true,
-                      "kernelSha256":  "d2cf494e15475127872280aa8b176e96303d0d4b3f30b2b8b8aa77fbe34f3e70",
-                      "reportSha256":  "3ceb122b0ab9c4aed3ff989ce8a2d37c4cf6997810fad15ca10c500114dbff3f"
+                      "kernelSha256":  "86235bd2e7c35a6ab5123584075cf90d02adb5161f6af4a68f9087ff1568cb8b",
+                      "reportSha256":  "205768e6c0a4f169c35a8bc7ab10443ee5b87184a41531582e92a6ae5bc2795a"
                   },
                   {
                       "value":  "0x51c0ffee",
                       "passed":  true,
-                      "kernelSha256":  "d0c9f2e0d8e8989d43eef1142d6ccef449f9ca23cc89a8c82feadfce1359d1dc",
-                      "reportSha256":  "d5e4044b1a13872fca19c729f397b93287eb172579441d39d57dd2fbdc1a652f"
+                      "kernelSha256":  "0bf292dc20bd221c610e3bfc118c0c04c2c05b719e5a71605bbb926e59753b82",
+                      "reportSha256":  "d819b17d3a0d75de443e5da7b8d4c7a6502a752bb3d59d43fd15814a175f92da"
                   },
                   {
                       "value":  "0xf1e2d3c4",
                       "passed":  true,
-                      "kernelSha256":  "393d24b60a77f0cbb6d657238d864cf3abe5f7f724cd0b3140270e76026af5d0",
-                      "reportSha256":  "1470c0b5a101208474b83eb05ea2fc50cc833c0ea0d9749fac5d8d436038288c"
+                      "kernelSha256":  "39fc1af1ff37cf9b5a27fb865369422f37593cedb25659f20b3de18654f6e4ab",
+                      "reportSha256":  "112e4d5d4aba34ac21b0a606b5e515626773a52908e63cf75fde8e3e28ed99a7"
                   }
               ],
     "nirElkGenxmlToHardwareValidated":  true,
