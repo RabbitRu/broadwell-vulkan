@@ -1,0 +1,877 @@
+diff --git a/a/mesa/anv_wddm.h b/b/mesa/anv_wddm.h
+index aaceaf6..2b00710 100644
+--- a/a/mesa/anv_wddm.h
++++ b/b/mesa/anv_wddm.h
+@@ -172,6 +172,10 @@ struct anv_wddm_cmd_state {
+     * graphics_sources.py). Emptied by vkCmdExecuteCommands. */
+    const struct anv_image *ccs_resolved[16];
+    uint32_t ccs_resolved_count;
++   /* HASVK_WDDM_PROFILE_PASSES (anv_wddm_profile.c, measurement only). */
++   uint32_t profile_slot, profile_draws, profile_cmd_slot, profile_width, profile_height;
++   uint64_t profile_render_pass;
++   bool profile_dynamic;
+ };
+ /* Executes command buffers in order, chaining them into as few kernel
+  * submissions as their event waits and repetitions allow. serial != 0: the
+@@ -205,6 +209,8 @@ void anv_wddm_present_redirected_finish(VkDevice device, void *state);
+ bool anv_wddm_window_image(struct anv_device *device, const struct anv_image *image, uint64_t size);
+ #endif
+ #ifdef HASVK_WDDM_GRAPHICS
++void anv_wddm_profile_install(struct vk_device_dispatch_table *dispatch);
++void anv_wddm_profile_report(struct anv_device *device);
+ void anv_wddm_cmd_state_finish(struct anv_cmd_buffer *cmd);
+ void anv_wddm_init_border_colors(struct anv_device *device);
+ struct anv_address anv_wddm_event_address(struct anv_device *device, const struct anv_event *event);
+diff --git a/a/mesa/anv_wddm_device.c b/b/mesa/anv_wddm_device.c
+index 5b676c2..65b2dab 100644
+--- a/a/mesa/anv_wddm_device.c
++++ b/b/mesa/anv_wddm_device.c
+@@ -353,6 +353,10 @@ static VkResult enumerate(struct vk_instance *base)
+    physical->compiler->constant_buffer_0_is_relative = true;
+    physical->compiler->supports_shader_constants = true;
+    isl_device_init(&physical->isl_dev, &physical->info);
++   if (getenv("HASVK_EXP_MOCS")) {   /* EXPERIMENT (measurement only): the MOCS of everything the driver owns */
++      physical->isl_dev.mocs.internal = (uint32_t)strtoul(getenv("HASVK_EXP_MOCS"), NULL, 16);
++      fprintf(stderr, "HasVK/WDDM EXPERIMENT: internal MOCS 0x%x\n", physical->isl_dev.mocs.internal);
++   }
+    physical->supports_48bit_addresses = physical->use_softpin = true;
+ #ifdef HASVK_WDDM_GRAPHICS
+    /* Every BO has a fixed GPU address, as with softpin upstream: A64 buffer
+@@ -465,8 +469,8 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateInstance(const VkInstanceCreateInfo *in
+     * a clear of the whole image to zeros and ones marks blocks instead of
+     * writing every pixel. Writes of a window-size image slow the CPU down
+     * (shared memory), so this is worth more than its GPU time: Dota 2 clears a
+-    * 2560x1600 image every frame and does not use it. HiZ and MCS are on as
+-    * well; INTEL_DEBUG=noccs turns CCS off. */
++    * 2560x1600 image every frame and does not use it. */
++   if (getenv("HASVK_EXP_CCS") && !atoi(getenv("HASVK_EXP_CCS"))) BITSET_SET(intel_debug, DEBUG_NO_CCS);   /* EXPERIMENT: 0 = off */
+    /* A failed driver assert would otherwise open a modal CRT message box and
+     * keep the application (a game, an unattended test) waiting for a click:
+     * print it to stderr and end the process instead, without the abort()
+@@ -701,8 +705,17 @@ static VkResult submit(struct vk_queue *queue, struct vk_queue_submit *work)
+    }
+    mtx_unlock(&w->submit_mutex);
+    if (failed) { vk_free(&device->vk.alloc, pending); return queue_lost(queue, "HasVK command buffer submission failed"); }
++#ifdef HASVK_WDDM_GRAPHICS
++   anv_wddm_profile_report(device);
++#endif
+    return VK_SUCCESS;
+ }
++/* EXPERIMENT (measurement only): HASVK_EXP_MOCS_RT=<hex>[,<MiB>] gives render
++ * targets, depth and stencil of at least that many MiB this MOCS (anv_mocs). */
++uint32_t anv_wddm_exp_mocs_rt;
++uint64_t anv_wddm_exp_mocs_min;
++int anv_wddm_exp_hiz1;
++int anv_wddm_exp_ccs_noskip;
+ /* Completion thread: in submission order, waits for each non-blocking
+  * submission, verifies its command buffers' markers and guards and the
+  * completion write, then signals its syncs. A failure loses the device. */
+@@ -908,6 +921,21 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateDevice(VkPhysicalDevice physical_handle
+ #endif
+    VkResult result = vk_device_init(&device->vk, &physical->vk, &dispatch, info, allocator);
+    if (result != VK_SUCCESS) { vk_free2(&physical->instance->vk.alloc, allocator, device); return result; }
++#ifdef HASVK_WDDM_GRAPHICS
++   anv_wddm_profile_install(&device->vk.dispatch_table);   /* after vk_device_init, which adds the vk_common entry points */
++#endif
++   {
++      anv_wddm_exp_hiz1 = getenv("HASVK_EXP_HIZ1") != NULL;
++      anv_wddm_exp_ccs_noskip = getenv("HASVK_EXP_CCS_NOSKIP") != NULL;
++      const char *exp_mocs = getenv("HASVK_EXP_MOCS_RT");
++      if (exp_mocs) {
++         char *rest = NULL;
++         anv_wddm_exp_mocs_rt = (uint32_t)strtoul(exp_mocs, &rest, 16);
++         anv_wddm_exp_mocs_min = rest && *rest == ',' ? strtoull(rest + 1, NULL, 10) << 20 : 0;
++         fprintf(stderr, "HasVK/WDDM EXPERIMENT: MOCS 0x%x for render targets and depth of at least %llu MiB\n",
++                 anv_wddm_exp_mocs_rt, (unsigned long long)(anv_wddm_exp_mocs_min >> 20));
++      }
++   }
+    anv_device_set_physical(device, physical);
+    device->vk.command_buffer_ops = &anv_cmd_buffer_ops;
+    /* As upstream anv_CreateDevice: shaders get bounds-checked UBO/SSBO access
+diff --git a/b/mesa/anv_wddm_profile.c b/b/mesa/anv_wddm_profile.c
+new file mode 100644
+index 0000000..6fbd47d
+--- /dev/null
++++ b/b/mesa/anv_wddm_profile.c
+@@ -0,0 +1,724 @@
++/* Measurement only (not part of a release build): HASVK_WDDM_PROFILE_PASSES=1
++ * times every render pass, dispatch and transfer command on the GPU and
++ * prints, every 5 s, the most expensive buckets per frame (stderr).
++ * A slimmed copy of the debug branch's anv_wddm_profile.c.
++ *
++ * The device dispatch table is wrapped after vk_device_init, so the loader
++ * hands the application these entry points. Each profiled command is bracketed
++ * by two bottom-of-pipe timestamps (which serialize the GPU around it, so the
++ * numbers are the command's own time) in a ring of query pairs. submit()
++ * calls anv_wddm_profile_report, which collects every pair the GPU has
++ * written and resets it from the host. Render passes also carry pipeline
++ * statistics (vertices, primitives, VS/FS invocations).
++ * HASVK_WDDM_PROFILE_DRAWS=1 additionally times every draw, by pipeline. */
++#ifdef HASVK_WDDM_GRAPHICS
++#include "anv_wddm.h"
++#include "vk_render_pass.h"
++#include "vk_framebuffer.h"
++#include "util/u_atomic.h"
++#include "util/os_time.h"
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define PAIRS 16384u
++#define BUCKETS 1024u
++#define STATS_FLAGS (VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT | VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT | \
++   VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT | VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT | \
++   VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT | VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT)
++
++enum kind { KIND_PASS = 1, KIND_DISPATCH, KIND_COPY, KIND_BLIT, KIND_CLEAR, KIND_RESOLVE, KIND_FILL, KIND_DRAW, KIND_CMDBUF };
++static const char *const kind_names[] = {"", "pass", "dispatch", "copy", "blit", "clear", "resolve", "fill/update", "draw", "cmd buffer"};
++
++struct meta {
++   uint32_t kind, width, height, draws;
++   uint64_t object;   /* pass: VkRenderPass; draw: anv_graphics_pipeline; dispatch: anv_compute_pipeline */
++   uint32_t aux;      /* pass: isl_aux_usage of attachment i in bits 4i..4i+3 */
++   uint32_t pass_index;   /* draw: index of its render pass bucket's key (render pass + extent), for grouping */
++   uint64_t pass_object;
++   uint32_t pass_width, pass_height;
++   /* pass: depth attachment cleared (1), its image sampled or copied from
++    * (2: SAMPLED, TRANSFER_SRC or INPUT_ATTACHMENT usage), the clear a HiZ fast
++    * clear (4: HiZ and the value anv_image_hiz_clear_value allows) */
++   uint32_t depth_flags;
++   float depth_clear;
++};
++struct bucket {
++   struct meta key;
++   uint64_t count, ticks, draws;
++   uint64_t stats[6];   /* IA vertices, IA primitives, VS, clipper in, clipper out, FS invocations */
++   char text[240];   /* described when created: the render pass may be destroyed later */
++};
++static void describe(const struct meta *m, char *out, size_t size);
++static bool framelog(void);
++static void log_rendering(VkCommandBuffer c, const VkRenderingInfo *info);
++static void log_transfer(VkCommandBuffer c, const char *what, VkImage src, VkImage dst, uint32_t w, uint32_t h);
++static void log_end(VkCommandBuffer c, uint32_t draws);
++
++/* Pipelines seen at bind time, with their shader statistics. Looked up by
++ * address, never dereferenced later (the pipeline may be gone). */
++struct seen_pipeline { const void *pipeline; bool depth_only; char text[240]; };
++#define PIPELINES 4096u
++
++static struct {
++   struct vk_device_dispatch_table orig;
++   struct seen_pipeline pipelines[PIPELINES];
++   uint32_t pipeline_count;
++   struct anv_device *device;
++   VkQueryPool pool, stats_pool;
++   mtx_t mutex;   /* pool creation, pipelines and reports */
++   uint32_t next;
++   uint32_t state[PAIRS];   /* 0 free, 1 recorded */
++   struct meta meta[PAIRS];
++   struct bucket buckets[BUCKETS];
++   uint32_t bucket_count;
++   uint64_t frames, window_start_ms, skipped;
++} g;
++
++static int draws_enabled(void)
++{
++   static int on = -1;
++   if (on < 0) on = getenv("HASVK_WDDM_PROFILE_DRAWS") != NULL;
++   return on;
++}
++
++static int enabled(void)
++{
++   static int on = -1;
++   if (on < 0) on = getenv("HASVK_WDDM_PROFILE_PASSES") != NULL;
++   return on;
++}
++
++static VkDevice device_handle(struct anv_device *device) { return anv_device_to_handle(device); }
++
++/* Returns slot + 1, or 0 if this command is not profiled. */
++static uint32_t begin(struct anv_cmd_buffer *cmd, const struct meta *meta)
++{
++   if (!cmd->wddm || (g.device && g.device != cmd->device)) return 0;
++   if (!g.pool) {
++      mtx_lock(&g.mutex);
++      if (!g.pool && !g.device) {
++         VkQueryPoolCreateInfo info = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
++                                       .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = PAIRS * 2};
++         VkQueryPool pool;
++         if (g.orig.CreateQueryPool(device_handle(cmd->device), &info, NULL, &pool) == VK_SUCCESS) {
++            g.orig.ResetQueryPool(device_handle(cmd->device), pool, 0, PAIRS * 2);
++            info.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS; info.queryCount = PAIRS;
++            info.pipelineStatistics = STATS_FLAGS;
++            VkQueryPool stats_pool;
++            if (g.orig.CreateQueryPool(device_handle(cmd->device), &info, NULL, &stats_pool) == VK_SUCCESS) {
++               g.orig.ResetQueryPool(device_handle(cmd->device), stats_pool, 0, PAIRS);
++               g.stats_pool = stats_pool; g.pool = pool;
++            }
++         }
++         g.device = cmd->device;
++      }
++      mtx_unlock(&g.mutex);
++      if (!g.pool || g.device != cmd->device) return 0;
++   }
++   const uint32_t slot = p_atomic_inc_return(&g.next) % PAIRS;
++   if (p_atomic_cmpxchg(&g.state[slot], 0, 1) != 0) { p_atomic_inc(&g.skipped); return 0; }
++   g.meta[slot] = *meta;
++   g.orig.CmdWriteTimestamp(anv_cmd_buffer_to_handle(cmd), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g.pool, slot * 2);
++   if (meta->kind == KIND_PASS) g.orig.CmdBeginQuery(anv_cmd_buffer_to_handle(cmd), g.stats_pool, slot, 0);
++   return slot + 1;
++}
++
++static void end(struct anv_cmd_buffer *cmd, uint32_t slot)
++{
++   if (slot && g.meta[slot - 1].kind == KIND_PASS) g.orig.CmdEndQuery(anv_cmd_buffer_to_handle(cmd), g.stats_pool, slot - 1);
++   if (slot) g.orig.CmdWriteTimestamp(anv_cmd_buffer_to_handle(cmd), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g.pool, (slot - 1) * 2 + 1);
++}
++
++/* ---- render passes ---- */
++static void note_depth_clear(struct anv_cmd_buffer *cmd, struct meta *meta, const struct anv_image_view *view,
++                             VkAttachmentLoadOp load, float value)
++{
++   if (!view || load != VK_ATTACHMENT_LOAD_OP_CLEAR || !(view->image->vk.aspects & VK_IMAGE_ASPECT_DEPTH_BIT)) return;
++   const struct anv_image *image = view->image;
++   uint32_t flags = 1;
++   if (vk_image_usage(&image->vk, VK_IMAGE_ASPECT_DEPTH_BIT) &
++       (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT))
++      flags |= 2;
++   const uint32_t plane = anv_image_aspect_to_plane(image, VK_IMAGE_ASPECT_DEPTH_BIT);
++   if (image->planes[plane].aux_usage == ISL_AUX_USAGE_HIZ && value == anv_image_hiz_clear_value(cmd->device->info, image))
++      flags |= 4;
++   meta->depth_flags = flags; meta->depth_clear = value;
++}
++static void pass_begin(VkCommandBuffer handle, const VkRenderPassBeginInfo *info)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   if (!cmd->wddm || cmd->wddm->profile_slot) return;
++   struct meta meta = {KIND_PASS, info->renderArea.extent.width, info->renderArea.extent.height, 0,
++                       (uint64_t)(uintptr_t)info->renderPass, 0};
++   VK_FROM_HANDLE(vk_framebuffer, fb, info->framebuffer);
++   VK_FROM_HANDLE(vk_render_pass, rp, info->renderPass);
++   if (fb && !(fb->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT))
++      for (uint32_t i = 0; i < fb->attachment_count && i < 8; ++i) {
++         ANV_FROM_HANDLE(anv_image_view, view, fb->attachments[i]);
++         meta.aux |= ((uint32_t)view->image->planes[0].aux_usage & 15) << (4 * i);
++         if (rp && i < rp->attachment_count && i < info->clearValueCount)
++            note_depth_clear(cmd, &meta, view, rp->attachments[i].load_op, info->pClearValues[i].depthStencil.depth);
++      }
++   cmd->wddm->profile_render_pass = (uint64_t)(uintptr_t)info->renderPass;
++   cmd->wddm->profile_width = info->renderArea.extent.width; cmd->wddm->profile_height = info->renderArea.extent.height;
++   cmd->wddm->profile_slot = begin(cmd, &meta);
++   cmd->wddm->profile_dynamic = false;
++}
++static void pass_end(VkCommandBuffer handle)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   if (!cmd->wddm) return;
++   cmd->wddm->profile_render_pass = 0;
++   if (!cmd->wddm->profile_slot) return;
++   end(cmd, cmd->wddm->profile_slot);
++   cmd->wddm->profile_slot = 0;
++}
++/* Dynamic rendering (Dota 2 uses it). vk_common's render passes call
++ * CmdBeginRendering through this same table: a slot opened by a render pass
++ * is left to the render pass (profile_dynamic is false then).
++ * object: bit 63 set, then per colour attachment (up to 4) and the depth one
++ * 12 bits: format & 0x1ff, load op (clear 1, load 2, other 0) << 9, store
++ * dont-care << 11. */
++static uint64_t attachment_bits(const VkRenderingAttachmentInfo *a)
++{
++   if (!a || !a->imageView) return 0;
++   ANV_FROM_HANDLE(anv_image_view, view, a->imageView);
++   const uint64_t load = a->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR ? 1 : a->loadOp == VK_ATTACHMENT_LOAD_OP_LOAD ? 2 : 0;
++   return ((uint64_t)view->vk.format & 0x1ff) | load << 9 | (uint64_t)(a->storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE) << 11;
++}
++static uint32_t attachment_aux(const VkRenderingAttachmentInfo *a)
++{
++   if (!a || !a->imageView) return 0;
++   ANV_FROM_HANDLE(anv_image_view, view, a->imageView);
++   return (uint32_t)view->image->planes[0].aux_usage & 15;
++}
++/* EXPERIMENT (measurement only, the picture is wrong): HASVK_EXP_CLAMP=<width>
++ * shrinks every render area at least that wide to 16x16, so the pass costs
++ * the GPU almost nothing: an upper bound for what those passes cost the frame. */
++static uint32_t clamp_width(void)
++{
++   static int width = -1;
++   if (width < 0) { const char *v = getenv("HASVK_EXP_CLAMP"); width = v ? atoi(v) : 0; }
++   return (uint32_t)width;
++}
++static const VkRenderingInfo *clamp_info(const VkRenderingInfo *info, VkRenderingInfo *copy)
++{
++   const uint32_t width = clamp_width();
++   if (!width || info->renderArea.extent.width < width) return info;
++   *copy = *info;
++   copy->renderArea.extent.width = MIN2(info->renderArea.extent.width, 16);
++   copy->renderArea.extent.height = MIN2(info->renderArea.extent.height, 16);
++   return copy;
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_clamp_CmdBeginRendering(VkCommandBuffer c, const VkRenderingInfo *info)
++{
++   VkRenderingInfo copy;
++   g.orig.CmdBeginRendering(c, clamp_info(info, &copy));
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdBeginRendering(VkCommandBuffer c, const VkRenderingInfo *info)
++{
++   VkRenderingInfo clamped;
++   if (framelog()) log_rendering(c, info);
++   info = clamp_info(info, &clamped);
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, c);
++   if (cmd->wddm && !cmd->wddm->profile_slot && !(info->flags & VK_RENDERING_RESUMING_BIT)) {
++      uint64_t object = 1ull << 63;
++      uint32_t aux = 0;
++      for (uint32_t i = 0; i < info->colorAttachmentCount && i < 4; ++i) {
++         object |= attachment_bits(&info->pColorAttachments[i]) << (12 * i);
++         aux |= attachment_aux(&info->pColorAttachments[i]) << (4 * i);
++      }
++      object |= attachment_bits(info->pDepthAttachment) << 48;
++      aux |= attachment_aux(info->pDepthAttachment) << 16;
++      struct meta meta = {KIND_PASS, info->renderArea.extent.width, info->renderArea.extent.height, 0, object, aux};
++      if (info->pDepthAttachment && info->pDepthAttachment->imageView) {
++         ANV_FROM_HANDLE(anv_image_view, view, info->pDepthAttachment->imageView);
++         note_depth_clear(cmd, &meta, view, info->pDepthAttachment->loadOp, info->pDepthAttachment->clearValue.depthStencil.depth);
++      }
++      cmd->wddm->profile_render_pass = object;
++      cmd->wddm->profile_width = info->renderArea.extent.width; cmd->wddm->profile_height = info->renderArea.extent.height;
++      cmd->wddm->profile_slot = begin(cmd, &meta);
++      cmd->wddm->profile_dynamic = cmd->wddm->profile_slot != 0;
++   }
++   g.orig.CmdBeginRendering(c, info);
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdEndRendering(VkCommandBuffer c)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, c);
++   g.orig.CmdEndRendering(c);
++   if (framelog()) log_end(c, cmd->wddm && cmd->wddm->profile_slot ? g.meta[cmd->wddm->profile_slot - 1].draws : 0);
++   if (cmd->wddm && cmd->wddm->profile_dynamic) {
++      cmd->wddm->profile_dynamic = false;
++      pass_end(c);
++   }
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdBeginRenderPass(VkCommandBuffer c, const VkRenderPassBeginInfo *info, VkSubpassContents contents)
++{
++   pass_begin(c, info);
++   g.orig.CmdBeginRenderPass(c, info, contents);
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdBeginRenderPass2(VkCommandBuffer c, const VkRenderPassBeginInfo *info, const VkSubpassBeginInfo *sub)
++{
++   pass_begin(c, info);
++   g.orig.CmdBeginRenderPass2(c, info, sub);
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdEndRenderPass(VkCommandBuffer c)
++{
++   g.orig.CmdEndRenderPass(c);
++   pass_end(c);
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdEndRenderPass2(VkCommandBuffer c, const VkSubpassEndInfo *info)
++{
++   g.orig.CmdEndRenderPass2(c, info);
++   pass_end(c);
++}
++
++/* ---- pipelines ---- */
++static void note_pipeline(const struct anv_pipeline *pipeline)
++{
++   mtx_lock(&g.mutex);
++   uint32_t i = 0;
++   while (i < g.pipeline_count && g.pipelines[i].pipeline != pipeline) ++i;
++   if (i == g.pipeline_count && i < PIPELINES) {
++      struct seen_pipeline *d = &g.pipelines[g.pipeline_count++];
++      d->pipeline = pipeline; d->depth_only = false;
++      int n = 0;
++      if (pipeline->type == ANV_PIPELINE_GRAPHICS) {
++         const struct anv_graphics_pipeline *gfx = anv_pipeline_to_graphics((struct anv_pipeline *)pipeline);
++         d->depth_only = true;
++         for (uint32_t r = 0; r < MAX_RTS; ++r)
++            if (gfx->color_comp_writes[r]) d->depth_only = false;
++         n = snprintf(d->text, sizeof(d->text), "%s kill %d", d->depth_only ? "depth-only" : "colour", gfx->kill_pixel);
++      }
++      util_dynarray_foreach(&pipeline->executables, struct anv_pipeline_executable, e)
++         if (n < (int)sizeof(d->text))
++            n += snprintf(d->text + n, sizeof(d->text) - n, " | %s SIMD%u %u inst %u cycles %u sends %u spills %u loops",
++                          _mesa_shader_stage_to_abbrev(e->stage), e->stats.dispatch_width, e->stats.instructions,
++                          e->stats.cycles, e->stats.sends, e->stats.spills, e->stats.loops);
++   }
++   mtx_unlock(&g.mutex);
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdBindPipeline(VkCommandBuffer c, VkPipelineBindPoint point, VkPipeline handle)
++{
++   ANV_FROM_HANDLE(anv_pipeline, pipeline, handle);
++   note_pipeline(pipeline);
++   g.orig.CmdBindPipeline(c, point, handle);
++}
++
++/* ---- draws (counted into the current pass; secondaries add theirs when executed) ---- */
++static void count_draw(struct anv_cmd_buffer *cmd)
++{
++   ++cmd->wddm->profile_draws;
++   if (cmd->wddm->profile_slot) ++g.meta[cmd->wddm->profile_slot - 1].draws;
++}
++/* HASVK_WDDM_PROFILE_DRAWS=1: every draw timed on its own, by pipeline and pass. */
++static uint32_t draw_begin(VkCommandBuffer handle, uint64_t vertices)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   if (!cmd->wddm) return 0;
++   count_draw(cmd);
++   if (!draws_enabled() || !cmd->state.gfx.pipeline) return 0;
++   struct meta meta = {KIND_DRAW, 0, 0, (uint32_t)MIN2(vertices, UINT32_MAX), (uint64_t)(uintptr_t)cmd->state.gfx.pipeline, 0};
++   meta.pass_object = cmd->wddm->profile_render_pass;
++   meta.pass_width = cmd->wddm->profile_width; meta.pass_height = cmd->wddm->profile_height;
++   return begin(cmd, &meta);
++}
++static void draw_end(VkCommandBuffer handle, uint32_t slot)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   end(cmd, slot);
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdDraw(VkCommandBuffer c, uint32_t a, uint32_t b, uint32_t d, uint32_t e)
++{ uint32_t s = draw_begin(c, (uint64_t)a * b); g.orig.CmdDraw(c, a, b, d, e); draw_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdDrawIndexed(VkCommandBuffer c, uint32_t a, uint32_t b, uint32_t d, int32_t e, uint32_t f)
++{ uint32_t s = draw_begin(c, (uint64_t)a * b); g.orig.CmdDrawIndexed(c, a, b, d, e, f); draw_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdDrawIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s)
++{ uint32_t t = draw_begin(c, 0); g.orig.CmdDrawIndirect(c, b, o, n, s); draw_end(c, t); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdDrawIndexedIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s)
++{ uint32_t t = draw_begin(c, 0); g.orig.CmdDrawIndexedIndirect(c, b, o, n, s); draw_end(c, t); }
++
++static VKAPI_ATTR VkResult VKAPI_CALL wrap_BeginCommandBuffer(VkCommandBuffer c, const VkCommandBufferBeginInfo *info)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, c);
++   const VkResult result = g.orig.BeginCommandBuffer(c, info);
++   if (cmd->wddm) { cmd->wddm->profile_slot = 0; cmd->wddm->profile_draws = 0; cmd->wddm->profile_cmd_slot = 0; cmd->wddm->profile_render_pass = 0;
++                    cmd->wddm->profile_dynamic = false; }
++   /* A secondary inherits its render pass (draw buckets are grouped by it). */
++   if (cmd->wddm && cmd->vk.level == VK_COMMAND_BUFFER_LEVEL_SECONDARY && info->pInheritanceInfo &&
++       (info->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT)) {
++      cmd->wddm->profile_render_pass = (uint64_t)(uintptr_t)info->pInheritanceInfo->renderPass;
++      cmd->wddm->profile_width = cmd->wddm->profile_height = 0;
++   }
++   /* Primary command buffers timed whole (GPU busy time including barriers and
++    * everything between passes), reported apart from the passes. */
++   if (result == VK_SUCCESS && cmd->wddm && cmd->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
++      const struct meta meta = {KIND_CMDBUF, 0, 0, 0, 0, 0};
++      cmd->wddm->profile_cmd_slot = begin(cmd, &meta);
++   }
++   return result;
++}
++static VKAPI_ATTR VkResult VKAPI_CALL wrap_EndCommandBuffer(VkCommandBuffer c)
++{
++   struct anv_cmd_buffer *ended = anv_cmd_buffer_from_handle(c);
++   if (ended->wddm && ended->wddm->profile_cmd_slot) { end(ended, ended->wddm->profile_cmd_slot); ended->wddm->profile_cmd_slot = 0; }
++   return g.orig.EndCommandBuffer(c);
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdExecuteCommands(VkCommandBuffer c, uint32_t count, const VkCommandBuffer *secondaries)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, c);
++   if (cmd->wddm && cmd->wddm->profile_slot)
++      for (uint32_t i = 0; i < count; ++i) {
++         ANV_FROM_HANDLE(anv_cmd_buffer, secondary, secondaries[i]);
++         if (secondary->wddm) g.meta[cmd->wddm->profile_slot - 1].draws += secondary->wddm->profile_draws;
++      }
++   g.orig.CmdExecuteCommands(c, count, secondaries);
++}
++
++/* ---- commands outside render passes ---- */
++static uint32_t outside(VkCommandBuffer handle, uint32_t kind, uint32_t width, uint32_t height, uint64_t object)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   if (!cmd->wddm || cmd->wddm->profile_slot) return 0;
++   const struct meta meta = {kind, width, height, 0, object, 0};
++   return begin(cmd, &meta);
++}
++static void outside_end(VkCommandBuffer handle, uint32_t slot)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   end(cmd, slot);
++}
++static uint64_t compute_pipeline(VkCommandBuffer handle)
++{
++   ANV_FROM_HANDLE(anv_cmd_buffer, cmd, handle);
++   return (uint64_t)(uintptr_t)cmd->state.compute.pipeline;
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdDispatch(VkCommandBuffer c, uint32_t x, uint32_t y, uint32_t z)
++{ uint32_t s = outside(c, KIND_DISPATCH, x, y * z, compute_pipeline(c)); g.orig.CmdDispatch(c, x, y, z); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdDispatchIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o)
++{ uint32_t s = outside(c, KIND_DISPATCH, 0, 0, compute_pipeline(c)); g.orig.CmdDispatchIndirect(c, b, o); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdCopyBuffer(VkCommandBuffer c, VkBuffer a, VkBuffer b, uint32_t n, const VkBufferCopy *r)
++{ uint32_t s = outside(c, KIND_COPY, 0, 0, 0); g.orig.CmdCopyBuffer(c, a, b, n, r); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdCopyImage(VkCommandBuffer c, VkImage a, VkImageLayout al, VkImage b, VkImageLayout bl, uint32_t n, const VkImageCopy *r)
++{ log_transfer(c, "copy", a, b, n ? r[0].extent.width : 0, n ? r[0].extent.height : 0);
++  uint32_t s = outside(c, KIND_COPY, n ? r[0].extent.width : 0, n ? r[0].extent.height : 0, 0); g.orig.CmdCopyImage(c, a, al, b, bl, n, r); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdCopyBufferToImage(VkCommandBuffer c, VkBuffer a, VkImage b, VkImageLayout l, uint32_t n, const VkBufferImageCopy *r)
++{ log_transfer(c, "upload", VK_NULL_HANDLE, b, n ? r[0].imageExtent.width : 0, n ? r[0].imageExtent.height : 0);
++  uint32_t s = outside(c, KIND_COPY, n ? r[0].imageExtent.width : 0, n ? r[0].imageExtent.height : 1, 1); g.orig.CmdCopyBufferToImage(c, a, b, l, n, r); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdCopyImageToBuffer(VkCommandBuffer c, VkImage a, VkImageLayout l, VkBuffer b, uint32_t n, const VkBufferImageCopy *r)
++{ uint32_t s = outside(c, KIND_COPY, n ? r[0].imageExtent.width : 0, n ? r[0].imageExtent.height : 2, 2); g.orig.CmdCopyImageToBuffer(c, a, l, b, n, r); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdBlitImage(VkCommandBuffer c, VkImage a, VkImageLayout al, VkImage b, VkImageLayout bl, uint32_t n, const VkImageBlit *r, VkFilter f)
++{ log_transfer(c, "blit", a, b, n ? (uint32_t)abs(r[0].dstOffsets[1].x - r[0].dstOffsets[0].x) : 0, n ? (uint32_t)abs(r[0].dstOffsets[1].y - r[0].dstOffsets[0].y) : 0);
++  uint32_t s = outside(c, KIND_BLIT, n ? (uint32_t)abs(r[0].dstOffsets[1].x - r[0].dstOffsets[0].x) : 0,
++                       n ? (uint32_t)abs(r[0].dstOffsets[1].y - r[0].dstOffsets[0].y) : 0, 0);
++  g.orig.CmdBlitImage(c, a, al, b, bl, n, r, f); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdResolveImage(VkCommandBuffer c, VkImage a, VkImageLayout al, VkImage b, VkImageLayout bl, uint32_t n, const VkImageResolve *r)
++{ uint32_t s = outside(c, KIND_RESOLVE, n ? r[0].extent.width : 0, n ? r[0].extent.height : 0, 0); g.orig.CmdResolveImage(c, a, al, b, bl, n, r); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdClearColorImage(VkCommandBuffer c, VkImage i, VkImageLayout l, const VkClearColorValue *v, uint32_t n, const VkImageSubresourceRange *r)
++{ log_transfer(c, "clear_color_image", VK_NULL_HANDLE, i, 0, 0);
++  uint32_t s = outside(c, KIND_CLEAR, 0, 0, 0); g.orig.CmdClearColorImage(c, i, l, v, n, r); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdClearDepthStencilImage(VkCommandBuffer c, VkImage i, VkImageLayout l, const VkClearDepthStencilValue *v, uint32_t n, const VkImageSubresourceRange *r)
++{ log_transfer(c, "clear_depth_image", VK_NULL_HANDLE, i, 0, 0);
++  uint32_t s = outside(c, KIND_CLEAR, 1, 0, 1); g.orig.CmdClearDepthStencilImage(c, i, l, v, n, r); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdFillBuffer(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, VkDeviceSize size, uint32_t d)
++{ uint32_t s = outside(c, KIND_FILL, 0, 0, 0); g.orig.CmdFillBuffer(c, b, o, size, d); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdUpdateBuffer(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, VkDeviceSize size, const void *d)
++{ uint32_t s = outside(c, KIND_FILL, 1, 0, 1); g.orig.CmdUpdateBuffer(c, b, o, size, d); outside_end(c, s); }
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdPipelineBarrier(VkCommandBuffer c, VkPipelineStageFlags src, VkPipelineStageFlags dst, VkDependencyFlags f,
++   uint32_t mc, const VkMemoryBarrier *m, uint32_t bc, const VkBufferMemoryBarrier *b, uint32_t ic, const VkImageMemoryBarrier *ib)
++{
++   /* Layout transitions (HiZ resolves, fast-clear resolves) run inside the barrier. */
++   uint32_t s = outside(c, KIND_RESOLVE, ic, 1, 3);
++   g.orig.CmdPipelineBarrier(c, src, dst, f, mc, m, bc, b, ic, ib);
++   outside_end(c, s);
++}
++
++/* ---- HASVK_EXP_FRAMELOG=<first present>[:<count>] (measurement only): every
++ * pass, barrier, transfer and submission recorded while those presents are
++ * current, one line each (stderr), with the image pointers: what the
++ * application does with each image during a frame. ---- */
++static uint32_t log_first, log_count, present_count;
++static bool framelog(void)
++{
++   static int parsed;
++   if (!parsed) {
++      const char *v = getenv("HASVK_EXP_FRAMELOG");
++      if (v) { log_first = (uint32_t)atoi(v); const char *c = strchr(v, ':'); log_count = c ? (uint32_t)atoi(c + 1) : 1; }
++      parsed = 1;
++   }
++   const uint32_t now = p_atomic_read(&present_count);
++   return log_count && now >= log_first && now < log_first + log_count;
++}
++static void log_image(char *out, size_t size, const struct anv_image *image)
++{
++   if (!image) { snprintf(out, size, "none"); return; }
++   snprintf(out, size, "%p(f%u %ux%u L%u A%u S%u u0x%x aux%u%s)", (const void *)image, image->vk.format, image->vk.extent.width,
++            image->vk.extent.height, image->vk.mip_levels, image->vk.array_layers, image->vk.samples, image->vk.usage,
++            image->planes[0].aux_usage, image->from_wsi ? " wsi" : "");
++}
++static void log_attachment(const char *name, const VkRenderingAttachmentInfo *a)
++{
++   if (!a || !a->imageView) return;
++   ANV_FROM_HANDLE(anv_image_view, view, a->imageView);
++   char text[160]; log_image(text, sizeof(text), view->image);
++   fprintf(stderr, "    %s %s viewfmt %u layout %u load %u store %u clear %g %g %g %g / d %g s %u%s\n", name, text, view->vk.format,
++           a->imageLayout, a->loadOp, a->storeOp, a->clearValue.color.float32[0], a->clearValue.color.float32[1],
++           a->clearValue.color.float32[2], a->clearValue.color.float32[3], a->clearValue.depthStencil.depth,
++           a->clearValue.depthStencil.stencil, a->resolveImageView ? " +resolve" : "");
++}
++static void log_rendering(VkCommandBuffer c, const VkRenderingInfo *info)
++{
++   fprintf(stderr, "FL %u cb %p pass %ux%u+%d+%d flags 0x%x layers %u\n", present_count, (void *)c, info->renderArea.extent.width,
++           info->renderArea.extent.height, info->renderArea.offset.x, info->renderArea.offset.y, info->flags, info->layerCount);
++   for (uint32_t i = 0; i < info->colorAttachmentCount; ++i) log_attachment("col", &info->pColorAttachments[i]);
++   log_attachment("depth", info->pDepthAttachment);
++   if (info->pStencilAttachment && info->pStencilAttachment != info->pDepthAttachment) log_attachment("stencil", info->pStencilAttachment);
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdPipelineBarrier2(VkCommandBuffer c, const VkDependencyInfo *info)
++{
++   if (framelog())
++      for (uint32_t i = 0; i < info->imageMemoryBarrierCount; ++i) {
++         const VkImageMemoryBarrier2 *b = &info->pImageMemoryBarriers[i];
++         char text[160]; log_image(text, sizeof(text), anv_image_from_handle(b->image));
++         fprintf(stderr, "FL %u cb %p barrier2 %s layout %u -> %u aspect 0x%x\n", present_count, (void *)c, text, b->oldLayout, b->newLayout,
++                 b->subresourceRange.aspectMask);
++      }
++   /* HASVK_WDDM_PROFILE_BARRIERS: timed by the first image's size and layouts. */
++   uint32_t s = 0;
++   static int timed = -1;
++   if (timed < 0) timed = getenv("HASVK_WDDM_PROFILE_BARRIERS") != NULL;
++   if (timed && info->imageMemoryBarrierCount) {
++      const VkImageMemoryBarrier2 *b = &info->pImageMemoryBarriers[0];
++      const struct anv_image *image = anv_image_from_handle(b->image);
++      ANV_FROM_HANDLE(anv_cmd_buffer, cmd, c);
++      if (cmd->wddm && !cmd->wddm->profile_slot) {
++         const struct meta meta = {KIND_RESOLVE, image->vk.extent.width, image->vk.extent.height, 0,
++                                   (uint64_t)image->vk.format << 32 | (uint64_t)(b->oldLayout & 0xffff) << 16 | (b->newLayout & 0xffff), 0};
++         s = begin(cmd, &meta);
++      }
++   }
++   g.orig.CmdPipelineBarrier2(c, info);
++   if (s) { ANV_FROM_HANDLE(anv_cmd_buffer, cmd, c); end(cmd, s); }
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_log_CmdPipelineBarrier(VkCommandBuffer c, VkPipelineStageFlags src, VkPipelineStageFlags dst, VkDependencyFlags f,
++   uint32_t mc, const VkMemoryBarrier *m, uint32_t bc, const VkBufferMemoryBarrier *b, uint32_t ic, const VkImageMemoryBarrier *ib)
++{
++   if (framelog())
++      for (uint32_t i = 0; i < ic; ++i) {
++         char text[160]; log_image(text, sizeof(text), anv_image_from_handle(ib[i].image));
++         fprintf(stderr, "FL %u cb %p barrier %s layout %u -> %u aspect 0x%x\n", present_count, (void *)c, text, ib[i].oldLayout, ib[i].newLayout,
++                 ib[i].subresourceRange.aspectMask);
++      }
++   g.orig.CmdPipelineBarrier(c, src, dst, f, mc, m, bc, b, ic, ib);
++}
++static VKAPI_ATTR void VKAPI_CALL wrap_CmdClearAttachments(VkCommandBuffer c, uint32_t ac, const VkClearAttachment *a, uint32_t rc, const VkClearRect *r)
++{
++   if (framelog())
++      fprintf(stderr, "FL %u cb %p clear_attachments %u aspect 0x%x rects %u first %ux%u+%d+%d\n", present_count, (void *)c, ac,
++              ac ? a[0].aspectMask : 0, rc, rc ? r[0].rect.extent.width : 0, rc ? r[0].rect.extent.height : 0,
++              rc ? r[0].rect.offset.x : 0, rc ? r[0].rect.offset.y : 0);
++   g.orig.CmdClearAttachments(c, ac, a, rc, r);
++}
++static VKAPI_ATTR VkResult VKAPI_CALL wrap_QueueSubmit(VkQueue q, uint32_t n, const VkSubmitInfo *s, VkFence fence)
++{
++   if (framelog())
++      for (uint32_t i = 0; i < n; ++i)
++         for (uint32_t j = 0; j < s[i].commandBufferCount; ++j)
++            fprintf(stderr, "FL %u submit cb %p\n", present_count, (void *)s[i].pCommandBuffers[j]);
++   return g.orig.QueueSubmit(q, n, s, fence);
++}
++static VKAPI_ATTR VkResult VKAPI_CALL wrap_QueueSubmit2(VkQueue q, uint32_t n, const VkSubmitInfo2 *s, VkFence fence)
++{
++   if (framelog())
++      for (uint32_t i = 0; i < n; ++i)
++         for (uint32_t j = 0; j < s[i].commandBufferInfoCount; ++j)
++            fprintf(stderr, "FL %u submit2 cb %p\n", present_count, (void *)s[i].pCommandBufferInfos[j].commandBuffer);
++   return g.orig.QueueSubmit2(q, n, s, fence);
++}
++static void log_end(VkCommandBuffer c, uint32_t draws)
++{
++   fprintf(stderr, "FL %u cb %p endpass draws %u\n", present_count, (void *)c, draws);
++}
++static void log_transfer(VkCommandBuffer c, const char *what, VkImage src, VkImage dst, uint32_t w, uint32_t h)
++{
++   if (!framelog()) return;
++   char a[160], b[160]; log_image(a, sizeof(a), anv_image_from_handle(src)); log_image(b, sizeof(b), anv_image_from_handle(dst));
++   fprintf(stderr, "FL %u cb %p %s %ux%u src %s dst %s\n", present_count, (void *)c, what, w, h, a, b);
++}
++
++static VKAPI_ATTR VkResult VKAPI_CALL wrap_QueuePresentKHR(VkQueue q, const VkPresentInfoKHR *info)
++{
++   p_atomic_inc(&g.frames);
++   if (framelog()) fprintf(stderr, "FL %u present image index %u\n", present_count, info->swapchainCount ? info->pImageIndices[0] : 0);
++   p_atomic_inc(&present_count);
++   return g.orig.QueuePresentKHR(q, info);
++}
++
++void
++anv_wddm_profile_install(struct vk_device_dispatch_table *d)
++{
++   if (!enabled()) {
++      if (clamp_width() && d->CmdBeginRendering) {
++         g.orig = *d;
++         d->CmdBeginRendering = wrap_clamp_CmdBeginRendering;
++         fprintf(stderr, "HasVK/WDDM EXPERIMENT: render areas at least %u wide shrunk to 16x16\n", clamp_width());
++      }
++      return;
++   }
++   static int installed;
++   if (installed++) { fprintf(stderr, "HasVK/WDDM profile: only the first device is profiled\n"); return; }
++   mtx_init(&g.mutex, mtx_plain);
++   g.orig = *d;
++#define WRAP(name) if (d->name) d->name = wrap_##name
++   WRAP(QueuePresentKHR);
++   WRAP(CmdBeginRenderPass); WRAP(CmdBeginRenderPass2); WRAP(CmdEndRenderPass); WRAP(CmdEndRenderPass2);
++   WRAP(CmdBeginRendering); WRAP(CmdEndRendering);
++   WRAP(CmdDraw); WRAP(CmdDrawIndexed); WRAP(CmdDrawIndirect); WRAP(CmdDrawIndexedIndirect);
++   WRAP(BeginCommandBuffer); WRAP(CmdExecuteCommands); WRAP(CmdBindPipeline); WRAP(EndCommandBuffer);
++   WRAP(CmdDispatch); WRAP(CmdDispatchIndirect); WRAP(CmdCopyBuffer); WRAP(CmdCopyImage);
++   WRAP(CmdCopyBufferToImage); WRAP(CmdCopyImageToBuffer); WRAP(CmdBlitImage); WRAP(CmdResolveImage);
++   WRAP(CmdClearColorImage); WRAP(CmdClearDepthStencilImage); WRAP(CmdFillBuffer); WRAP(CmdUpdateBuffer);
++   if (getenv("HASVK_WDDM_PROFILE_BARRIERS")) { WRAP(CmdPipelineBarrier); WRAP(CmdPipelineBarrier2); }
++   if (getenv("HASVK_EXP_FRAMELOG")) {
++      if (d->CmdPipelineBarrier && !getenv("HASVK_WDDM_PROFILE_BARRIERS")) d->CmdPipelineBarrier = wrap_log_CmdPipelineBarrier;
++      WRAP(CmdPipelineBarrier2); WRAP(CmdClearAttachments); WRAP(QueueSubmit); WRAP(QueueSubmit2);
++   }
++#undef WRAP
++   fprintf(stderr, "HasVK/WDDM profile: timing render passes, dispatches and transfers%s\n", draws_enabled() ? " and every draw" : "");
++}
++
++static int compare_buckets(const void *a, const void *b)
++{
++   const struct bucket *x = a, *y = b;
++   return x->ticks < y->ticks ? 1 : x->ticks > y->ticks ? -1 : 0;
++}
++
++static void add(const struct meta *m, uint64_t ticks, const uint64_t *stats)
++{
++   uint32_t i = 0;
++   for (; i < g.bucket_count; ++i) {
++      const struct meta *k = &g.buckets[i].key;
++      if (k->kind == m->kind && k->object == m->object && k->width == m->width && k->height == m->height &&
++          k->pass_object == m->pass_object && k->pass_width == m->pass_width && k->pass_height == m->pass_height &&
++          k->depth_flags == m->depth_flags) break;
++   }
++   if (i == g.bucket_count) {
++      if (i == BUCKETS) return;
++      g.buckets[g.bucket_count++] = (struct bucket){.key = *m};
++      g.buckets[i].key.draws = 0;
++      describe(m, g.buckets[i].text, sizeof(g.buckets[i].text));
++   }
++   ++g.buckets[i].count; g.buckets[i].ticks += ticks; g.buckets[i].draws += m->draws;
++   if (stats) for (int s = 0; s < 6; ++s) g.buckets[i].stats[s] += stats[s];
++}
++
++static const char *pipeline_text(uint64_t object)
++{
++   for (uint32_t i = 0; i < g.pipeline_count; ++i)
++      if (g.pipelines[i].pipeline == (const void *)(uintptr_t)object) return g.pipelines[i].text;
++   return "?";
++}
++
++static int describe_pass(uint64_t object, uint32_t aux, char *out, size_t size)
++{
++   if (!object) return snprintf(out, size, " no pass");
++   if (object >> 63) {   /* dynamic rendering: see attachment_bits */
++      static const char *const loads[] = {"", "/clr", "/load", "/?"};
++      int n = snprintf(out, size, " dyn, col:");
++      for (uint32_t i = 0; i < 5; ++i) {
++         const uint32_t bits = (object >> (12 * i)) & 0xfff;
++         if (i == 4 && n < (int)size) n += snprintf(out + n, size - n, " depth:");
++         if (!bits || n >= (int)size - 24) continue;
++         n += snprintf(out + n, size - n, " %u%s%s%s", bits & 0x1ff, i < 4 ? ((aux >> (4 * i)) & 15 ? "/aux" : "") : ((aux >> 16) & 15 ? "/aux" : ""),
++                       loads[(bits >> 9) & 3], bits >> 11 ? "/nostore" : "");
++      }
++      return n;
++   }
++   VK_FROM_HANDLE(vk_render_pass, pass, (VkRenderPass)(uintptr_t)object);
++   int n = snprintf(out, size, " %u subpass, att:", pass->subpass_count);
++   for (uint32_t i = 0; i < pass->attachment_count && n < (int)size - 24; ++i)
++      n += snprintf(out + n, size - n, " %d%s%s%s%s", pass->attachments[i].format, i < 8 && (aux >> (4 * i)) & 15 ? "/aux" : "",
++                    pass->attachments[i].samples > 1 ? "xMS" : "",
++                    pass->attachments[i].load_op == VK_ATTACHMENT_LOAD_OP_CLEAR ? "/clr" :
++                    pass->attachments[i].load_op == VK_ATTACHMENT_LOAD_OP_LOAD ? "/load" : "",
++                    pass->attachments[i].store_op == VK_ATTACHMENT_STORE_OP_DONT_CARE ? "/nostore" : "");
++   return n;
++}
++
++static void describe(const struct meta *m, char *out, size_t size)
++{
++   if (m->kind == KIND_DRAW) {
++      int n = snprintf(out, size, "draw in %4ux%-4u", m->pass_width, m->pass_height);
++      n += describe_pass(m->pass_object, 0, out + n, size - n);
++      if (n < (int)size) snprintf(out + n, size - n, " :: %s", pipeline_text(m->object));
++      return;
++   }
++   int n = snprintf(out, size, "%-11s %4ux%-4u", kind_names[m->kind], m->width, m->height);
++   if (m->kind == KIND_DISPATCH && n < (int)size) { snprintf(out + n, size - n, " :: %s", pipeline_text(m->object)); return; }
++   if (m->kind == KIND_RESOLVE && m->object >> 32 && n < (int)size) {   /* a timed barrier2 */
++      snprintf(out + n, size - n, " barrier fmt %u layout %u -> %u", (unsigned)(m->object >> 32), (unsigned)((m->object >> 16) & 0xffff),
++               (unsigned)(m->object & 0xffff));
++      return;
++   }
++   if (m->kind != KIND_PASS || !m->object) return;
++   n += describe_pass(m->object, m->aux, out + n, size - n);
++   if (m->depth_flags && n < (int)size)
++      snprintf(out + n, size - n, " | depth clear %.3f %s%s", m->depth_clear, m->depth_flags & 2 ? "sampled " : "",
++               m->depth_flags & 4 ? "fast" : "SLOW");
++}
++
++void
++anv_wddm_profile_report(struct anv_device *device)
++{
++   if (!enabled() || !g.pool || g.device != device) return;
++   if (mtx_trylock(&g.mutex) != thrd_success) return;
++   const VkDevice handle = device_handle(device);
++   const uint64_t mask = device->physical->info.timestamp_frequency ? (1ull << 36) - 1 : ~0ull;
++   for (uint32_t slot = 0; slot < PAIRS; ++slot) {
++      if (p_atomic_read(&g.state[slot]) != 1) continue;
++      uint64_t r[4];
++      if (g.orig.GetQueryPoolResults(handle, g.pool, slot * 2, 2, sizeof(r), r, 16,
++                                     VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != VK_SUCCESS ||
++          !r[1] || !r[3])
++         continue;
++      uint64_t stats[7];
++      const bool pass = g.meta[slot].kind == KIND_PASS;
++      if (pass && (g.orig.GetQueryPoolResults(handle, g.stats_pool, slot, 1, sizeof(stats), stats, sizeof(stats),
++                                              VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != VK_SUCCESS ||
++                   !stats[6]))
++         continue;
++      add(&g.meta[slot], (r[2] - r[0]) & mask, pass ? stats : NULL);
++      g.orig.ResetQueryPool(handle, g.pool, slot * 2, 2);
++      if (pass) g.orig.ResetQueryPool(handle, g.stats_pool, slot, 1);
++      p_atomic_set(&g.state[slot], 0);
++   }
++   const uint64_t now = os_time_get_nano() / 1000000;
++   if (!g.window_start_ms) g.window_start_ms = now;
++   if (now - g.window_start_ms >= 5000) {
++      const uint64_t frames = p_atomic_xchg(&g.frames, 0);
++      const double ms_per_tick = 1000.0 / device->physical->info.timestamp_frequency;
++      const double divisor = frames ? (double)frames : 1.0;
++      qsort(g.buckets, g.bucket_count, sizeof(g.buckets[0]), compare_buckets);
++      double by_kind[KIND_CMDBUF + 1] = {0};
++      for (uint32_t i = 0; i < g.bucket_count; ++i) by_kind[g.buckets[i].key.kind] += g.buckets[i].ticks * ms_per_tick / divisor;
++      fprintf(stderr, "HasVK/WDDM profile: %llu frames in %.1f s, GPU ms/frame: passes %.2f, dispatches %.2f, copies %.2f, blits %.2f, "
++              "clears %.2f, resolves/barriers %.2f, fills %.2f, draws %.2f; primary command buffers %.2f (%llu skipped)\n",
++              (unsigned long long)frames, (now - g.window_start_ms) / 1000.0, by_kind[KIND_PASS], by_kind[KIND_DISPATCH],
++              by_kind[KIND_COPY], by_kind[KIND_BLIT], by_kind[KIND_CLEAR], by_kind[KIND_RESOLVE], by_kind[KIND_FILL],
++              by_kind[KIND_DRAW], by_kind[KIND_CMDBUF], (unsigned long long)g.skipped);
++      for (uint32_t i = 0, shown = 0; i < g.bucket_count && shown < 40; ++i) {
++         const struct bucket *b = &g.buckets[i];
++         if (b->key.kind == KIND_CMDBUF) continue;
++         ++shown;
++         fprintf(stderr, "  %6.2f ms/frame %6.1f/frame avg %7.3f ms draws %6.1f | %s\n", b->ticks * ms_per_tick / divisor,
++                 b->count / divisor, b->ticks * ms_per_tick / b->count, (double)b->draws / b->count, b->text);
++         if (b->key.kind == KIND_PASS && shown <= 16)
++            fprintf(stderr, "      per pass: %.1fk IA vertices, %.1fk prims, %.1fk VS, %.1fk clip in, %.1fk clip out, %.1fk FS\n",
++                    b->stats[0] / 1e3 / b->count, b->stats[1] / 1e3 / b->count, b->stats[2] / 1e3 / b->count,
++                    b->stats[3] / 1e3 / b->count, b->stats[4] / 1e3 / b->count, b->stats[5] / 1e3 / b->count);
++      }
++      g.bucket_count = 0; g.skipped = 0; g.window_start_ms = now;
++   }
++   mtx_unlock(&g.mutex);
++}
++#endif
+diff --git a/a/mesa/apply-compiler-port.py b/b/mesa/apply-compiler-port.py
+index 81d059e..89b8a90 100644
+--- a/a/mesa/apply-compiler-port.py
++++ b/b/mesa/apply-compiler-port.py
+@@ -585,6 +585,10 @@ static inline float
+ anv_image_hiz_clear_value(const struct intel_device_info * const devinfo,
+                           const struct anv_image *image)
+ {
++   /* EXPERIMENT (measurement only, sampled depth then reads 0.0): HASVK_EXP_HIZ1
++    * fast-clears every depth image to 1.0. */
++   extern int anv_wddm_exp_hiz1;
++   if (unlikely(anv_wddm_exp_hiz1)) return ANV_HZ_FC_VAL;
+    return devinfo->ver == 8 && anv_can_sample_with_hiz(devinfo, image) ? 0.0f : ANV_HZ_FC_VAL;
+ }
+ 
+@@ -641,7 +645,10 @@ void *anv_batch_emit_dwords(struct anv_batch *batch, int num_dwords);
+     # external or the internal MOCS.
+     ('''   return isl_mocs(&device->isl_dev, usage, bo && bo->is_external);
+ }''', '''#ifdef _WIN32
+-   (void)usage;
++   extern uint32_t anv_wddm_exp_mocs_rt; extern uint64_t anv_wddm_exp_mocs_min;   /* EXPERIMENT */
++   if (unlikely(anv_wddm_exp_mocs_rt) && bo && !bo->is_external && bo->size >= anv_wddm_exp_mocs_min &&
++       (usage & (ISL_SURF_USAGE_RENDER_TARGET_BIT | ISL_SURF_USAGE_DEPTH_BIT | ISL_SURF_USAGE_STENCIL_BIT)))
++      return anv_wddm_exp_mocs_rt;
+    return bo && bo->is_external ? device->isl_dev.mocs.external : device->isl_dev.mocs.internal;
+ #else
+    return isl_mocs(&device->isl_dev, usage, bo && bo->is_external);
+@@ -1969,6 +1976,7 @@ owned_sources = {
+     'src/intel/vulkan_hasvk/anv_wddm_batch.c': (ROOT / 'mesa/anv_wddm_batch.c').read_text(encoding='utf-8'),
+     'src/intel/vulkan_hasvk/anv_wddm_command.c': (ROOT / 'mesa/anv_wddm_command.c').read_text(encoding='utf-8'),
+     'src/intel/vulkan_hasvk/anv_wddm_present.c': (ROOT / 'mesa/anv_wddm_present.c').read_text(encoding='utf-8'),
++    'src/intel/vulkan_hasvk/anv_wddm_profile.c': (ROOT / 'mesa/anv_wddm_profile.c').read_text(encoding='utf-8'),
+     'src/intel/wddm_compiler/vulkan_hasvk_wddm.def': (ROOT / 'mesa/anv_wddm.def').read_text(encoding='utf-8'),
+     'src/intel/wddm_compiler/elk_compile_probe.c': (ROOT / 'mesa/elk_compile_probe.c').read_text(encoding='utf-8'),
+     'src/intel/wddm_compiler/elk_abi_probe.cpp': (ROOT / 'mesa/elk_abi_probe.cpp').read_text(encoding='utf-8'),
+@@ -2119,7 +2127,7 @@ if get_option('hasvk-wddm-graphics')
+ endif
+ libanv_wddm_objects = static_library('anv_wddm_objects',
+   ['../vulkan_hasvk/anv_wddm_device.c', '../vulkan_hasvk/anv_wddm_memory.c', '../vulkan_hasvk/anv_wddm_pools.c', '../vulkan_hasvk/anv_allocator.c',
+-   '../vulkan_hasvk/anv_wddm_present.c',
++   '../vulkan_hasvk/anv_wddm_present.c', '../vulkan_hasvk/anv_wddm_profile.c',
+    '../vulkan_hasvk/anv_descriptor_set.c',
+    '../vulkan_hasvk/anv_image.c', '../vulkan_hasvk/anv_android_stubs.c',
+    '../vulkan_hasvk/anv_pipeline.c', '../vulkan_hasvk/anv_pipeline_cache.c', '../vulkan_hasvk/anv_wddm_batch.c',
+diff --git a/a/mesa/graphics_sources.py b/b/mesa/graphics_sources.py
+index 54bc9c7..05fe74b 100644
+--- a/a/mesa/graphics_sources.py
++++ b/b/mesa/graphics_sources.py
+@@ -260,6 +260,8 @@ ccs_resolved_add(struct anv_cmd_buffer *cmd_buffer,
+                  const struct anv_image *image)
+ {
+    struct anv_wddm_cmd_state *w = cmd_buffer->wddm;
++   extern int anv_wddm_exp_ccs_noskip;   /* EXPERIMENT */
++   if (anv_wddm_exp_ccs_noskip) return;
+    if (ccs_resolved_find(cmd_buffer, image, false))
+       return;
+    /* Forgetting an image only costs it one predicated resolve. */
