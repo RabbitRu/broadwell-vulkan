@@ -8,6 +8,12 @@ build\probes (they are not part of test-all):
                        REPLAY_RECORD_ONLY=<n> times the driver's recording CPU
     replay_probe       replay of one captured draw (branch debug, HASVK_WDDM_CAPTURE_DIR)
     depth_fill_probe, flops_probe, sample_probe, vs_fetch_probe, bandwidth_probe
+    flip_wsi_probe     a window that covers the screen (presents by exclusive flip;
+                       tools\dev\test-flip.ps1)
+  Presentation, on Intel's D3D11 driver:
+    d3d11_flip_probe   does DWM compose a window of the screen's size (blt or flip
+                       model, DXGI full-screen state); with tools\dev\test-flip-probe.ps1
+    screen_capture     what the display shows, through Desktop Duplication
   The same loads on Intel's own D3D11 driver:
     d3d11_depth_fill_probe, d3d11_flops_probe, d3d11_sample_probe,
     d3d11_vs_fetch_probe, d3d11_replay_probe
@@ -50,8 +56,12 @@ function Build([string]$name, [string[]]$libs, [string[]]$extra = @()) {
    else { "  built $name.exe" }
    Remove-Item -LiteralPath $obj -ErrorAction SilentlyContinue
 }
-foreach ($name in 'replay_pass_probe', 'replay_probe', 'depth_fill_probe', 'flops_probe', 'sample_probe', 'vs_fetch_probe', 'bandwidth_probe') {
+foreach ($name in 'replay_pass_probe', 'replay_probe', 'depth_fill_probe', 'flops_probe', 'sample_probe', 'vs_fetch_probe', 'bandwidth_probe', 'flip_wsi_probe') {
    Build $name @('user32.lib')
+}
+# Presentation: what DWM composes (d3d11_flip_probe), what the screen shows (screen_capture).
+foreach ($name in 'd3d11_flip_probe', 'screen_capture') {
+   Build $name @('d3d11.lib', 'dxgi.lib', 'user32.lib')
 }
 Build 'cpu_map_probe' @('d3d11.lib', 'user32.lib')
 foreach ($name in 'd3d11_depth_fill_probe', 'd3d11_flops_probe', 'd3d11_sample_probe', 'd3d11_vs_fetch_probe', 'd3d11_replay_probe') {

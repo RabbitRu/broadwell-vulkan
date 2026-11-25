@@ -3,7 +3,7 @@
  * gl_present_trace.cpp; a D3D11 window clears and presents a few frames with
  * the chosen swap effect, then closes itself. Each Present() is also timed.
  *
- * Usage: D3D11PresentTrace.exe <log file> [frames] [discard|sequential|flip_discard|flip_sequential] */
+ * Usage: D3D11PresentTrace.exe <log file> [frames] [discard|sequential|flip_discard|flip_sequential] [sync interval] [hook|nohook] [fullscreen] */
 #define PRESENT_TRACE_NO_MAIN
 #include "gl_present_trace.cpp"
 #include <d3d11.h>
@@ -49,8 +49,23 @@ int main(int argc, char **argv)
    HRESULT hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &desc,
                                               &swap, &device, nullptr, &context);
    if (FAILED(hr)) { fprintf(out, "D3D11CreateDeviceAndSwapChain failed %#lx\n", (unsigned long)hr); return 6; }
+   /* "fullscreen" as the sixth argument: DXGI's full-screen state in the
+    * current mode (exclusive ownership of the output, presents are flips);
+    * left again before the swap chain is released. */
+   const bool fullscreen = argc > 6 && !strcmp(argv[6], "fullscreen");
+   if (fullscreen) {
+      phase = "enter fullscreen";
+      hr = swap->SetFullscreenState(TRUE, nullptr);
+      { std::lock_guard<std::mutex> lock(gate); fprintf(out, "SetFullscreenState(TRUE) = %#lx\n", (unsigned long)hr); fflush(out); }
+      phase = "resize buffers";
+      hr = swap->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
+      { std::lock_guard<std::mutex> lock(gate); fprintf(out, "ResizeBuffers = %#lx\n", (unsigned long)hr); fflush(out); }
+      pump();
+   }
    ID3D11Texture2D *back = nullptr; swap->GetBuffer(0, __uuidof(ID3D11Texture2D), (void **)&back);
    ID3D11RenderTargetView *rtv = nullptr; device->CreateRenderTargetView(back, nullptr, &rtv);
+   { D3D11_TEXTURE2D_DESC bd; back->GetDesc(&bd);
+     std::lock_guard<std::mutex> lock(gate); fprintf(out, "back buffer %ux%u format %d\n", bd.Width, bd.Height, (int)bd.Format); }
    { std::lock_guard<std::mutex> lock(gate);
      fprintf(out, "swap effect %s, %u buffers, sync interval %u, main thread tid=%lu\n", effect_name, desc.BufferCount, sync_interval,
              GetCurrentThreadId()); fflush(out); }
@@ -89,6 +104,7 @@ int main(int argc, char **argv)
       if (hooked) { Sleep(100); pump(); }
    }
    if (counted) fprintf(out, "MEAN of %d presents after the first two: %.3f ms wall, %.3f ms thread CPU\n", counted, wall_sum / counted, cpu_sum / counted);
+   if (fullscreen) { phase = "leave fullscreen"; swap->SetFullscreenState(FALSE, nullptr); pump(); }
    light_enabled = false;
    phase = "teardown";
    rtv->Release(); back->Release(); swap->Release(); context->Release(); device->Release();

@@ -390,6 +390,9 @@ static int submit_run(struct anv_wddm_device_state *w, uint32_t slot, struct anv
    uint32_t *entry = (uint32_t *)hasvk_wddm_bo_map(w->entry) + slot * 32;
    write_tail(entry, start, true);
    const uint32_t offset = slot * 128;
+   /* Presents by exclusive flip: the primaries these command buffers render
+    * into (anv_wddm_flip_before_submit). */
+   if (w->flip_written_count) hasvk_wddm_set_written_primaries(w->transport, w->flip_written, w->flip_written_count);
    const int failed = seq ? (present_token ? hasvk_wddm_submit_present_async(w->transport, w->entry, offset, 16, present_token, seq)
                                            : hasvk_wddm_submit_async(w->transport, w->entry, offset, 16, seq))
                     : present_token ? hasvk_wddm_submit_present(w->transport, w->entry, offset, 16, present_token)
@@ -430,8 +433,10 @@ int anv_wddm_execute_commands(struct anv_device *device, struct vk_command_buffe
    }
    for (uint32_t i = 0; i < count; ++i) {
       const struct anv_cmd_buffer *cmd = command_at(commands, i);
+      /* WSI's own present command buffer (window copy, or the empty one of a
+       * flip) is submitted in the executable state. */
       const bool runnable = cmd->vk.state == MESA_VK_COMMAND_BUFFER_STATE_PENDING ||
-         (present_token && cmd->vk.state == MESA_VK_COMMAND_BUFFER_STATE_EXECUTABLE);
+         ((present_token || cmd->wddm->present_flip_bo) && cmd->vk.state == MESA_VK_COMMAND_BUFFER_STATE_EXECUTABLE);
       if (!runnable || cmd->batch.status != VK_SUCCESS || cmd->vk.level != VK_COMMAND_BUFFER_LEVEL_PRIMARY || !cmd->wddm->tail) {
          fprintf(stderr, "WDDM command rejected: runtime state=%u, batch status=%d\n", cmd->vk.state, cmd->batch.status);
          return -1;

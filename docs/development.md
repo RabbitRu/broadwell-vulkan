@@ -54,6 +54,14 @@ All tests run on the real GPU and need no interaction.
   `test-device-lost.ps1`, `test-kernel-limits.ps1`,
   `test-present-redirect.ps1`, `test-validation.ps1` (validation layers),
   `test-stability.ps1`.
+- `test-flip.ps1` — presents by exclusive flip on the real screen (not part of
+  `test-all.ps1`; needs `build-probes.ps1`): a Vulkan window covers the screen
+  for about a minute in all, and what the display shows is read through
+  Desktop Duplication and compared pixel by pixel (IMMEDIATE, FIFO, an sRGB
+  swapchain), then the output is given back for a window shown above, and
+  MAILBOX and a smaller window stay with the compositor. Run it after a
+  change to presentation. `test-flip-exclusive.ps1` is the experiment behind
+  it: the same kernel calls from the bare transport.
 - `IrisIcdProbe.exe` (the probe of `test-icd.ps1` and of the installer) takes
   `ICD_PROBE_CYCLES=<n>` for more device creation cycles than its three, and
   `ICD_PROBE_FIRST_ONLY=1` to make a cycle nothing but the creation of the
@@ -101,6 +109,16 @@ All tests run on the real GPU and need no interaction.
   sampled) or adds an RGBA8 colour target (3, with `depth_fill_color.frag`;
   `d3d11_depth_fill_probe color` is its twin). `run-dota.ps1` and `run-talos.ps1` take `-D3D11Proxy`; for Dota 2
   the proxy needs `D3D11_PROXY_SEGMENTS=<n>` (no frame end is visible to it).
+- Presentation: `test-flip-probe.ps1` runs a presenting program and reports
+  the GPU load of every process meanwhile (what `dwm.exe` spends on composing
+  it); `d3d11_flip_probe.exe` is a D3D11 window of the screen's size with a
+  blt or flip swap chain or in DXGI's full-screen state; `screen_capture.exe`
+  saves what the display shows (also while an output is owned exclusively,
+  where GDI sees the desktop). `trace-d3d11-present.ps1 -Fullscreen` logs the
+  kernel calls of DXGI's full-screen state (it cannot trace flip-model swap
+  chains: its hook breaks `NtGdiDdDDIShareObjects`).
+  `HASVK_WDDM_PRESENT_FLIP_DEBUG=1` makes the driver print when it takes the
+  output and why it gives it back.
 - `bench-frames.py` (frame tables), `talos-sections.py` (frame sections in
   milliseconds per API), `rip-compare.py` (code samples of two runs compared).
 - Commands and measurement pitfalls are in [performance.md](performance.md).

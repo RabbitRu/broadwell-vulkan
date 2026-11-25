@@ -134,7 +134,26 @@ void decode_pre(const char *name, void *data)
       D3DKMT_CREATECONTEXTVIRTUAL c; if (!read(c, data)) return;
       fprintf(out, "    hDevice=%#x Node=%u Affinity=%#x Flags=%#x ClientHint=%d\n", c.hDevice, c.NodeOrdinal, c.EngineAffinity, c.Flags.Value, (int)c.ClientHint);
       dump("ContextPrivateDriverData", c.pPrivateDriverData, c.PrivateDriverDataSize, 512);
-   } else if (!strcmp(name, "SetVidPnSourceOwner") || !strcmp(name, "CreateContext") ||
+   } else if (!strcmp(name, "SetVidPnSourceOwner")) {
+      D3DKMT_SETVIDPNSOURCEOWNER o; if (!read(o, data)) return;
+      fprintf(out, "    hDevice=%#x VidPnSourceCount=%u\n", o.hDevice, o.VidPnSourceCount);
+      for (UINT i = 0; i < o.VidPnSourceCount && i < 4; ++i) {
+         D3DKMT_VIDPNSOURCEOWNER_TYPE type{}; D3DDDI_VIDEO_PRESENT_SOURCE_ID id = ~0u;
+         read(type, o.pType + i); read(id, o.pVidPnSourceId + i);
+         fprintf(out, "    owner[%u]: type=%d (0 none, 1 shared, 2 exclusive, 3 exclusive GDI, 4 emulated) VidPnSource=%u\n", i, (int)type, id);
+      }
+   } else if (!strcmp(name, "SetDisplayMode")) {
+      D3DKMT_SETDISPLAYMODE m; if (!read(m, data)) return;
+      uint32_t mode_flags; memcpy(&mode_flags, &m.Flags, sizeof(mode_flags));
+      fprintf(out, "    hDevice=%#x hPrimaryAllocation=%#x ScanLineOrdering=%d DisplayOrientation=%d PrivateDriverFormatAttribute=%#x Flags=%#x\n",
+         m.hDevice, m.hPrimaryAllocation, (int)m.ScanLineOrdering, (int)m.DisplayOrientation, m.PrivateDriverFormatAttribute, mode_flags);
+   } else if (!strcmp(name, "GetDisplayModeList")) {
+      D3DKMT_GETDISPLAYMODELIST g; if (!read(g, data)) return;
+      fprintf(out, "    hAdapter=%#x VidPnSource=%u pModeList=%p ModeCount=%u\n", g.hAdapter, g.VidPnSourceId, (void *)g.pModeList, g.ModeCount);
+   } else if (!strcmp(name, "CheckExclusiveOwnership") || !strcmp(name, "WaitForVerticalBlankEvent") || !strcmp(name, "GetPresentHistory") ||
+              !strcmp(name, "CheckVidPnExclusiveOwnership") || !strcmp(name, "GetScanLine") || !strcmp(name, "DestroyAllocation2")) {
+      dump("args(in)", data, 48, 48);
+   } else if (!strcmp(name, "CreateContext") ||
               !strcmp(name, "Lock2") || !strcmp(name, "SignalSynchronizationObject2") || !strcmp(name, "WaitForSynchronizationObject2") ||
               !strcmp(name, "CreateSynchronizationObject2") || !strcmp(name, "OpenSynchronizationObject")) {
       dump("args(in)", data, 96, 96);
@@ -164,6 +183,11 @@ void decode_post(const char *name, void *data)
          fprintf(out, " hAllocation[%u]=%#x", i, info.hAllocation);
       }
       fprintf(out, "\n");
+      /* The kernel driver completes the description in place (pitch, size, tiling). */
+      for (UINT i = 0; i < a.NumAllocations && i < 16; ++i) {
+         D3DDDI_ALLOCATIONINFO2 info; if (!read(info, a.pAllocationInfo2 + i)) break;
+         if (info.Flags.Primary) dump("AllocationPrivateDriverData(out)", info.pPrivateDriverData, info.PrivateDriverDataSize);
+      }
    } else if (!strcmp(name, "GetSharedPrimaryHandle")) {
       D3DKMT_GETSHAREDPRIMARYHANDLE g; if (read(g, data)) fprintf(out, "    -> hSharedPrimary=%#x\n", g.hSharedPrimary);
    } else if (!strcmp(name, "QueryResourceInfo")) {
@@ -185,6 +209,18 @@ void decode_post(const char *name, void *data)
       }
    } else if (!strcmp(name, "Escape")) {
       D3DKMT_ESCAPE e; if (read(e, data)) dump("EscapeData(out)", e.pPrivateDriverData, e.PrivateDriverDataSize, 512);
+   } else if (!strcmp(name, "GetDisplayModeList")) {
+      D3DKMT_GETDISPLAYMODELIST g; if (!read(g, data)) return;
+      fprintf(out, "    -> ModeCount=%u\n", g.ModeCount);
+      for (UINT i = 0; g.pModeList && i < g.ModeCount; ++i) {
+         D3DKMT_DISPLAYMODE m; if (!read(m, g.pModeList + i)) break;
+         uint32_t mode_flags; memcpy(&mode_flags, &m.Flags, sizeof(mode_flags));
+         if (m.Width == 2560 || i < 2)
+            fprintf(out, "    mode[%u]: %ux%u format %d refresh %u/%u scanline %d orientation %d fixed output %u flags %#x\n", i, m.Width, m.Height, (int)m.Format,
+               m.RefreshRate.Numerator, m.RefreshRate.Denominator, (int)m.ScanLineOrdering, (int)m.DisplayOrientation, m.DisplayFixedOutput, mode_flags);
+      }
+   } else if (!strcmp(name, "GetDeviceState")) {
+      D3DKMT_GETDEVICESTATE s; if (read(s, data)) dump("device state", data, 40, 40);
    } else if (!strcmp(name, "Present")) {
       D3DKMT_PRESENT p; if (read(p, data)) fprintf(out, "    -> bOptimizeForComposition=%u\n", p.bOptimizeForComposition);
    } else if (!strcmp(name, "CreateContextVirtual") || !strcmp(name, "CreateContext") || !strcmp(name, "CreateSynchronizationObject2") ||

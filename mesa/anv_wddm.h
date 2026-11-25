@@ -113,6 +113,16 @@ struct anv_wddm_device_state {
    uint64_t verified_seq;
    thrd_t completion_thread;
    bool completion_thread_started, completion_exit;
+   /* Presents by exclusive flip (anv_wddm_present.c): the primaries that are
+    * memory of swapchain images (alloc_mutex), and the rest of the state. */
+   struct anv_bo *flip_bos[8];
+   uint32_t flip_bo_count;
+   struct anv_wddm_flip *flip;
+   /* While the output is ours: the primaries the command buffers of the
+    * vkQueueSubmit in progress render into, named to the kernel with each of
+    * its kernel submissions (submit_mutex). */
+   struct hasvk_wddm_bo *flip_written[4];
+   uint32_t flip_written_count;
 };
 struct anv_wddm_pending {
    struct list_head link;
@@ -166,6 +176,11 @@ struct anv_wddm_cmd_state {
     * present, the commands run without it and *present_refused is set. */
    uint64_t present_token;
    int *present_refused;
+   /* A present by exclusive flip: the queue flips to this primary right after
+    * the kernel submission that ends with this buffer. */
+   struct anv_bo *present_flip_bo;
+   void *present_flip_hwnd;
+   uint32_t present_flip_interval, present_flip_width, present_flip_height;
    /* Colour images whose fast clear (CCS) this recording has resolved and has
     * not fast-cleared since: their fast-clear state is known to be "none", so
     * a layout transition needs no predicated resolve (transition_color_buffer,
@@ -198,11 +213,30 @@ void anv_wddm_fill_dynamic_buffer_surface_state(struct anv_device *device, struc
                                                 struct anv_address address, uint32_t range);
 void anv_wddm_init_buffer_state_templates(struct anv_device *device);
 VkCommandBuffer anv_wddm_present_redirected_record(VkDevice device, VkQueue queue, VkImage image, uint32_t index,
-                                                   void *hwnd, VkExtent2D extent, void **state);
+                                                   void *hwnd, VkExtent2D extent, uint32_t present_mode, void **state);
 void anv_wddm_present_redirected_finish(VkDevice device, void *state);
 /* Swapchain image whose memory can be a window surface itself, so its present
  * needs no copy (anv_wddm_present.c). */
 bool anv_wddm_window_image(struct anv_device *device, const struct anv_image *image, uint64_t size);
+/* Presents by exclusive flip (anv_wddm_present.c). A swapchain image of the
+ * screen's size is a candidate: it is laid out as a primary (X-tiled, no aux),
+ * its memory is one (anv_wddm_alloc_primary_bo), and while its window covers
+ * the screen in the foreground the frames are flipped onto the output without
+ * the compositor. */
+void anv_wddm_present_images_mode(VkDevice device, uint32_t present_mode);
+bool anv_wddm_flip_candidate(struct anv_device *device, const VkImageCreateInfo *info);
+bool anv_wddm_flip_image(const struct anv_image *image);
+VkResult anv_wddm_alloc_primary_bo(struct anv_device *device, uint32_t width, uint32_t height,
+                                   struct anv_bo **out, uint64_t *pitch);
+/* Queue (submit_mutex held): names the primaries the command buffers render
+ * into for the next kernel submission; flips after it for a buffer that
+ * carries present_flip_bo. */
+void anv_wddm_flip_before_submit(struct anv_device *device, struct vk_command_buffer *const *commands, uint32_t count);
+void anv_wddm_flip_after_submit(struct anv_device *device, struct anv_cmd_buffer *cmd);
+/* The output goes back to the desktop (no effect if it is not ours). */
+void anv_wddm_flip_release(struct anv_device *device);
+/* Device destruction: the same, and the watcher ends. */
+void anv_wddm_flip_finish(struct anv_device *device);
 #endif
 #ifdef HASVK_WDDM_GRAPHICS
 void anv_wddm_cmd_state_finish(struct anv_cmd_buffer *cmd);

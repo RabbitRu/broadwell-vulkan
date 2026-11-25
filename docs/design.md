@@ -108,6 +108,30 @@ The CTS-found bugs and their fixes are listed in
   token). DWM reads such a surface only as B8G8R8A8, so R8G8B8A8 formats are
   not reported for a window. Framed windows, child windows and size mismatches
   go through the copy.
+- Without the compositor: a window that covers the primary screen. DWM
+  composes such a window like any other (on this system also for a flip-model
+  DXGI swap chain; only DXGI's full-screen state shows the application's
+  buffer directly), which costs a copy of the screen per frame. The driver
+  takes that state itself, as DXGI does it, with its own device:
+  - the images of a swapchain of the screen's size (IMMEDIATE or FIFO,
+    B8G8R8A8) are primaries of the output: X-tiled, no aux, allocated with the
+    `Primary` flag and Intel's description of a primary;
+  - at a present, if the window has no frame, covers the primary screen, is in
+    the foreground and no visible window is above it, the device becomes the
+    exclusive owner of the output (`D3DKMTSetVidPnSourceOwner`,
+    `D3DKMTSetDisplayMode`), and the frame is shown by `D3DKMTPresent` with
+    the `Flip` flag right after the WSI submission; IMMEDIATE flips at once,
+    FIFO at the vertical blank;
+  - every kernel submission names the primaries its command buffers render
+    into (`WrittenPrimaries`), so the kernel holds rendering back while that
+    primary is still on the screen;
+  - a watcher thread gives the output back within 30 ms when the window stops
+    being alone on the screen (Alt+Tab, a notification, a window shown above),
+    also when the application has stopped presenting; a refused flip does the
+    same. Until the window is alone again its frames are copied into the
+    window surface as for any other window.
+  MAILBOX stays with the compositor (a flip either tears or waits).
+  `HASVK_WDDM_PRESENT_FLIP=0` turns this off.
 - If the kernel refuses the present (the display is asleep), the submission is
   repeated without the token and the frame goes through GDI; child windows
   always use GDI. FIFO sleeps until vblank using

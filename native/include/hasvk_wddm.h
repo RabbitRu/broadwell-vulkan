@@ -58,6 +58,28 @@ uint64_t hasvk_wddm_completed_submission(struct hasvk_wddm_device *device);
 int hasvk_wddm_bo_create_window_surface(struct hasvk_wddm_device *device, uint32_t width, uint32_t height,
                                        struct hasvk_wddm_bo **out);
 int hasvk_wddm_bo_window_surface_info(const struct hasvk_wddm_bo *bo, uint32_t *share, uint64_t *pitch);
+/* Presentation without the compositor (see tools/dev/test-flip-exclusive.ps1):
+ * a primary is a B8G8R8A8 scan-out surface of the screen's size, X-tiled, no
+ * CPU mapping. hasvk_wddm_output_acquire makes the device the exclusive owner
+ * of the output and sets the mode with that primary; hasvk_wddm_present_flip
+ * then shows a primary behind everything submitted so far (interval 0: at
+ * once, 1..4: at that vertical blank) and returns 1 when the kernel refuses
+ * (the output is no longer ours: the caller presents another way).
+ * hasvk_wddm_set_written_primaries names the primaries the next submission
+ * renders into (up to 4), so the kernel holds it back while one of them is
+ * still on the screen. */
+/* Size of the primary display's current mode, if that display is output 0 of
+ * this adapter and not rotated (otherwise an error: no flips). */
+int hasvk_wddm_output_screen(struct hasvk_wddm_device *device, uint32_t *width, uint32_t *height);
+int hasvk_wddm_bo_create_primary(struct hasvk_wddm_device *device, uint32_t width, uint32_t height,
+                                 struct hasvk_wddm_bo **out);
+int hasvk_wddm_bo_primary_info(const struct hasvk_wddm_bo *bo, uint64_t *pitch);
+int hasvk_wddm_output_acquire(struct hasvk_wddm_device *device, struct hasvk_wddm_bo *primary);
+int hasvk_wddm_output_release(struct hasvk_wddm_device *device);
+int hasvk_wddm_output_owned(struct hasvk_wddm_device *device);
+int hasvk_wddm_present_flip(struct hasvk_wddm_device *device, struct hasvk_wddm_bo *primary, void *hwnd,
+                            uint32_t width, uint32_t height, uint32_t interval);
+int hasvk_wddm_set_written_primaries(struct hasvk_wddm_device *device, struct hasvk_wddm_bo *const *primaries, uint32_t count);
 int hasvk_wddm_submit_present(struct hasvk_wddm_device *device, struct hasvk_wddm_bo *commands,
                              uint32_t offset, uint32_t bytes, uint64_t present_token);
 /* Stable contiguous CPU shadow for GPU-read-only state/instruction pools.

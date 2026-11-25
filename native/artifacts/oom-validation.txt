@@ -1,5 +1,5 @@
 budget before filling: usage 0.1 MiB, budget 460.0 MiB
-filled: 85 allocations, 511.9 MiB of a 512.0 MiB heap in 156 ms
+filled: 85 allocations, 511.9 MiB of a 512.0 MiB heap in 93 ms
 budget with the heap full: usage 512.0 MiB, budget 512.0 MiB
 pre-recorded submission with a full heap: correct
 recording 20000 commands with a full heap: vkEndCommandBuffer = 0

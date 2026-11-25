@@ -233,6 +233,92 @@ extern "C" int hasvk_wddm_bo_window_surface_info(const hasvk_wddm_bo *bo, uint32
    *share = bo->native->share(); *pitch = bo->native->pitch();
    return 0;
 }
+extern "C" int hasvk_wddm_output_screen(hasvk_wddm_device *device, uint32_t *width, uint32_t *height)
+{
+   if (!device || !width || !height) return failure("Invalid output arguments");
+   DISPLAY_DEVICEW display{}; display.cb = sizeof(display);
+   for (DWORD i = 0; EnumDisplayDevicesW(nullptr, i, &display, 0); ++i) {
+      if (!(display.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE)) continue;
+      D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME open{};
+      wcsncpy_s(open.DeviceName, display.DeviceName, _TRUNCATE);
+      if (D3DKMTOpenAdapterFromGdiDisplayName(&open) < 0) return failure("The primary display's adapter cannot be opened");
+      D3DKMT_CLOSEADAPTER close_adapter{open.hAdapter}; D3DKMTCloseAdapter(&close_adapter);
+      const LUID luid = device->native.adapter_luid();
+      if (open.AdapterLuid.LowPart != luid.LowPart || open.AdapterLuid.HighPart != luid.HighPart || open.VidPnSourceId != 0)
+         return failure("The primary display is not output 0 of this adapter");
+      DEVMODEW mode{}; mode.dmSize = sizeof(mode);
+      if (!EnumDisplaySettingsW(display.DeviceName, ENUM_CURRENT_SETTINGS, &mode) || mode.dmDisplayOrientation != DMDO_DEFAULT)
+         return failure("The primary display's mode is unknown or rotated");
+      *width = mode.dmPelsWidth; *height = mode.dmPelsHeight;
+      return 0;
+   }
+   return failure("No primary display");
+}
+extern "C" int hasvk_wddm_bo_create_primary(hasvk_wddm_device *device, uint32_t width, uint32_t height, hasvk_wddm_bo **out)
+{
+   if (!device || !out) return failure("Missing primary arguments");
+   *out = nullptr;
+   return checked([&] {
+      std::lock_guard<std::mutex> lock(device->mutex);
+      auto bo = std::make_unique<hasvk_wddm_bo>();
+      bo->device = device; bo->reservation = 0;
+      bo->native = std::make_unique<Buffer>(device->native, PrimaryTag{}, width, height);
+      device->buffers.insert(bo.get());
+      *out = bo.release();
+   });
+}
+extern "C" int hasvk_wddm_bo_primary_info(const hasvk_wddm_bo *bo, uint64_t *pitch)
+{
+   if (!bo || !pitch || !bo->native->primary()) return failure("Not a primary");
+   *pitch = bo->native->pitch();
+   return 0;
+}
+extern "C" int hasvk_wddm_output_acquire(hasvk_wddm_device *device, hasvk_wddm_bo *primary)
+{
+   if (!device || !primary || primary->device != device || !primary->native->primary()) return failure("Invalid output arguments");
+   std::lock_guard<std::mutex> lock(device->mutex);
+   const LONG status = device->native.acquire_output(primary->native->allocation());
+   if (status < 0) { snprintf(diagnostic, sizeof(diagnostic), "The output was not given: 0x%08lx", static_cast<unsigned long>(status)); return -1; }
+   return 0;
+}
+extern "C" int hasvk_wddm_output_release(hasvk_wddm_device *device)
+{
+   if (!device) return failure("Invalid device");
+   std::lock_guard<std::mutex> lock(device->mutex);
+   device->native.release_output();
+   return 0;
+}
+extern "C" int hasvk_wddm_output_owned(hasvk_wddm_device *device)
+{
+   if (!device) return 0;
+   std::lock_guard<std::mutex> lock(device->mutex);
+   return device->native.owns_output();
+}
+extern "C" int hasvk_wddm_present_flip(hasvk_wddm_device *device, hasvk_wddm_bo *primary, void *hwnd,
+                                        uint32_t width, uint32_t height, uint32_t interval)
+{
+   if (!device || !primary || primary->device != device || !primary->native->primary()) return failure("Invalid flip arguments");
+   std::lock_guard<std::mutex> lock(device->mutex);
+   const LONG status = device->native.flip(primary->native->allocation(), static_cast<HWND>(hwnd), width, height, interval);
+   if (status >= 0) return 0;
+   /* Refused: the output is no longer this device's (another owner, the
+    * secure desktop, a mode change). It goes back to the desktop. */
+   snprintf(diagnostic, sizeof(diagnostic), "Flip refused: 0x%08lx", static_cast<unsigned long>(status));
+   device->native.release_output();
+   return 1;
+}
+extern "C" int hasvk_wddm_set_written_primaries(hasvk_wddm_device *device, hasvk_wddm_bo *const *primaries, uint32_t count)
+{
+   if (!device || (count && !primaries) || count > 4) return failure("Invalid written primaries");
+   std::lock_guard<std::mutex> lock(device->mutex);
+   D3DKMT_HANDLE handles[4]{};
+   for (uint32_t i = 0; i < count; ++i) {
+      if (!primaries[i] || primaries[i]->device != device || !primaries[i]->native->primary()) return failure("Not a primary");
+      handles[i] = primaries[i]->native->allocation();
+   }
+   device->native.set_written_primaries(handles, count);
+   return 0;
+}
 /* Waits for submission seq without holding the device lock, so other threads
  * can submit meanwhile. Submissions complete in order. */
 static void wait_submission(hasvk_wddm_device *device, uint64_t seq, DWORD timeout_ms)

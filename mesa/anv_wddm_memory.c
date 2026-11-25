@@ -292,6 +292,45 @@ anv_wddm_alloc_window_surface_bo(struct anv_device *device, uint32_t width, uint
    return VK_SUCCESS;
 }
 
+/* Primary of the output for presents by exclusive flip (anv_wddm_present.c):
+ * the memory of a swapchain image of the screen's size. Like a window
+ * surface it has a kernel-chosen GPU address and no CPU mapping. The display
+ * engine reads it from memory, so it takes the external MOCS (cacheability
+ * from the page tables), as scan-out surfaces do upstream. */
+VkResult
+anv_wddm_alloc_primary_bo(struct anv_device *device, uint32_t width, uint32_t height,
+                          struct anv_bo **out, uint64_t *pitch)
+{
+   *out = NULL;
+   struct anv_bo *bo = calloc(1, sizeof(*bo));
+   if (!bo) return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   struct anv_wddm_device_state *w = device->wddm;
+   if (hasvk_wddm_bo_create_primary(w->transport, width, height, &bo->wddm_bo) ||
+       hasvk_wddm_bo_primary_info(bo->wddm_bo, pitch)) {
+      if (bo->wddm_bo) hasvk_wddm_bo_destroy(bo->wddm_bo);
+      free(bo);
+      return vk_errorf(device, VK_ERROR_OUT_OF_DEVICE_MEMORY, "primary: %s", hasvk_wddm_error());
+   }
+   bo->name = "flip image"; bo->size = hasvk_wddm_bo_size(bo->wddm_bo);
+   bo->offset = intel_canonical_address(hasvk_wddm_bo_address(bo->wddm_bo));
+   bo->refcount = 1; bo->flags = EXEC_OBJECT_PINNED; bo->is_external = true;
+   mtx_lock(&w->alloc_mutex);
+   if (!w->bo_ids) w->bo_ids = calloc(BITSET_WORDS(ANV_WDDM_MAX_BOS + 1), sizeof(BITSET_WORD));
+   if (!w->bo_ids || w->allocation_count >= ANV_WDDM_MAX_BOS || w->flip_bo_count >= ARRAY_SIZE(w->flip_bos)) {
+      mtx_unlock(&w->alloc_mutex);
+      hasvk_wddm_bo_destroy(bo->wddm_bo); free(bo);
+      return vk_errorf(device, VK_ERROR_OUT_OF_DEVICE_MEMORY, "primary: too many allocations");
+   }
+   uint32_t id = w->bo_id_hint;
+   do { id = id % ANV_WDDM_MAX_BOS + 1; } while (BITSET_TEST(w->bo_ids, id));
+   BITSET_SET(w->bo_ids, id); w->bo_id_hint = id; bo->gem_handle = id;
+   w->allocated_bytes += bo->size; ++w->allocation_count;
+   w->flip_bos[w->flip_bo_count++] = bo;
+   mtx_unlock(&w->alloc_mutex);
+   *out = bo;
+   return VK_SUCCESS;
+}
+
 VkResult
 anv_device_map_bo(struct anv_device *device, struct anv_bo *bo, uint64_t offset,
                   size_t size, uint32_t flags, void **out)
@@ -315,6 +354,16 @@ anv_device_release_bo(struct anv_device *device, struct anv_bo *bo)
 {
    if (!bo || !p_atomic_dec_zero(&bo->refcount)) return;
    struct anv_wddm_device_state *w = device->wddm;
+   /* A primary: no flip may name it any more, and it must not be on the screen. */
+   if (bo->name && !strcmp(bo->name, "flip image")) {
+      mtx_lock(&w->alloc_mutex);
+      for (uint32_t i = 0; i < w->flip_bo_count; ++i)
+         if (w->flip_bos[i] == bo) { w->flip_bos[i] = w->flip_bos[--w->flip_bo_count]; break; }
+      mtx_unlock(&w->alloc_mutex);
+#ifdef HASVK_WDDM_GRAPHICS
+      anv_wddm_flip_release(device);
+#endif
+   }
    /* The kernel destroys the allocation without any lock held; its address
     * and id return to the heaps only afterwards. */
    if (hasvk_wddm_bo_destroy(bo->wddm_bo)) {
@@ -380,6 +429,23 @@ anv_AllocateMemory(VkDevice handle, const VkMemoryAllocateInfo *info,
     * surface the kernel creates falls back to ordinary memory and the copy.
     * Such memory has no CPU mapping (vkMapMemory fails); nothing maps a
     * swapchain image's memory (WSI's GDI fallback reads its own buffer). */
+   /* A swapchain image of the screen's size, laid out as a primary: its memory
+    * is one, and its frames can be flipped onto the output without the
+    * compositor. If the kernel's primary differs from ISL's layout the image
+    * keeps ordinary memory and its presents copy. */
+   if (mem->dedicated_image && anv_wddm_flip_image(mem->dedicated_image)) {
+      const struct isl_surf *surf = &mem->dedicated_image->planes[0].primary_surface.isl;
+      uint64_t pitch = 0;
+      result = anv_wddm_alloc_primary_bo(device, mem->dedicated_image->vk.extent.width,
+                                         mem->dedicated_image->vk.extent.height, &mem->bo, &pitch);
+      if (result == VK_SUCCESS && (pitch != surf->row_pitch_B || mem->bo->size < info->allocationSize)) {
+         fprintf(stderr, "HasVK/WDDM: primary for a swapchain image differs (pitch %llu vs %u, %llu of %llu bytes); presents copy\n",
+                 (unsigned long long)pitch, surf->row_pitch_B, (unsigned long long)mem->bo->size,
+                 (unsigned long long)info->allocationSize);
+         anv_device_release_bo(device, mem->bo); mem->bo = NULL;
+         result = VK_ERROR_FEATURE_NOT_PRESENT;
+      }
+   } else
    if (mem->dedicated_image && anv_wddm_window_image(device, mem->dedicated_image, info->allocationSize)) {
       const struct isl_surf *surf = &mem->dedicated_image->planes[0].primary_surface.isl;
       uint32_t share = 0; uint64_t pitch = 0;

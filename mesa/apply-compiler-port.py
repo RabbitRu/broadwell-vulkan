@@ -288,6 +288,7 @@ wsi_win32_present_cmd(struct wsi_swapchain *drv_chain, VkQueue queue, uint32_t i
    return chain->wsi->wsi->win32.present_redirected_record(chain->base.device, queue,
                                                           chain->images[image_index].base.image, image_index,
                                                           chain->surface->base.hwnd, chain->extent,
+                                                          (uint32_t)chain->base.present_mode,
                                                           &chain->redirect_state);
 }
 /* Client area size equals the swapchain extent. A minimized window (0x0) is
@@ -449,6 +450,38 @@ wsi_win32_find_idle_image('''),
 
    DeleteDC(chain->chain_dc);
 '''),
+    # The driver lays swapchain images out by what the present mode allows
+    # (primaries for exclusive flips, anv_wddm_present.c): it is told the mode
+    # around their creation.
+    ('''   for (uint32_t image = 0; image < num_images; image++) {
+      result = wsi_win32_image_init(device, chain,
+                                    create_info, allocator,
+                                    &chain->images[image]);
+      if (result != VK_SUCCESS)
+         goto fail;
+
+      chain->base.image_count++;
+   }
+''', '''#ifdef HASVK_WDDM_GDI
+   if (wsi_device->win32.present_images_mode)
+      wsi_device->win32.present_images_mode(device, (uint32_t)chain->base.present_mode);
+#endif
+   for (uint32_t image = 0; image < num_images; image++) {
+      result = wsi_win32_image_init(device, chain,
+                                    create_info, allocator,
+                                    &chain->images[image]);
+      if (result != VK_SUCCESS)
+         break;
+
+      chain->base.image_count++;
+   }
+#ifdef HASVK_WDDM_GDI
+   if (wsi_device->win32.present_images_mode)
+      wsi_device->win32.present_images_mode(device, UINT32_MAX);
+#endif
+   if (result != VK_SUCCESS)
+      goto fail;
+'''),
     # The window DC comes from GetDC: one per swapchain (upstream took one per
     # image and kept the last) and released with ReleaseDC, not DeleteDC
     # (tools/dev/test-leaks.ps1: 2 GDI objects lost per swapchain).
@@ -474,8 +507,11 @@ edit('src/vulkan/wsi/wsi_common.h', [
        * present_redirected_finish. VK_NULL_HANDLE: this frame goes to GDI. */
       VkCommandBuffer (*present_redirected_record)(VkDevice device, VkQueue queue, VkImage image,
                                                    uint32_t index, void *hwnd, VkExtent2D extent,
-                                                   void **state);
+                                                   uint32_t present_mode, void **state);
       void (*present_redirected_finish)(VkDevice device, void *state);
+      /* Called around the creation of a swapchain's images with its present
+       * mode, then with UINT32_MAX. */
+      void (*present_images_mode)(VkDevice device, uint32_t present_mode);
 '''),
 ])
 edit('src/vulkan/wsi/wsi_common_private.h', [
@@ -940,6 +976,23 @@ image_after = gen8_only(image_after, [
       view.swizzle = ISL_SWIZZLE_IDENTITY;
 ''', ''),
 ])
+# A swapchain image of the screen's size can be shown by exclusive flips
+# (anv_wddm_present.c): it is laid out as the display engine scans out,
+# X-tiled and without aux, and its memory is a primary of the output.
+_flip_old = '''   image->from_wsi =
+      vk_find_struct_const(pCreateInfo->pNext, WSI_IMAGE_CREATE_INFO_MESA) != NULL;
+'''
+assert image_after.count(_flip_old) == 1
+image_after = image_after.replace(_flip_old, _flip_old + '''#if defined(_WIN32) && defined(HASVK_WDDM_GRAPHICS)
+   {
+      bool anv_wddm_flip_candidate(struct anv_device *device, const VkImageCreateInfo *info);
+      if (image->from_wsi && anv_wddm_flip_candidate(device, pCreateInfo)) {
+         create_info->isl_tiling_flags = ISL_TILING_X_BIT;
+         create_info->isl_extra_usage_flags |= ISL_SURF_USAGE_DISABLE_AUX_BIT;
+      }
+   }
+#endif
+''')
 # CCS_D (colour fast clears) only where it was checked: 2D images with one
 # level and one layer. With more, multisample resolves into mip level 3 and
 # into array layer 1 came out wrong (CTS multisample_resolve.*_resolve_level_3,

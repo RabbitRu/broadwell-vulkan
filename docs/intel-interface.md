@@ -26,6 +26,8 @@ with unverified data.
 | Context private data, 32 bytes | `Device::Device` (`presentable_context`) | a trace of the OpenGL driver: a pointer to a `0x2cdc`-byte buffer, its size, the flag `0x100`; the kernel does not write to the buffer | `test-present-redirect.ps1` (without it DWM shows black), regression tests, CTS |
 | Redirected present token | `anv_wddm_present.c` | a trace: `(0x80000000 \| HWND) << 32 \| handle`; equals `updateId` from `dwmapi!DwmpDxGetWindowSharedSurface` | `test-present-redirect.ps1 -Surface dwmapi` |
 | Context `ClientHint` | `Device::Device` | `D3DKMT_CLIENTHINT_VULKAN` (documented) | — |
+| Primary descriptor, 1096 bytes | `primary_metadata()` | the buffers Intel's D3D11 driver creates for DXGI's full-screen state (`tools\dev\trace-d3d11-present.ps1 -Fullscreen`) | `tools\dev\test-flip-exclusive.ps1`, `tools\dev\test-flip.ps1` |
+| Exclusive flips | `Device::acquire_output`, `Device::flip`, `set_written_primaries` | the same trace: `D3DKMTSetVidPnSourceOwner` (exclusive, source 0), `D3DKMTSetDisplayMode` with the primary, `D3DKMTPresent` with `Flip` and `PresentCountValid` (after `STATUS_GRAPHICS_PRESENT_MODE_CHANGED`: the mode again, then the present), `WrittenPrimaries` in `D3DKMTSubmitCommand` | the same |
 
 ### Allocation descriptor fields (what is known)
 
@@ -48,11 +50,21 @@ The kernel chooses the window surface layout itself: Y tiling, a pitch of
 `align(width × 4, 128)`, a height that is a multiple of 32. The transport
 checks this on every creation and refuses to work with another layout.
 
+A primary differs from the window surface in 0x14 (0x00500200), 0x1c
+(0x20100000) and 0x40 (0x1e), has two more values at 0x3b0 and 0x3b4
+(0x1000fc20, 0x004450c0) and no runtime data; the allocation carries the
+`Primary` flag and the output's number. The kernel completes the description
+in place: X tiling (0x170 = 1; a window surface has 2), the pitch
+(`width × 4` rounded up to 512) at 0xc0, the size at 0xd0, an alignment of
+256 KiB at 0x58. It cannot be locked for the CPU. The transport refuses any
+other layout.
+
 ## Moving to another driver version
 
 1. Capture again: `tools\dev\trace-gl-present.ps1` (the OpenGL driver: window
-   surface, context private data, header, token) and a `gpu-probe` trace
-   (linear allocations).
+   surface, context private data, header, token),
+   `tools\dev\trace-d3d11-present.ps1 -Fullscreen` (primaries and the flip
+   calls) and a `gpu-probe` trace (linear allocations).
 2. Compare with the tables above; if they match, add the version to the
    `supported_driver` check.
 3. Run `tools\dev\test-all.ps1`, `test-present-redirect.ps1`,

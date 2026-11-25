@@ -420,6 +420,7 @@ static VkResult enumerate(struct vk_instance *base)
    if (!present || strcmp(present, "gdi")) {
       physical->wsi_device.win32.present_redirected_record = anv_wddm_present_redirected_record;
       physical->wsi_device.win32.present_redirected_finish = anv_wddm_present_redirected_finish;
+      physical->wsi_device.win32.present_images_mode = anv_wddm_present_images_mode;
    }
 #endif
    list_addtail(&physical->vk.link, &base->physical_devices.list);
@@ -686,9 +687,18 @@ static VkResult submit(struct vk_queue *queue, struct vk_queue_submit *work)
       if (pending->commands[i]->wddm->present_token) present_token = pending->commands[i]->wddm->present_token;
    mtx_lock(&w->submit_mutex);
    pending->serial = ++w->next_serial;
+#ifdef HASVK_WDDM_GRAPHICS
+   anv_wddm_flip_before_submit(device, work->command_buffers, work->command_buffer_count);
+#endif
    const int failed = anv_wddm_execute_commands(device, work->command_buffers, work->command_buffer_count,
                                                 pending->serial, present_token, true, &pending->seq);
+   w->flip_written_count = 0;
    if (!failed) {
+#ifdef HASVK_WDDM_GRAPHICS
+      /* A present by exclusive flip: the flip goes behind this submission. */
+      for (uint32_t i = 0; i < work->command_buffer_count; ++i)
+         if (pending->commands[i]->wddm->present_flip_bo) anv_wddm_flip_after_submit(device, pending->commands[i]);
+#endif
       mtx_lock(&w->mutex);
       for (uint32_t i = 0; i < pending->signal_count; ++i)
          if (pending->signals[i].sync->type == &wddm_sync_type) {
@@ -1017,6 +1027,9 @@ VKAPI_ATTR void VKAPI_CALL anv_DestroyDevice(VkDevice handle, const VkAllocation
    if (!device) return;
    vk_queue_finish(&device->queues[0].vk); vk_free(&device->vk.alloc, device->queues);
    completion_finish(device);   /* drains every non-blocking submission */
+#ifdef HASVK_WDDM_GRAPHICS
+   anv_wddm_flip_finish(device);
+#endif
 #ifdef HASVK_WDDM_GRAPHICS
    cache_file_write(device, L"default-cache.bin", device->default_pipeline_cache, device->wddm->default_cache_loaded);
 #endif

@@ -22,12 +22,14 @@ there are no per-game profiles.
   against 114–117: the whole gap is shadows, not the driver.
 
 **Dota 2** (a match replay as a timedemo, 2,999 frames, window 2560×1600
-borderless, render scale 0.4, lowest settings): Vulkan 24.9–25.7 FPS against
-24.8–25.4 on DX11 (25.11.2026, with colour fast clears: 25.72, 24.87, 25.12
-against 25.40, 24.76, 25.39 after a warm-up run; 24.11.2026, before them:
-26.04, 26.31, 25.77 against 25.97, 26.18, 26.06 — the same build differs more
-from day to day than the two APIs do). Before presentation without a copy it
-was 23.2–24.7 against 26.0–26.9.
+borderless, render scale 0.4, lowest settings): Vulkan 28.1–28.4 FPS against
+24.7–25.1 on DX11 (26.11.2026: 28.09, 28.19, 28.36 against 25.07, 24.76,
+24.65 after a warm-up run). The lead comes from showing the window without
+the compositor (see "Presents without the compositor"); composed like the
+DX11 path, Vulkan was level with it: 25.72, 24.87, 25.12 against 25.40,
+24.76, 25.39 on 25.11.2026 (the same build differs more from day to day than
+the two APIs did). Before presentation without a copy it was 23.2–24.7
+against 26.0–26.9.
 
 - The frame is bound by the CPU time of the game's own code. The game submits
   the whole frame with one `vkQueueSubmit`; the GPU needs about 22–25 ms for it
@@ -60,6 +62,7 @@ was 23.2–24.7 against 26.0–26.9.
 | Allocation without shared mutexes around kernel calls | removed main thread stalls of up to 40 ms |
 | No CPU cache flushes around submissions (shared LLC) | less CPU time per submission |
 | Presentation by a GPU copy inside the WSI submission, then with no copy for borderless windows | Dota 2 +4–6 % |
+| A window that covers the screen is shown by exclusive flips, without DWM's copy | Dota 2 +11 % |
 | clang 23 with `-march=broadwell` | draw recording −3 % |
 | PGO | draw recording −10 % more |
 | Dynamic buffer surface state from a template | draw recording −5 % on the replay bench |
@@ -201,13 +204,46 @@ here, not GPU time.
   until that command buffer fast-clears the image again: 1.41, 1.48 ms
   between passes against 1.60, 1.61.
 
-Open: presenting through the flip model, so that DWM does not compose a
-borderless window of the screen's size. It would save DWM's copy of 2560×1600
-per frame, which the DX11 path of the game also pays.
+The largest of these writes was not in the game's frame at all: DWM's copy of
+the window, next section.
 
 The switches of these measurements (shrunk render areas, the frame log, MOCS,
 pass times with `vkCmdBeginRendering`) are a patch in the `debug` branch,
 `tools/measure-2026-11-25`.
+
+## Presents without the compositor
+
+DWM composes a window that covers the screen like any other: it copies the
+frame. What a D3D11 window of 2560×1600 at 60 FPS costs it on this system
+(`d3d11_flip_probe` with `tools\dev\test-flip-probe.ps1`, GPU 3D load):
+
+| Swap chain | dwm.exe | the program |
+|---|---|---|
+| blt model, borderless window | 14.6 % | 21.3 % |
+| flip model (discard or sequential), borderless, in the foreground | 12.9–13.6 % | 6.9 % |
+| either, in DXGI's full-screen state | 0 | 6.4 % |
+
+So Windows does not flip a windowed swap chain directly here, flip model or
+not; only DXGI's full-screen state shows the application's buffer. A trace of
+that state (`tools\dev\trace-d3d11-present.ps1 -Fullscreen`) is three kernel
+calls around ordinary rendering: exclusive ownership of the output, a mode
+set with a primary, and a present with the `Flip` flag per frame. The same
+calls from this project's own device (`flip_exclusive_probe`, no D3D): 600
+flips at 60.3 per second with DWM idle, and 5,900 per second without waiting
+for the vertical blank; a screen capture through Desktop Duplication shows
+the primaries (`screen_capture`).
+
+The driver now does this for a window that covers the primary screen
+([design.md](design.md), presentation). A Vulkan window of 2560×1600 that
+only clears its frame (`flip_wsi_probe`): 1,008 FPS against 232 through DWM
+with IMMEDIATE, 59.4 with FIFO, DWM idle, the screen's pixels exact
+(`tools\dev\test-flip.ps1`).
+
+Dota 2, the flips on and off in turn (`HASVK_WDDM_PRESENT_FLIP=0`),
+25.11.2026: 28.27, 28.13, 26.48, 27.68 FPS against 25.29, 23.75, 24.98, 26.06,
+24.44 (27.6 against 24.9, +11 %). DWM's share of the GPU goes from 5.2 % to
+nothing, its CPU time from 12.6 % to 9.5 % of a logical CPU. The game's DX11
+path is composed by DWM as well (5.1 % of the GPU).
 
 ## ELK against Intel's compiler
 
@@ -338,6 +374,10 @@ Build the driver (`tools\build-icd.ps1`) and the probes
 .\tools\dev\run-dota.ps1 -Api Direct3D11 -Tag p1 -Env D3D11_PROXY_SEGMENTS=600 -D3D11Proxy build\probes\d3d11-proxy\d3d11.dll
 # The Talos Principle (Steam must be signed in to the account that owns the game)
 .\tools\dev\run-talos.ps1 -Api Vulkan -Tag v1    # -Sample, -RipModule, -D3D11Proxy build\probes\d3d11-proxy\d3d11.dll
+# what DWM spends on a window of the screen's size (D3D11), and the driver's exclusive flips
+.\tools\dev\test-flip-probe.ps1 -Exe build\probes\d3d11_flip_probe.exe -Arguments '10','flip_discard','1'
+.\tools\dev\test-flip.ps1
+.\tools\dev\run-dota.ps1 -Tag noflip -Env HASVK_WDDM_PRESENT_FLIP=0
 # analysis
 .\.tools\python\python.exe -I tools\dev\rip-compare.py <dx.rip.txt> <FPS> <vk.rip.txt> <FPS>
 .\.tools\python\python.exe -I tools\dev\talos-sections.py --since 2026-11-19T20:00

@@ -179,6 +179,12 @@ uint64_t Device::submit(uint64_t commands, uint32_t bytes, const std::vector<uin
    submit.pPrivateDriverData = const_cast<uint8_t *>(header.data());
    submit.PrivateDriverDataSize = static_cast<UINT>(header.size());
    if (present_token) { submit.Flags.PresentRedirected = 1; submit.PresentHistoryToken = present_token; }
+   /* Primaries this submission renders into (see set_written_primaries). */
+   if (written_primary_count_) {
+      submit.NumPrimaries = written_primary_count_;
+      memcpy(submit.WrittenPrimaries, written_primaries_, written_primary_count_ * sizeof(D3DKMT_HANDLE));
+      written_primary_count_ = 0;
+   }
    // From this point allocations must not be destroyed until completion or
    // context cancellation. Every error path first destroys the context,
    // except a redirected present the kernel refuses before queuing anything
@@ -224,6 +230,62 @@ uint64_t Device::submit(uint64_t commands, uint32_t bytes, const std::vector<uin
       pending_.emplace_back(++next_seq_, event);
    } catch (...) { if (!refused) abort_context(); throw; }
    return next_seq_;
+}
+void Device::set_written_primaries(const D3DKMT_HANDLE *primaries, unsigned count)
+{
+   written_primary_count_ = count < 4 ? count : 4;
+   memcpy(written_primaries_, primaries, written_primary_count_ * sizeof(D3DKMT_HANDLE));
+}
+/* What DXGI does to enter its full-screen state (tools/dev/trace-d3d11-present.ps1
+ * -Fullscreen): exclusive owner of the output, then the mode with our primary.
+ * The mode itself (size, refresh rate) does not change: the primary has the
+ * size of the current one. */
+LONG Device::acquire_output(D3DKMT_HANDLE primary)
+{
+   if (lost_ || !device_) return (LONG)0xC0000001;   /* STATUS_UNSUCCESSFUL */
+   if (!owns_output_) {
+      D3DKMT_VIDPNSOURCEOWNER_TYPE type = D3DKMT_VIDPNSOURCEOWNER_EXCLUSIVE;
+      D3DDDI_VIDEO_PRESENT_SOURCE_ID source = 0;
+      D3DKMT_SETVIDPNSOURCEOWNER owner{};
+      owner.hDevice = device_; owner.pType = &type; owner.pVidPnSourceId = &source; owner.VidPnSourceCount = 1;
+      const LONG owned = D3DKMTSetVidPnSourceOwner(&owner);
+      if (owned < 0) return owned;
+      owns_output_ = true;
+   }
+   D3DKMT_SETDISPLAYMODE mode{};
+   mode.hDevice = device_; mode.hPrimaryAllocation = primary;
+   mode.ScanLineOrdering = D3DDDI_VSSLO_PROGRESSIVE; mode.DisplayOrientation = D3DDDI_ROTATION_IDENTITY;
+   const LONG set = D3DKMTSetDisplayMode(&mode);
+   if (set < 0) release_output();
+   return set;
+}
+void Device::release_output() noexcept
+{
+   if (owns_output_ && device_) {
+      D3DKMT_SETVIDPNSOURCEOWNER release{};   /* no sources: the output goes back to the desktop */
+      release.hDevice = device_;
+      D3DKMTSetVidPnSourceOwner(&release);
+   }
+   owns_output_ = false;
+}
+LONG Device::flip(D3DKMT_HANDLE primary, HWND window, uint32_t width, uint32_t height, uint32_t interval)
+{
+   if (!owns_output_ || lost_) return (LONG)0xC01E0000;   /* STATUS_GRAPHICS_NOT_EXCLUSIVE_MODE_OWNER */
+   RECT rect{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+   D3DKMT_PRESENT present{};
+   present.hContext = context_; present.hWindow = window; present.VidPnSourceId = 0; present.hSource = primary;
+   present.SrcRect = rect; present.SubRectCnt = 1; present.pSrcSubRects = &rect;
+   present.PresentCount = ++present_count_;
+   present.FlipInterval = static_cast<D3DDDI_FLIPINTERVAL_TYPE>(interval > 4 ? 4 : interval);
+   present.Flags.Flip = 1; present.Flags.PresentCountValid = 1;
+   LONG status = D3DKMTPresent(&present);
+   if (status == (LONG)0xC01E0005) {   /* STATUS_GRAPHICS_PRESENT_MODE_CHANGED: set the mode again, as DXGI does */
+      D3DKMT_SETDISPLAYMODE mode{};
+      mode.hDevice = device_; mode.hPrimaryAllocation = primary;
+      mode.ScanLineOrdering = D3DDDI_VSSLO_PROGRESSIVE; mode.DisplayOrientation = D3DDDI_ROTATION_IDENTITY;
+      if (D3DKMTSetDisplayMode(&mode) >= 0) status = D3DKMTPresent(&present);
+   }
+   return status;
 }
 void Buffer::flush(uint64_t offset, uint64_t bytes) const
 {
@@ -282,6 +344,7 @@ void Device::abort_context() noexcept
 }
 void Device::close() noexcept
 {
+   release_output();
    abort_context();
    if (completed_) { CloseHandle(completed_); completed_ = nullptr; }
    for (auto &entry : pending_) CloseHandle(entry.second);
@@ -395,6 +458,38 @@ Buffer::Buffer(Device &device, WindowSurfaceTag, uint32_t width, uint32_t height
       D3DDDI_MAKERESIDENT resident{};
       resident.hPagingQueue = device_.queue(); resident.NumAllocations = 1; resident.AllocationList = &allocation_;
       check(D3DKMTMakeResident(&resident), "MakeResident (window surface)");
+      device_.wait_paging(resident.PagingFenceValue);
+      std::lock_guard<std::mutex> lock(device_.buffers_mutex_);
+      device_.buffers_.push_back(this);
+   } catch (...) { close(); throw; }
+}
+Buffer::Buffer(Device &device, PrimaryTag, uint32_t width, uint32_t height)
+   : device_(device), cpu_tracking_(0), owns_va_(true), primary_(true)
+{
+   if (device.lost() || !width || !height || width > 16384 || height > 16384) throw std::runtime_error("Invalid primary size");
+   try {
+      auto metadata = primary_metadata(width, height);
+      D3DDDI_ALLOCATIONINFO2 info{};
+      info.pPrivateDriverData = metadata.data(); info.PrivateDriverDataSize = static_cast<UINT>(metadata.size());
+      info.VidPnSourceId = 0; info.Flags.Primary = 1;
+      D3DKMT_CREATEALLOCATION create{};
+      create.hDevice = device_.handle(); create.NumAllocations = 1; create.pAllocationInfo2 = &info; create.Flags.CreateResource = 1;
+      check(D3DKMTCreateAllocation2(&create), "CreateAllocation2 (primary)");
+      resource_ = create.hResource; allocation_ = info.hAllocation;
+      /* The kernel driver's completed description. */
+      uint32_t tile = 0;
+      memcpy(&pitch_, metadata.data() + 0xc0, 8); memcpy(&bytes_, metadata.data() + 0xd0, 8); memcpy(&tile, metadata.data() + 0x170, 4);
+      if (tile != 1 || pitch_ < width * 4ull || (pitch_ & 511) || !bytes_ || (bytes_ & 4095) || bytes_ < pitch_ * height)
+         throw std::runtime_error("Primary layout is not the expected X-tiled one");
+      D3DDDI_MAPGPUVIRTUALADDRESS map{};
+      map.hPagingQueue = device_.queue(); map.hAllocation = allocation_;
+      map.MinimumAddress = gpu_min; map.MaximumAddress = gpu_max; map.SizeInPages = bytes_ / 4096; map.Protection.Value = 1;
+      check(D3DKMTMapGpuVirtualAddress(&map), "MapGpuVirtualAddress (primary)");
+      address_ = map.VirtualAddress;
+      device_.wait_paging(map.PagingFenceValue);
+      D3DDDI_MAKERESIDENT resident{};
+      resident.hPagingQueue = device_.queue(); resident.NumAllocations = 1; resident.AllocationList = &allocation_;
+      check(D3DKMTMakeResident(&resident), "MakeResident (primary)");
       device_.wait_paging(resident.PagingFenceValue);
       std::lock_guard<std::mutex> lock(device_.buffers_mutex_);
       device_.buffers_.push_back(this);

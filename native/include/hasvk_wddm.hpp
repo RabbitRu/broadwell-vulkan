@@ -30,7 +30,9 @@ std::vector<uint8_t> linear_metadata(uint64_t bytes);
 std::vector<uint8_t> command_header_8192();
 std::vector<uint8_t> window_surface_metadata(uint32_t width, uint32_t height);
 std::vector<uint8_t> window_surface_runtime_data(uint32_t width, uint32_t height);
+std::vector<uint8_t> primary_metadata(uint32_t width, uint32_t height);
 struct WindowSurfaceTag {};
+struct PrimaryTag {};
 
 // Stage-2 transport. Private allocation/submit data is supplied explicitly by
 // the caller; this does not claim to generate Intel's resource descriptions.
@@ -62,6 +64,19 @@ public:
     * flushes FLUSH_AFTER buffers. pending_event/retire_oldest let a caller
     * wait without holding its own lock (the C API does that). */
    uint64_t submit(uint64_t commands, uint32_t bytes, const std::vector<uint8_t> &header, uint64_t present_token = 0);
+   /* Presentation without the compositor: exclusive ownership of VidPn source
+    * 0 and flips between primaries (Buffer with PrimaryTag), as DXGI's
+    * full-screen state does it. acquire_output takes the output and sets the
+    * mode to primary; flip shows primary (interval 0: at once, 1..4: at that
+    * vertical blank) behind everything submitted so far. Both return the
+    * kernel's status; a failed flip means the output is no longer ours.
+    * written_primaries names the primaries the next submission renders into:
+    * the kernel holds it back while one of them is still on the screen. */
+   LONG acquire_output(D3DKMT_HANDLE primary);
+   void release_output() noexcept;
+   bool owns_output() const { return owns_output_; }
+   LONG flip(D3DKMT_HANDLE primary, HWND window, uint32_t width, uint32_t height, uint32_t interval);
+   void set_written_primaries(const D3DKMT_HANDLE *primaries, unsigned count);
    void wait(uint64_t seq, DWORD timeout_ms = 15000);
    /* Oldest pending submission's event and number if seq is not complete, else null. */
    HANDLE pending_event(uint64_t seq, uint64_t *oldest = nullptr) const;
@@ -72,6 +87,7 @@ public:
    void free_va(uint64_t address, uint64_t bytes);
    void shutdown();
    D3DKMT_HANDLE handle() const { return device_; }
+   D3DKMT_HANDLE context() const { return context_; }
    D3DKMT_HANDLE queue() const { return paging_.hPagingQueue; }
    bool lost() const { return lost_; }
    void abort_context() noexcept;
@@ -100,6 +116,10 @@ private:
    std::deque<std::pair<uint64_t, HANDLE>> pending_;   // submissions not yet retired, oldest first
    std::vector<HANDLE> free_events_;
    uint64_t next_seq_ = 0, completed_seq_ = 0;
+   bool owns_output_ = false;
+   uint32_t present_count_ = 0;
+   D3DKMT_HANDLE written_primaries_[4]{};
+   unsigned written_primary_count_ = 0;
    bool lost_ = false;
    bool cancellation_failed_ = false;
    std::atomic<unsigned> cleanup_errors_{0};
@@ -126,6 +146,11 @@ public:
    /* Shared window surface for redirected present (not CPU-mapped). share()
     * is its global handle, pitch() the row pitch the kernel driver chose. */
    Buffer(Device &device, WindowSurfaceTag, uint32_t width, uint32_t height);
+   /* Primary of VidPn source 0 (not CPU-mapped, X-tiled): pitch() is the row
+    * pitch the kernel driver chose, allocation() the handle flips name. */
+   Buffer(Device &device, PrimaryTag, uint32_t width, uint32_t height);
+   bool primary() const { return primary_; }
+   D3DKMT_HANDLE allocation() const { return allocation_; }
    uint32_t share() const { return share_; }
    uint64_t pitch() const { return pitch_; }
    ~Buffer();
@@ -150,6 +175,7 @@ private:
    D3DKMT_HANDLE resource_ = 0, opened_resource_ = 0;   // window surfaces only
    uint32_t share_ = 0;
    uint64_t pitch_ = 0;
+   bool primary_ = false;
    void *cpu_ = nullptr;
    uint64_t address_ = 0, bytes_ = 0;
    bool owns_va_ = true;

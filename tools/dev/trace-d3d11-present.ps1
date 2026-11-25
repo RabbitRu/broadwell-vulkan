@@ -1,5 +1,7 @@
 param([int]$Frames = 4, [ValidateSet('discard', 'sequential', 'flip_discard', 'flip_sequential')][string]$SwapEffect = 'discard',
-      [int]$SyncInterval = 1, [switch]$NoHook)
+      [int]$SyncInterval = 1, [switch]$NoHook, [switch]$Fullscreen)
+# -Fullscreen: DXGI's full-screen state (exclusive output, presents are flips);
+# the log is calls-<effect>-<interval>-fullscreen.log.
 # -NoHook: no syscall log, 200 presents back to back and their mean wall and
 # thread CPU time (calls-<effect>-<interval>-nohook.log).
 # Research (hypothesis E7): trace the D3DKMT calls Intel's D3D11 driver and the
@@ -17,8 +19,8 @@ try {
         /Fe:D3D11PresentTrace.exe /link d3d11.lib dxgi.lib opengl32.lib user32.lib gdi32.lib psapi.lib dwmapi.lib | Out-Null
     $ErrorActionPreference = 'Stop'
     if ($LASTEXITCODE) { throw 'D3D11 present trace build failed' }
-    $taskLog = Join-Path $taskOut ("calls-$SwapEffect-$SyncInterval" + $(if ($NoHook) { '-nohook' } else { '' }) + '.log')
-    $taskArgs = @($taskLog, $(if ($NoHook) { 200 } else { $Frames }), $SwapEffect, $SyncInterval) + $(if ($NoHook) { @('nohook') } else { @() })
+    $taskLog = Join-Path $taskOut ("calls-$SwapEffect-$SyncInterval" + $(if ($NoHook) { '-nohook' } else { '' }) + $(if ($Fullscreen) { '-fullscreen' } else { '' }) + '.log')
+    $taskArgs = @($taskLog, $(if ($NoHook) { 200 } else { $Frames }), $SwapEffect, $SyncInterval, $(if ($NoHook) { 'nohook' } else { 'hook' })) + $(if ($Fullscreen) { @('fullscreen') } else { @() })
     $taskProcess = Start-Process -FilePath (Join-Path $taskOut 'D3D11PresentTrace.exe') -ArgumentList $taskArgs -PassThru -NoNewWindow
     if (-not $taskProcess.WaitForExit(60000)) { $taskProcess.Kill(); throw 'D3D11 present trace exceeded 60 s' }
     if ($taskProcess.ExitCode) { throw "D3D11 present trace failed: $($taskProcess.ExitCode)" }

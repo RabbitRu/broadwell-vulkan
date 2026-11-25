@@ -49,6 +49,22 @@ std::vector<uint8_t> window_surface_runtime_data(uint32_t width, uint32_t height
    for (const auto &field : fields) memcpy(data.data() + field[0], &field[1], 4);
    return data;
 }
+/* Primary of an output (scan-out surface) for exclusive flips: B8G8R8A8. Traced
+ * from the buffers Intel's D3D11 driver creates for DXGI's full-screen state
+ * (tools/dev/trace-d3d11-present.ps1 -Fullscreen); only width and height vary.
+ * The kernel driver completes the description in place: X tiling (0x170 = 1),
+ * pitch (0xc0), size (0xd0), 256 KiB alignment (0x58). */
+std::vector<uint8_t> primary_metadata(uint32_t width, uint32_t height)
+{
+   std::vector<uint8_t> metadata(1096, 0);
+   const uint32_t fields[][2] = {
+      {0x0, 3}, {0x8, 2}, {0xc, 0x17}, {0x10, 0x20}, {0x14, 0x00500200}, {0x18, 2}, {0x1c, 0x20100000},
+      {0x28, width}, {0x30, height}, {0x34, 1}, {0x3c, 1}, {0x40, 0x1e}, {0x4c, 1}, {0x50, 1}, {0x194, 0x15},
+      {0x3ac, 0x14330000}, {0x3b0, 0x1000fc20}, {0x3b4, 0x004450c0},
+   };
+   for (const auto &field : fields) memcpy(metadata.data() + field[0], &field[1], 4);
+   return metadata;
+}
 std::vector<uint8_t> command_header_8192()
 {
    // Header field 20 has only been validated for an 8192-byte command BO.

@@ -76,7 +76,27 @@ deleted at any time.
 |---|---|
 | `HASVK_WDDM_INTERNAL_CACHE=0` | do not read or write the shader cache files |
 | `HASVK_WDDM_PRESENT=gdi` | present through GDI with a copy through the CPU (a fallback) |
+| `HASVK_WDDM_PRESENT_FLIP=0` | never take the output for a window that covers the screen: DWM composes it like any other window (see below) |
 | `INTEL_PRECISE_TRIG=0` | turn off the `sin`/`cos` precision workaround (a multiplication by 0.99997 that keeps the result within [−1, 1]); on by default |
+
+## A window that covers the screen
+
+A game in "borderless window" mode at the screen's resolution (IMMEDIATE or
+FIFO present mode) is shown without the desktop compositor: while its window
+is in the foreground with nothing above it, the driver owns the display output
+and flips the game's frames onto it, as an exclusive full-screen application
+does. When another window is activated or appears above (Alt+Tab, a
+notification, the volume indicator), the output goes back to the desktop
+within a few hundredths of a second and the game is composed like any window
+until it is alone again. What this changes:
+
+- frames are not copied by DWM (in Dota 2 at 2560×1600 this is worth about a
+  tenth of the frame rate);
+- with IMMEDIATE the picture can tear, as that mode allows;
+- screen capture through GDI (`BitBlt` of the screen) shows the desktop
+  behind the game; Desktop Duplication and the game's own screenshots work.
+
+`HASVK_WDDM_PRESENT_FLIP=0` turns this off.
 
 ## Limitations
 
