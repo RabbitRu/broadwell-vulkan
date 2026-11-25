@@ -940,6 +940,20 @@ image_after = gen8_only(image_after, [
       view.swizzle = ISL_SWIZZLE_IDENTITY;
 ''', ''),
 ])
+# CCS_D (colour fast clears) only where it was checked: 2D images with one
+# level and one layer. With more, multisample resolves into mip level 3 and
+# into array layer 1 came out wrong (CTS multisample_resolve.*_resolve_level_3,
+# *_baseLayer1). Swapchain images have none either: DWM shows them as they
+# are, without a resolve.
+_ccs_old = '''      ok = isl_surf_get_ccs_surf(&device->isl_dev,
+'''
+assert image_after.count(_ccs_old) == 1
+image_after = image_after.replace(_ccs_old, '''#ifdef _WIN32
+      if (image->vk.image_type != VK_IMAGE_TYPE_2D || image->vk.mip_levels > 1 ||
+          image->vk.array_layers > 1 || image->from_wsi)
+         return VK_SUCCESS;
+#endif
+''' + _ccs_old)
 edit(image_name, [(image_before, image_after)])
 # A shader upload that fails (out of memory) is returned to the caller, which
 # skips the operation; the driver marks the command buffer failed. Upstream

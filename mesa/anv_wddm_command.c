@@ -126,6 +126,7 @@ static void command_resources_init(struct anv_cmd_buffer *cmd)
    cmd->vk.dynamic_graphics_state.ms.sample_locations = &cmd->state.gfx.sample_locations;
    cmd->batch.status = VK_SUCCESS;
    cmd->batch.extend_cb = command_extend; cmd->batch.user_data = cmd;
+   cmd->wddm->ccs_resolved_count = 0;
    /* Allocated or reset but not being recorded: no storage and no binding
     * table block. Each took 64 KiB of the driver's own memory per command
     * buffer, and 10000 idle command buffers (CTS

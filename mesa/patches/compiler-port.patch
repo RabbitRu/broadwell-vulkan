@@ -1348,7 +1348,19 @@
     } else if ((aspect & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV) && image->vk.samples == 1) {
        if (image->n_planes != 1) {
           /* Multiplanar images seem to hit a sampler bug with CCS and R16G16
-@@ -623,7 +622,7 @@
+@@ -611,6 +610,11 @@
+          return VK_SUCCESS;
+       }
+ 
++#ifdef _WIN32
++      if (image->vk.image_type != VK_IMAGE_TYPE_2D || image->vk.mip_levels > 1 ||
++          image->vk.array_layers > 1 || image->from_wsi)
++         return VK_SUCCESS;
++#endif
+       ok = isl_surf_get_ccs_surf(&device->isl_dev,
+                                  &image->planes[plane].primary_surface.isl,
+                                  &image->planes[plane].aux_surface.isl,
+@@ -623,7 +627,7 @@
        enum anv_image_memory_binding binding =
           ANV_IMAGE_MEMORY_BINDING_PLANE_0 + plane;
  
@@ -1357,7 +1369,7 @@
           binding = ANV_IMAGE_MEMORY_BINDING_PRIVATE;
  
        result = add_surface(device, image, &image->planes[plane].aux_surface,
-@@ -849,7 +848,7 @@
+@@ -849,7 +853,7 @@
            * buffer (ANV_IMAGE_MEMORY_BINDING_PRIVATE).
            */
           if (anv_image_is_externally_shared(image) &&
@@ -1366,7 +1378,7 @@
              binding = ANV_IMAGE_MEMORY_BINDING_PRIVATE;
           }
  
-@@ -913,14 +912,14 @@
+@@ -913,14 +917,14 @@
                       const struct anv_image *image)
  {
     /* Image must have a modifier if and only if it has modifier tiling. */
@@ -1384,7 +1396,7 @@
  
     /* Driver must support the modifier. */
     assert(isl_drm_modifier_get_score(device->info, isl_mod_info->modifier));
-@@ -1175,6 +1174,22 @@
+@@ -1175,6 +1179,22 @@
     const struct isl_drm_modifier_info *isl_mod_info = NULL;
     VkResult r;
  
@@ -1407,7 +1419,7 @@
     vk_image_init(&device->vk, &image->vk, pCreateInfo);
  
     image->vk.usage = anv_image_create_usage(pCreateInfo, image->vk.usage);
-@@ -1198,8 +1213,10 @@
+@@ -1198,8 +1218,10 @@
        }
  
        assert(isl_mod_info);
@@ -1419,7 +1431,7 @@
     }
  
     for (int i = 0; i < ANV_IMAGE_MEMORY_BINDING_END; ++i) {
-@@ -1769,7 +1786,7 @@
+@@ -1769,7 +1791,7 @@
           UNREACHABLE("bad VkImageAspectFlags");
        }
  
@@ -1428,7 +1440,7 @@
           assert(image->n_planes == 1);
           /* If the memory binding differs between primary and aux, then the
            * returned offset will be incorrect.
-@@ -1922,7 +1939,7 @@
+@@ -1922,7 +1944,7 @@
        assert(image->vk.aspects == VK_IMAGE_ASPECT_COLOR_BIT);
  
        enum isl_aux_state aux_state =
@@ -1437,7 +1449,7 @@
  
        switch (aux_state) {
        case ISL_AUX_STATE_AUX_INVALID:
-@@ -1971,7 +1988,7 @@
+@@ -1971,7 +1993,7 @@
         *
         * TODO: Should we be disabling this in more cases?
         */
@@ -1446,7 +1458,7 @@
           aux_supported = false;
           clear_supported = false;
        }
-@@ -2002,6 +2019,17 @@
+@@ -2002,6 +2024,17 @@
     }
  
     switch (aux_usage) {
@@ -1464,7 +1476,7 @@
     case ISL_AUX_USAGE_CCS_D:
        /* We only support clear in exactly one state */
        if (layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
-@@ -2125,7 +2153,7 @@
+@@ -2125,7 +2158,7 @@
     /* We don't support MSAA fast-clears on Ivybridge or Bay Trail because they
      * lack the MI ALU which we need to determine the predicates.
      */
@@ -1473,7 +1485,7 @@
        return ANV_FAST_CLEAR_NONE;
  
     enum isl_aux_state aux_state =
-@@ -2228,22 +2256,9 @@
+@@ -2228,22 +2261,9 @@
        surface = &image->planes[plane].shadow_surface;
     }
  
@@ -1496,7 +1508,7 @@
  
     /* If this is a HiZ buffer we can sample from with a programmable clear
      * value (SKL+), define the clear value to the optimal constant.
-@@ -2316,7 +2331,7 @@
+@@ -2316,7 +2336,7 @@
           assert(ok);
           isl_surf = &tmp_surf;
  
@@ -1505,7 +1517,7 @@
              assert(surface->isl.tiling == ISL_TILING_LINEAR);
              assert(tile_x_sa == 0);
              assert(tile_y_sa == 0);
-@@ -2331,7 +2346,7 @@
+@@ -2331,7 +2351,7 @@
        state_inout->aux_address = aux_address;
  
        struct anv_address clear_address = ANV_NULL_ADDRESS;
@@ -1514,7 +1526,7 @@
           clear_address = anv_image_get_clear_color_addr(device, image, aspect);
        }
        state_inout->clear_address = clear_address;
-@@ -2362,7 +2377,7 @@
+@@ -2362,7 +2382,7 @@
           state_inout->aux_address.offset |= *aux_addr_dw & 0xfff;
        }
  
@@ -11028,7 +11040,7 @@
 +static inline uint64_t intel_48b_address(uint64_t address) { return address & 0xffffffffffffull; }
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_device.c
-@@ -0,0 +1,1151 @@
+@@ -0,0 +1,1153 @@
 +/* Windows platform for real HasVK objects, compute and Mesa runtime.
 + * This experimental ICD is not yet a conformant Vulkan implementation.
 + * Graphics pipelines and presentation remain disabled. */
@@ -11491,11 +11503,13 @@
 +    * depth_clip_control and any viewport with minDepth != 0. */
 +   instance->drirc.quality.lower_depth_range_rate = 1.0f;
 +   process_intel_debug_variable();
-+   /* No CCS_D: on this GPU it only speeds up colour fast clears, and with it a
-+    * multisample resolve into mip level 3 came out wrong (CTS renderpass1
-+    * multisample_resolve.*_resolve_level_3); limited to single-level,
-+    * single-layer images it measured no faster in Dota 2. HiZ and MCS stay on. */
-+   BITSET_SET(intel_debug, DEBUG_NO_CCS);
++   /* CCS_D (colour fast clears) is on for 2D images with one level and one
++    * layer that are not swapchain images (anv_image.c, apply-compiler-port.py):
++    * a clear of the whole image to zeros and ones marks blocks instead of
++    * writing every pixel. Writes of a window-size image slow the CPU down
++    * (shared memory), so this is worth more than its GPU time: Dota 2 clears a
++    * 2560x1600 image every frame and does not use it. HiZ and MCS are on as
++    * well; INTEL_DEBUG=noccs turns CCS off. */
 +   /* A failed driver assert would otherwise open a modal CRT message box and
 +    * keep the application (a game, an unattended test) waiting for a click:
 +    * print it to stderr and end the process instead, without the abort()
@@ -12182,7 +12196,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm.h
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,221 @@
 +/* Private Windows platform state for the HasVK port. */
 +#pragma once
 +#include "anv_private.h"
@@ -12351,6 +12365,12 @@
 +    * present, the commands run without it and *present_refused is set. */
 +   uint64_t present_token;
 +   int *present_refused;
++   /* Colour images whose fast clear (CCS) this recording has resolved and has
++    * not fast-cleared since: their fast-clear state is known to be "none", so
++    * a layout transition needs no predicated resolve (transition_color_buffer,
++    * graphics_sources.py). Emptied by vkCmdExecuteCommands. */
++   const struct anv_image *ccs_resolved[16];
++   uint32_t ccs_resolved_count;
 +};
 +/* Executes command buffers in order, chaining them into as few kernel
 + * submissions as their event waits and repetitions allow. serial != 0: the
@@ -12400,7 +12420,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_memory.c
-@@ -0,0 +1,679 @@
+@@ -0,0 +1,687 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -12984,13 +13004,21 @@
 +   memcpy(&surface_address, (const char *)view->surface_state.map + 32, 8);
 +   return surface_address == expected ? 0 : -1;
 +}
++/* The image's memory holds every pixel: no aux surface, or CCS_D, whose only
++ * state besides "as in memory" is a pending fast clear, and that is resolved
++ * when the image leaves COLOR_ATTACHMENT_OPTIMAL (the callers read images
++ * after such a transition). */
++static bool image_memory_readable(const struct anv_image *image)
++{
++   return image->planes[0].aux_usage == ISL_AUX_USAGE_NONE || image->planes[0].aux_usage == ISL_AUX_USAGE_CCS_D;
++}
 +/* Readback diagnostics only: shader execution is validated separately through
 + * an SSBO. This independent CPU detile checks the actual image allocation. */
 +PUBLIC int hasvk_wddm_icd_read_image(VkImage handle, void *rgba, uint64_t bytes, uint32_t *tiling)
 +{
 +   ANV_FROM_HANDLE(anv_image, image, handle);
 +   if (!image || !rgba || !tiling || (image->vk.format != VK_FORMAT_R8G8B8A8_UNORM && image->vk.format != VK_FORMAT_D16_UNORM) ||
-+       image->planes[0].aux_usage != ISL_AUX_USAGE_NONE) return -1;
++       !image_memory_readable(image)) return -1;
 +   const struct anv_surface *surface = &image->planes[0].primary_surface;
 +   const struct isl_surf *surf = &surface->isl;
 +   const struct anv_address address = anv_image_address(image, &surface->memory_range);
@@ -13013,7 +13041,7 @@
 +PUBLIC int hasvk_wddm_icd_read_image_level(VkImage handle, uint32_t level, uint32_t layer, void *out, uint64_t bytes, uint32_t *position)
 +{
 +   ANV_FROM_HANDLE(anv_image, image, handle);
-+   if (!image || !out || !position || image->planes[0].aux_usage != ISL_AUX_USAGE_NONE) return -1;
++   if (!image || !out || !position || !image_memory_readable(image)) return -1;
 +   const struct anv_surface *surface = &image->planes[0].primary_surface;
 +   const struct isl_surf *surf = &surface->isl;
 +   const struct isl_format_layout *layout = isl_format_get_layout(surf->format);
@@ -13436,7 +13464,7 @@
 +}
 --- /dev/null
 +++ b/src/intel/vulkan_hasvk/anv_wddm_command.c
-@@ -0,0 +1,548 @@
+@@ -0,0 +1,549 @@
 +/* Windows lifetime and submission backing for HasVK command buffers.
 + * Packet emission, descriptor binding and push packing use upstream HasVK.
 + *
@@ -13565,6 +13593,7 @@
 +   cmd->vk.dynamic_graphics_state.ms.sample_locations = &cmd->state.gfx.sample_locations;
 +   cmd->batch.status = VK_SUCCESS;
 +   cmd->batch.extend_cb = command_extend; cmd->batch.user_data = cmd;
++   cmd->wddm->ccs_resolved_count = 0;
 +   /* Allocated or reset but not being recorded: no storage and no binding
 +    * table block. Each took 64 KiB of the driver's own memory per command
 +    * buffer, and 10000 idle command buffers (CTS
@@ -22989,7 +23018,7 @@
 +
 --- /dev/null
 +++ b/src/intel/wddm_compiler/anv_wddm_graphics_gen8.c
-@@ -0,0 +1,5648 @@
+@@ -0,0 +1,5696 @@
 +/*
 + * Copyright © 2015 Intel Corporation
 + *
@@ -23507,12 +23536,44 @@
 +#define MI_PREDICATE_SRC1    0x2408
 +#define MI_PREDICATE_RESULT  0x2418
 +
++/* anv_wddm_cmd_state::ccs_resolved */
++static bool
++ccs_resolved_find(struct anv_cmd_buffer *cmd_buffer,
++                  const struct anv_image *image, bool forget)
++{
++   struct anv_wddm_cmd_state *w = cmd_buffer->wddm;
++   for (uint32_t i = 0; i < w->ccs_resolved_count; i++) {
++      if (w->ccs_resolved[i] != image)
++         continue;
++      if (forget)
++         w->ccs_resolved[i] = w->ccs_resolved[--w->ccs_resolved_count];
++      return true;
++   }
++   return false;
++}
++
++static void
++ccs_resolved_add(struct anv_cmd_buffer *cmd_buffer,
++                 const struct anv_image *image)
++{
++   struct anv_wddm_cmd_state *w = cmd_buffer->wddm;
++   if (ccs_resolved_find(cmd_buffer, image, false))
++      return;
++   /* Forgetting an image only costs it one predicated resolve. */
++   if (w->ccs_resolved_count == ARRAY_SIZE(w->ccs_resolved))
++      w->ccs_resolved_count--;
++   w->ccs_resolved[w->ccs_resolved_count++] = image;
++}
++
 +static void
 +set_image_fast_clear_state(struct anv_cmd_buffer *cmd_buffer,
 +                           const struct anv_image *image,
 +                           VkImageAspectFlagBits aspect,
 +                           enum anv_fast_clear_type fast_clear)
 +{
++   if (fast_clear != ANV_FAST_CLEAR_NONE)
++      ccs_resolved_find(cmd_buffer, image, true);
++
 +   anv_batch_emit(&cmd_buffer->batch, GENX(MI_STORE_DATA_IMM), sdi) {
 +      sdi.Address = anv_image_get_fast_clear_type_addr(cmd_buffer->device,
 +                                                       image, aspect);
@@ -24094,6 +24155,16 @@
 +    * resolve and the second likely ensures that the resolve is complete before
 +    * we do any more rendering or clearing.
 +    */
++
++   /* Fast clears exist only on the first slice of a single-sample image
++    * (anv_can_fast_clear_color_view); the predicated resolve below covers it.
++    */
++   const bool ccs_first_slice = image->vk.samples == 1 && base_level == 0 &&
++                                base_layer == 0 && !will_full_fast_clear;
++   if (ccs_first_slice && level_count == 1 && layer_count == 1 &&
++       ccs_resolved_find(cmd_buffer, image, false))
++      return;
++
 +   anv_add_pending_pipe_bits(cmd_buffer,
 +                             ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
 +                             ANV_PIPE_END_OF_PIPE_SYNC_BIT,
@@ -24146,6 +24217,9 @@
 +                             ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
 +                             ANV_PIPE_END_OF_PIPE_SYNC_BIT,
 +                             "after transition RT");
++
++   if (ccs_first_slice)
++      ccs_resolved_add(cmd_buffer, image);
 +}
 +
 +static MUST_CHECK VkResult
@@ -24425,6 +24499,9 @@
 +   ANV_FROM_HANDLE(anv_cmd_buffer, primary, commandBuffer);
 +
 +   assert(primary->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY);
++
++   /* A secondary may fast-clear (it can begin its own rendering). */
++   primary->wddm->ccs_resolved_count = 0;
 +
 +   if (anv_batch_has_error(&primary->batch))
 +      return;

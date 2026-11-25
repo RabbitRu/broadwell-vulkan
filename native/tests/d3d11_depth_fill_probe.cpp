@@ -4,7 +4,8 @@
  * the HLSL of depth_fill_light.frag, depth_fill_mad.frag, depth_fill_kill.frag).
  * [order] 1 = front to back (only the first layer passes); PS invocations
  * are reported (pipeline statistics).
- * Usage: d3d11_depth_fill_probe.exe none|empty|discard|light|mad|kill [reps] [layers] [order] */
+ * color: one sample written to an RGBA8 render target of the same size.
+ * Usage: d3d11_depth_fill_probe.exe none|empty|discard|light|mad|kill|color [reps] [layers] [order] */
 #define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
@@ -34,6 +35,17 @@ SamplerState smp : register(s0);
 void main(float4 pos : SV_Position, float2 uv : TEXCOORD0)
 {
    if (tex.Sample(smp, uv * 4).a < 0.5) discard;
+}
+)";
+
+/* "color": the sampled texel written to an RGBA8 render target of the depth
+ * buffer's size (for the surface states of a render target and a texture). */
+static const char kColor[] = R"(
+Texture2D<float4> tex : register(t0);
+SamplerState smp : register(s0);
+float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
+{
+   return tex.Sample(smp, uv * 4);
 }
 )";
 
@@ -89,7 +101,7 @@ int main(int argc, char **argv)
    ID3D11VertexShader *vs; CHECK(dev->CreateVertexShader(vsb->GetBufferPointer(), vsb->GetBufferSize(), nullptr, &vs));
    ID3D11PixelShader *pixel = nullptr;
    if (strcmp(mode, "none")) {
-      ID3DBlob *psb = compile(!strcmp(mode, "empty") ? kEmpty : !strcmp(mode, "light") ? kLight : !strcmp(mode, "mad") ? kMad : !strcmp(mode, "kill") ? kKill : kDiscard, "ps_5_0"); if (!psb) return 1;
+      ID3DBlob *psb = compile(!strcmp(mode, "empty") ? kEmpty : !strcmp(mode, "light") ? kLight : !strcmp(mode, "mad") ? kMad : !strcmp(mode, "kill") ? kKill : !strcmp(mode, "color") ? kColor : kDiscard, "ps_5_0"); if (!psb) return 1;
       CHECK(dev->CreatePixelShader(psb->GetBufferPointer(), psb->GetBufferSize(), nullptr, &pixel));
    }
    D3D11_TEXTURE2D_DESC td{}; td.Width = td.Height = size; td.MipLevels = td.ArraySize = 1; td.Format = DXGI_FORMAT_R16_TYPELESS;
@@ -124,7 +136,14 @@ int main(int argc, char **argv)
    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
    ctx->VSSetShader(vs, nullptr, 0); ctx->PSSetShader(pixel, nullptr, 0); ctx->VSSetConstantBuffers(0, 1, &cb);
    ctx->PSSetShaderResources(0, 1, &srv); ctx->PSSetSamplers(0, 1, &sampler);
-   ctx->OMSetRenderTargets(0, nullptr, dsv); ctx->OMSetDepthStencilState(dss, 0);
+   ID3D11RenderTargetView *rtv = nullptr;
+   if (!strcmp(mode, "color")) {
+      D3D11_TEXTURE2D_DESC rtd{}; rtd.Width = rtd.Height = size; rtd.MipLevels = rtd.ArraySize = 1; rtd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+      rtd.SampleDesc.Count = 1; rtd.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+      ID3D11Texture2D *color; CHECK(dev->CreateTexture2D(&rtd, nullptr, &color));
+      CHECK(dev->CreateRenderTargetView(color, nullptr, &rtv));
+   }
+   ctx->OMSetRenderTargets(rtv ? 1 : 0, rtv ? &rtv : nullptr, dsv); ctx->OMSetDepthStencilState(dss, 0);
    ctx->RSSetState(rs); ctx->RSSetViewports(1, &vp);
    double best = 1e9;
    for (int rep = 0; rep < reps; ++rep) {

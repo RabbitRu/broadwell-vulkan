@@ -22,20 +22,24 @@ there are no per-game profiles.
   against 114–117: the whole gap is shadows, not the driver.
 
 **Dota 2** (a match replay as a timedemo, 2,999 frames, window 2560×1600
-borderless, render scale 0.4, lowest settings): Vulkan 25.5–26.3 FPS against
-25.4–26.2 on DX11 (24.11.2026, fans at full speed: 26.04, 26.31, 25.77 against
-25.97, 26.18, 26.06). Before presentation without a copy it was 23.2–24.7
-against 26.0–26.9.
+borderless, render scale 0.4, lowest settings): Vulkan 24.9–25.7 FPS against
+24.8–25.4 on DX11 (25.11.2026, with colour fast clears: 25.72, 24.87, 25.12
+against 25.40, 24.76, 25.39 after a warm-up run; 24.11.2026, before them:
+26.04, 26.31, 25.77 against 25.97, 26.18, 26.06 — the same build differs more
+from day to day than the two APIs do). Before presentation without a copy it
+was 23.2–24.7 against 26.0–26.9.
 
 - The frame is bound by the CPU time of the game's own code. The game submits
   the whole frame with one `vkQueueSubmit`; the GPU needs about 22–25 ms for it
   and idles for about 14 ms per frame. GPU time per frame is the same under
   both APIs.
-- Less GPU work would not speed the CPU up here: during the replay it runs at
-  about 3.0 GHz (111 % of its base clock) with no performance limit in any of
-  the 30 samples (`-Sample`, 24.11.2026, fans at full speed). In Talos, with
-  the GPU 86–91 % busy, it runs at 2.56–2.68 GHz and is limited in most
-  samples.
+- The CPU is not power limited here: during the replay it runs at about
+  3.0 GHz (111 % of its base clock) with no performance limit in any of the 30
+  samples (`-Sample`, 24.11.2026, fans at full speed); in Talos, with the GPU
+  86–91 % busy, it runs at 2.56–2.68 GHz and is limited in most samples. The
+  GPU costs frames another way: what it writes into window-size images slows
+  the game's code through the shared memory (see "Window-size passes slow the
+  CPU down").
 - The driver is almost absent from the critical path: 0.3 % of the main
   thread's samples. Command recording takes about 2.8 ms per frame on the
   game's render thread, which mostly waits. Under DX11 Intel's driver thread
@@ -61,6 +65,7 @@ against 26.0–26.9.
 | Dynamic buffer surface state from a template | draw recording −5 % on the replay bench |
 | All pipelines in the driver's cache file | Dota 2 no longer compiles every pipeline on every start |
 | Command buffer memory allocated when recording begins, small first blocks | Dota 2's thousands of small command buffers fit the driver's memory |
+| Colour fast clears (CCS_D) for 2D images with one level and layer; their resolve recorded once per command buffer | Dota 2 +2–4 % (an image of the window's size that the game clears and does not use) |
 | ELK: constants of a loop loaded before the loop, not in every iteration | FMA loop +8 % |
 | ELK: bank conflicts of three-source instructions modelled as measured (below) | FMA loop +3 % |
 | ELK: two constants of one instruction never share a register | FMA loop +11 % |
@@ -77,8 +82,8 @@ old build alone spread 24.6–27.6). What these changes speed up (three-source
 arithmetic, the compare of a `discard`) is a small part of either frame.
 
 Many other ideas were measured and rejected (PMA workaround variants, MOCS and
-L3 cache settings, CCS_D fast clears, 2 MiB alignment, compiler flags, game
-console variables and more). The registry of those experiments is in the
+L3 cache settings, 2 MiB alignment, compiler flags, game console variables
+and more). The registry of those experiments is in the
 history of this file and in the `debug` branch, which also keeps the
 measurement switches they used.
 
@@ -124,7 +129,7 @@ Dota 2, replay window, 25.3 FPS, 25.1 ms of passes per frame:
 | 1024×640 RGBA16F + D24S8, ×2.6, ~76 draws | 4.3 | |
 | 2560×1600 BGRA8 sRGB + D24S8, ×20.6, ~13 draws | 2.7 | interface |
 | 2560×1600 BGRA8 sRGB, ×2 (one draw of a 4-instruction shader: 1.31 ms) | 1.5 | upscale to the window |
-| 2560×1600 RGBA8 sRGB, clear only | 1.0 | 16 MB at 16 GB/s, the GPU's write speed |
+| 2560×1600 RGBA8 sRGB, clear only | 1.0 | 16 MB at 16 GB/s, the GPU's write speed; a fast clear since CCS_D is on (below) |
 | 2560×1600 depth/stencil clears, ×2 | 1.1 | sampled depth cleared to 1.0: not fast (see below) |
 | copies, small passes | ~4 | |
 
@@ -141,6 +146,68 @@ main pass 2.5, the depth prepass 1.0, the rest under 0.4 each. The shadow
 maps are reverse Z and get HiZ fast clears; on the same draw Intel's driver
 is not faster (registry of the debug branch, C6): the gap to DX11 is the
 game's own work.
+
+## Window-size passes slow the CPU down
+
+Dota 2's frame is bound by the CPU, the CPU is not power limited there, and
+still the GPU's work costs frames: what the GPU writes into window-size
+images slows the game's own code through the shared memory. Measured on
+25.11.2026 with a switch that shrinks render areas to 16×16 pixels (the
+picture is wrong, the replay and the game's CPU work are the same):
+
+| Dota 2 replay, 2560×1600 | FPS | Frame, ms | Client Simulation, ms | Client Rendering, ms |
+|---|---|---|---|---|
+| as it is | 25.73, 24.74 | 40.3 | 12.9 | 23.6 |
+| passes at least 2048 wide shrunk (6.6 ms of GPU work) | 30.18, 29.60 | 34.2 | 10.5 | 20.3 |
+| every pass shrunk (the GPU does almost nothing) | 32.62, 31.30 | 31.9 | 9.7 | 18.9 |
+
+(Sections from the game's own `timedemo_profile.csv`; physics and animation
+get 20 % shorter as well.) The six milliseconds of window-size passes cost
+almost six milliseconds of frame; the 15 ms of scene passes, which compute
+and sample but write little, cost two. So bytes written to memory matter
+here, not GPU time.
+
+- **Not the cache policy.** Render targets and depth of 8 MiB and more
+  without LLC caching (MOCS 0x38): 25.46, 25.59. Intel's value for everything
+  (0x79, found in its surface states; Mesa uses 0x78): 25.31, 24.99.
+- **Not the write path.** One sample written to an RGBA8 target of 1536²,
+  8 layers (`depth_fill_probe` depth mode 3, `d3d11_depth_fill_probe color`):
+  4.23–4.35 ms here, 4.24–4.27 ms on Intel's driver.
+- **What Dota 2 does with its window-size images** (a log of one frame):
+  - an RGBA8 image of 2560×1600 is cleared to (0, 0, 0, 1) every frame and
+    never drawn into, sampled or copied: 16 MB written for nothing;
+  - the depth/stencil image is cleared twice, for the scene (which then uses
+    1024×640 of it) and for the interface; each clear takes 0.52 ms, half of
+    a colour clear of that size, and fast clears of depth to 1.0 (wrong
+    picture, upper bound) gave 25.45, 24.16 against 23.88–24.71: nothing;
+  - the scene is stretched to the window by one draw (16 MB), and the
+    interface is about four million blended pixels in 20 passes;
+  - DWM composes the window under both APIs (5 % of the GPU and 12–13 % of a
+    logical CPU in `dwm.exe`, with Vulkan and with DX11 alike).
+- **Colour fast clears (CCS_D)** take the unused clear away: the time of the
+  window-size passes goes from 6.65 to 5.43 ms per frame. An image that is
+  sampled after a fast clear is resolved first, which writes what the clear
+  did not (time between passes 0.75 → 1.41–1.48 ms), so the gain is the
+  unused image. Two interleaved series: 25.31, 26.05, 25.97, 26.22 against
+  23.88, 24.71, 24.06, and 25.22, 24.08, 25.25, 26.17, 25.27 against 24.84,
+  24.26, 24.14, 25.05, 25.29 (25.50 against 24.53 on average). The Talos
+  Principle does not change: 78.3, 79.2, 78.9, 76.8 against 77.4, 78.6, 80.2,
+  79.1.
+- **Resolves that are known to do nothing are not recorded.** Every layout
+  transition of a CCS image out of the attachment layout records a resolve
+  that the GPU skips unless the image is fast-cleared; skipped, it still
+  costs two end-of-pipe flushes, and Dota 2 makes about 40 such transitions
+  per frame. After the first one in a command buffer the answer is known
+  until that command buffer fast-clears the image again: 1.41, 1.48 ms
+  between passes against 1.60, 1.61.
+
+Open: presenting through the flip model, so that DWM does not compose a
+borderless window of the screen's size. It would save DWM's copy of 2560×1600
+per frame, which the DX11 path of the game also pays.
+
+The switches of these measurements (shrunk render areas, the frame log, MOCS,
+pass times with `vkCmdBeginRendering`) are a patch in the `debug` branch,
+`tools/measure-2026-11-25`.
 
 ## ELK against Intel's compiler
 

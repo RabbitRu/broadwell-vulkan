@@ -26,7 +26,7 @@ version the ICD exposes no device.
   - The Talos Principle: 70–83 FPS against 79–87 (27.8 at the start of the
     work). The gap is the game's own Vulkan path; with shadow rendering off
     Vulkan is not slower.
-  - Dota 2 (a replay as a timedemo): 25.5–25.7 FPS against 25.4–26.1 at
+  - Dota 2 (a replay as a timedemo): 24.9–25.7 FPS against 24.8–25.4 at
     2560×1600, and 1–3 % faster than DX11 at 1280×800.
 - A GPU hang on this version of Intel's kernel driver has twice ended in a
   Windows bug check. Both causes found were fixed and no CTS test is known to

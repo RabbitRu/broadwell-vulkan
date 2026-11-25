@@ -460,11 +460,13 @@ VKAPI_ATTR VkResult VKAPI_CALL anv_CreateInstance(const VkInstanceCreateInfo *in
     * depth_clip_control and any viewport with minDepth != 0. */
    instance->drirc.quality.lower_depth_range_rate = 1.0f;
    process_intel_debug_variable();
-   /* No CCS_D: on this GPU it only speeds up colour fast clears, and with it a
-    * multisample resolve into mip level 3 came out wrong (CTS renderpass1
-    * multisample_resolve.*_resolve_level_3); limited to single-level,
-    * single-layer images it measured no faster in Dota 2. HiZ and MCS stay on. */
-   BITSET_SET(intel_debug, DEBUG_NO_CCS);
+   /* CCS_D (colour fast clears) is on for 2D images with one level and one
+    * layer that are not swapchain images (anv_image.c, apply-compiler-port.py):
+    * a clear of the whole image to zeros and ones marks blocks instead of
+    * writing every pixel. Writes of a window-size image slow the CPU down
+    * (shared memory), so this is worth more than its GPU time: Dota 2 clears a
+    * 2560x1600 image every frame and does not use it. HiZ and MCS are on as
+    * well; INTEL_DEBUG=noccs turns CCS off. */
    /* A failed driver assert would otherwise open a modal CRT message box and
     * keep the application (a game, an unattended test) waiting for a click:
     * print it to stderr and end the process instead, without the abort()

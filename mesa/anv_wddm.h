@@ -166,6 +166,12 @@ struct anv_wddm_cmd_state {
     * present, the commands run without it and *present_refused is set. */
    uint64_t present_token;
    int *present_refused;
+   /* Colour images whose fast clear (CCS) this recording has resolved and has
+    * not fast-cleared since: their fast-clear state is known to be "none", so
+    * a layout transition needs no predicated resolve (transition_color_buffer,
+    * graphics_sources.py). Emptied by vkCmdExecuteCommands. */
+   const struct anv_image *ccs_resolved[16];
+   uint32_t ccs_resolved_count;
 };
 /* Executes command buffers in order, chaining them into as few kernel
  * submissions as their event waits and repetitions allow. serial != 0: the

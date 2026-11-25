@@ -81,7 +81,7 @@ else { "  built d3d11-proxy\d3d11.dll" }
 if (Test-Path -LiteralPath $Glslang) {
    $shaders = [ordered]@{ 'flops.comp' = 'flops.spv'; 'sample.comp' = 'sample.spv'; 'depth_fill.vert' = 'depth_fill.vert.spv';
       'depth_fill_discard.frag' = 'depth_fill_discard.frag.spv'; 'depth_fill_empty.frag' = 'depth_fill_empty.frag.spv';
-      'depth_fill_light.frag' = 'depth_fill_light.frag.spv'; 'depth_fill_mad.frag' = 'depth_fill_mad.frag.spv'; 'depth_fill_kill.frag' = 'depth_fill_kill.frag.spv';
+      'depth_fill_light.frag' = 'depth_fill_light.frag.spv'; 'depth_fill_mad.frag' = 'depth_fill_mad.frag.spv'; 'depth_fill_kill.frag' = 'depth_fill_kill.frag.spv'; 'depth_fill_color.frag' = 'depth_fill_color.frag.spv';
       'vs_fetch.vert' = 'vs_fetch.vert.spv'; 'replay_pos.vert' = 'replay_pos.spv'; 'replay_t4.vert' = 'replay_t4.spv';
       'replay_trivial.vert' = 'replay_trivial.spv'; 'replay_v4.vert' = 'replay_v4.spv' }
    foreach ($shader in $shaders.Keys) {

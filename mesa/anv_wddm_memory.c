@@ -581,13 +581,21 @@ PUBLIC int hasvk_wddm_icd_check_buffer_descriptor(VkDescriptorSet handle, uint32
    memcpy(&surface_address, (const char *)view->surface_state.map + 32, 8);
    return surface_address == expected ? 0 : -1;
 }
+/* The image's memory holds every pixel: no aux surface, or CCS_D, whose only
+ * state besides "as in memory" is a pending fast clear, and that is resolved
+ * when the image leaves COLOR_ATTACHMENT_OPTIMAL (the callers read images
+ * after such a transition). */
+static bool image_memory_readable(const struct anv_image *image)
+{
+   return image->planes[0].aux_usage == ISL_AUX_USAGE_NONE || image->planes[0].aux_usage == ISL_AUX_USAGE_CCS_D;
+}
 /* Readback diagnostics only: shader execution is validated separately through
  * an SSBO. This independent CPU detile checks the actual image allocation. */
 PUBLIC int hasvk_wddm_icd_read_image(VkImage handle, void *rgba, uint64_t bytes, uint32_t *tiling)
 {
    ANV_FROM_HANDLE(anv_image, image, handle);
    if (!image || !rgba || !tiling || (image->vk.format != VK_FORMAT_R8G8B8A8_UNORM && image->vk.format != VK_FORMAT_D16_UNORM) ||
-       image->planes[0].aux_usage != ISL_AUX_USAGE_NONE) return -1;
+       !image_memory_readable(image)) return -1;
    const struct anv_surface *surface = &image->planes[0].primary_surface;
    const struct isl_surf *surf = &surface->isl;
    const struct anv_address address = anv_image_address(image, &surface->memory_range);
@@ -610,7 +618,7 @@ PUBLIC int hasvk_wddm_icd_read_image(VkImage handle, void *rgba, uint64_t bytes,
 PUBLIC int hasvk_wddm_icd_read_image_level(VkImage handle, uint32_t level, uint32_t layer, void *out, uint64_t bytes, uint32_t *position)
 {
    ANV_FROM_HANDLE(anv_image, image, handle);
-   if (!image || !out || !position || image->planes[0].aux_usage != ISL_AUX_USAGE_NONE) return -1;
+   if (!image || !out || !position || !image_memory_readable(image)) return -1;
    const struct anv_surface *surface = &image->planes[0].primary_surface;
    const struct isl_surf *surf = &surface->isl;
    const struct isl_format_layout *layout = isl_format_get_layout(surf->format);

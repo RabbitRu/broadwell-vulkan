@@ -216,6 +216,110 @@ def hiz_clear_value(hardware, blorp):
     return hardware, blorp
 
 
+def ccs_resolved_images(hardware):
+    """Layout transitions of a colour image with CCS out of
+    COLOR_ATTACHMENT_OPTIMAL record a resolve that the GPU skips unless the
+    image is fast-cleared (the predicate is its fast-clear state in memory).
+    The skipped resolve still costs its state and two end-of-pipe flushes, and
+    an application that draws into an image and samples it many times per
+    frame (Dota 2: about 40 such transitions) pays that every time.
+
+    Within one command buffer the answer is known: after a resolve recorded
+    earlier in the same recording the state is "none" until this recording
+    fast-clears the image again, because nothing else runs in between. Such
+    transitions record nothing. A secondary command buffer may fast-clear, so
+    vkCmdExecuteCommands forgets everything; other command buffers only run
+    before or after this one, and the first transition of each recording still
+    asks the GPU."""
+    old = '''static void
+set_image_fast_clear_state(struct anv_cmd_buffer *cmd_buffer,
+                           const struct anv_image *image,
+                           VkImageAspectFlagBits aspect,
+                           enum anv_fast_clear_type fast_clear)
+{
+'''
+    assert hardware.count(old) == 1
+    hardware = hardware.replace(old, '''/* anv_wddm_cmd_state::ccs_resolved */
+static bool
+ccs_resolved_find(struct anv_cmd_buffer *cmd_buffer,
+                  const struct anv_image *image, bool forget)
+{
+   struct anv_wddm_cmd_state *w = cmd_buffer->wddm;
+   for (uint32_t i = 0; i < w->ccs_resolved_count; i++) {
+      if (w->ccs_resolved[i] != image)
+         continue;
+      if (forget)
+         w->ccs_resolved[i] = w->ccs_resolved[--w->ccs_resolved_count];
+      return true;
+   }
+   return false;
+}
+
+static void
+ccs_resolved_add(struct anv_cmd_buffer *cmd_buffer,
+                 const struct anv_image *image)
+{
+   struct anv_wddm_cmd_state *w = cmd_buffer->wddm;
+   if (ccs_resolved_find(cmd_buffer, image, false))
+      return;
+   /* Forgetting an image only costs it one predicated resolve. */
+   if (w->ccs_resolved_count == ARRAY_SIZE(w->ccs_resolved))
+      w->ccs_resolved_count--;
+   w->ccs_resolved[w->ccs_resolved_count++] = image;
+}
+
+''' + old + '''   if (fast_clear != ANV_FAST_CLEAR_NONE)
+      ccs_resolved_find(cmd_buffer, image, true);
+
+''')
+    old = '''    * we do any more rendering or clearing.
+    */
+   anv_add_pending_pipe_bits(cmd_buffer,
+                             ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
+                             ANV_PIPE_END_OF_PIPE_SYNC_BIT,
+                             "after transition RT");
+'''
+    assert hardware.count(old) == 1
+    hardware = hardware.replace(old, '''    * we do any more rendering or clearing.
+    */
+
+   /* Fast clears exist only on the first slice of a single-sample image
+    * (anv_can_fast_clear_color_view); the predicated resolve below covers it.
+    */
+   const bool ccs_first_slice = image->vk.samples == 1 && base_level == 0 &&
+                                base_layer == 0 && !will_full_fast_clear;
+   if (ccs_first_slice && level_count == 1 && layer_count == 1 &&
+       ccs_resolved_find(cmd_buffer, image, false))
+      return;
+
+   anv_add_pending_pipe_bits(cmd_buffer,
+                             ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
+                             ANV_PIPE_END_OF_PIPE_SYNC_BIT,
+                             "after transition RT");
+''')
+    old = '''   anv_add_pending_pipe_bits(cmd_buffer,
+                             ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
+                             ANV_PIPE_END_OF_PIPE_SYNC_BIT,
+                             "after transition RT");
+}
+'''
+    assert hardware.count(old) == 1
+    hardware = hardware.replace(old, old[:-2] + '''
+   if (ccs_first_slice)
+      ccs_resolved_add(cmd_buffer, image);
+}
+''')
+    old = '''   ANV_FROM_HANDLE(anv_cmd_buffer, primary, commandBuffer);
+
+   assert(primary->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+'''
+    assert hardware.count(old) == 1
+    return hardware.replace(old, old + '''
+   /* A secondary may fast-clear (it can begin its own rendering). */
+   primary->wddm->ccs_resolved_count = 0;
+''')
+
+
 def empty_descriptor_buffer(hardware):
     """A set without a descriptor buffer (its layout has no buffer, storage
     image or inline uniform binding: anv_descriptor_set_create leaves desc_addr
@@ -513,6 +617,7 @@ anv_wddm_upstream_capabilities(const struct anv_physical_device *pdevice, struct
     hardware = dynamic_buffer_surface_state(hardware)
     hardware = empty_descriptor_buffer(hardware)
     hardware = empty_descriptor_buffer_push(hardware)
+    hardware = ccs_resolved_images(hardware)
     # A failed shader upload (out of memory) marks the command buffer failed:
     # vkEndCommandBuffer then reports it instead of BLORP asserting.
     marker = '''                               NULL, 0, NULL, &bind_map);

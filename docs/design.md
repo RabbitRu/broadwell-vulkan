@@ -45,8 +45,12 @@ expects inside the documented calls is described in
   for Gen8.
 - HiZ for depth is restored: upstream HasVK computed the HiZ surface and
   dropped it, and without it a depth pass is 10 times slower than Intel's
-  driver. MCS is on. CCS_D is off: it only speeds up fast color clears and
-  resolves into mip level 3 were wrong with it.
+  driver. MCS is on. CCS_D (colour fast clears) is on for 2D images with one
+  level and one layer that are not swapchain images: with more levels or
+  layers multisample resolves into mip level 3 and array layer 1 were wrong,
+  and DWM shows swapchain images without a resolve. A layout transition
+  records its fast-clear resolve only once per command buffer, until that
+  command buffer fast-clears the image again.
 - Gen8 only: other generations are removed from the build and generation
   checks fold to constants (`gen8_fold()`).
 - The driver is built by clang-cl with `-march=broadwell` and a PGO profile,

@@ -98,7 +98,8 @@ All tests run on the real GPU and need no interaction.
   `vs_fetch_probe.exe` takes a sixth argument that changes fixed-function
   state (cull mode, topology, primitive restart, ...); `depth_fill_probe.exe`
   one that chooses the depth clear (1.0 sampled, reverse Z 0.0, 1.0 not
-  sampled). `run-dota.ps1` and `run-talos.ps1` take `-D3D11Proxy`; for Dota 2
+  sampled) or adds an RGBA8 colour target (3, with `depth_fill_color.frag`;
+  `d3d11_depth_fill_probe color` is its twin). `run-dota.ps1` and `run-talos.ps1` take `-D3D11Proxy`; for Dota 2
   the proxy needs `D3D11_PROXY_SEGMENTS=<n>` (no frame end is visible to it).
 - `bench-frames.py` (frame tables), `talos-sections.py` (frame sections in
   milliseconds per API), `rip-compare.py` (code samples of two runs compared).

@@ -6,7 +6,9 @@
  * [order] 1 = front to back (only the first layer passes the depth test);
  * fragment shader invocations are reported (pipeline statistics).
  * [depth] 0 = cleared to 1.0, LESS_OR_EQUAL, image also SAMPLED (default);
- * 1 = reverse Z: cleared to 0.0, GREATER_OR_EQUAL; 2 = as 0 without SAMPLED usage.
+ * 1 = reverse Z: cleared to 0.0, GREATER_OR_EQUAL; 2 = as 0 without SAMPLED usage;
+ * 3 = as 0 with an RGBA8 colour target of the same size (depth_fill_color.frag
+ * writes it; d3d11_depth_fill_probe color).
  * Usage: depth_fill_probe.exe <vert.spv> <frag.spv|none> [reps] [layers] [order] [depth] */
 #define NOMINMAX
 #define VK_NO_PROTOTYPES
@@ -85,11 +87,20 @@ int main(int argc, char **argv)
       depth_mode == 2 ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
    VkAttachmentReference ref{0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
    VkSubpassDescription sub{}; sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS; sub.pDepthStencilAttachment = &ref;
-   VkRenderPassCreateInfo rpi{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO}; rpi.attachmentCount = 1; rpi.pAttachments = &att;
+   const bool color = depth_mode == 3;
+   VkImage color_image; VkImageView views[2] = {depth_view, VK_NULL_HANDLE};
+   if (color) CHECK(make_image(VK_FORMAT_R8G8B8A8_UNORM, size, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                               VK_IMAGE_ASPECT_COLOR_BIT, &color_image, &views[1]));
+   const VkAttachmentDescription atts[2] = {att, {0, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+      VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED,
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+   const VkAttachmentReference color_ref{1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   if (color) { sub.colorAttachmentCount = 1; sub.pColorAttachments = &color_ref; }
+   VkRenderPassCreateInfo rpi{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO}; rpi.attachmentCount = color ? 2 : 1; rpi.pAttachments = atts;
    rpi.subpassCount = 1; rpi.pSubpasses = &sub;
    VkRenderPass pass; CHECK(vkCreateRenderPass(d, &rpi, nullptr, &pass));
-   VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO}; fbi.renderPass = pass; fbi.attachmentCount = 1;
-   fbi.pAttachments = &depth_view; fbi.width = fbi.height = size; fbi.layers = 1;
+   VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO}; fbi.renderPass = pass; fbi.attachmentCount = color ? 2 : 1;
+   fbi.pAttachments = views; fbi.width = fbi.height = size; fbi.layers = 1;
    VkFramebuffer framebuffer; CHECK(vkCreateFramebuffer(d, &fbi, nullptr, &framebuffer));
    VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; li.bindingCount = 1; li.pBindings = &binding;
@@ -114,6 +125,8 @@ int main(int argc, char **argv)
    VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO}; ds.depthTestEnable = ds.depthWriteEnable = VK_TRUE;
    ds.depthCompareOp = depth_mode == 1 ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL;
    VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+   VkPipelineColorBlendAttachmentState blend{}; blend.colorWriteMask = 0xf;
+   if (color) { cb.attachmentCount = 1; cb.pAttachments = &blend; }
    VkGraphicsPipelineCreateInfo gpi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO}; gpi.stageCount = has_fs ? 2 : 1; gpi.pStages = stages;
    gpi.pVertexInputState = &vin; gpi.pInputAssemblyState = &ia; gpi.pViewportState = &vp; gpi.pRasterizationState = &rs;
    gpi.pMultisampleState = &ms; gpi.pDepthStencilState = &ds; gpi.pColorBlendState = &cb; gpi.layout = layout; gpi.renderPass = pass;
@@ -177,9 +190,9 @@ int main(int argc, char **argv)
       if (ms < best) best = ms;
       CHECK(vkGetQueryPoolResults(d, sp, 0, 1, 8, &fs_invocations, 8, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
    }
-   static const char *const modes[] = {"clear 1.0 sampled", "reverse Z, clear 0.0 sampled", "clear 1.0 not sampled"};
+   static const char *const modes[] = {"clear 1.0 sampled", "reverse Z, clear 0.0 sampled", "clear 1.0 not sampled", "clear 1.0 sampled, colour target"};
    printf("vulkan %s %s, %s: best %.3f ms for %u layers -> %.2f Gpixels/s, %.2fM FS invocations\n", has_fs ? strrchr(argv[2], '\\') ? strrchr(argv[2], '\\') + 1 : argv[2] : "no FS",
-          front_to_back ? "front-to-back" : "back-to-front", modes[depth_mode >= 0 && depth_mode <= 2 ? depth_mode : 0], best, layers,
+          front_to_back ? "front-to-back" : "back-to-front", modes[depth_mode >= 0 && depth_mode <= 3 ? depth_mode : 0], best, layers,
           (double)size * size * layers / (best / 1000) / 1e9, fs_invocations / 1e6);
    const uint32_t primitive[] = {0x7b000005}; DumpKernelCandidates(primitive, 1, 256, "-batch", 8192); DumpFoundWords();
    return 0;
