@@ -46,9 +46,11 @@ against 26.0–26.9.
   thread's samples. Command recording takes about 2.8 ms per frame on the
   game's render thread, which mostly waits. Under DX11 Intel's driver thread
   spends 16 ms per frame.
-- The gap existed only at the full window size. In a 1280×800 window Vulkan is
-  1–3 % faster than DX11 at every render scale (41.2 against 40.3 FPS at 0.4,
-  37.2 against 36.8 at 1.0).
+- A lower display resolution gives little: full screen at 1280×800 with the
+  same scene runs at 32.6–33.2 FPS against 29.4–30.1 at 2560×1600 on the same
+  day, and DX11 at 29.3–29.7 (see "Lower display resolutions"; the 37–41 FPS
+  that earlier versions of this file gave for a 1280×800 window were a
+  measurement error).
 - What remains at 2560×1600 is in the game: its worker thread takes 22.6 ms per
   frame under Vulkan against 19.6, across almost all modules.
 
@@ -245,6 +247,45 @@ Dota 2, the flips on and off in turn (`HASVK_WDDM_PRESENT_FLIP=0`),
 nothing, its CPU time from 12.6 % to 9.5 % of a logical CPU. The game's DX11
 path is composed by DWM as well (5.1 % of the GPU).
 
+## Lower display resolutions
+
+In the game's exclusive full-screen mode the display runs at the game's
+resolution and the panel stretches the picture, which costs nothing. The
+driver's flips work in every mode: the swapchain's images are primaries of
+the mode's size. Measured on 26.11.2026 with the mouse pointer in the middle
+of the screen (below); the render scale keeps the scene at 1024×640 unless
+noted, so only the passes of the window's size shrink:
+
+| Display mode (render scale) | Vulkan, FPS | DX11, FPS |
+|---|---|---|
+| 2560×1600 (0.4), borderless window | 30.07, 29.40, 29.90 | 25.94 |
+| 1920×1200 (0.533) | 31.14 | |
+| 1440×900 (0.711) | 32.10 | |
+| 1280×800 (0.8) | 33.22, 32.55 | 29.32, 29.65 |
+| 1280×800 (0.6): scene 768×480 | 34.44 | |
+| 1280×800 (0.4): scene 512×320 | 35.20 | |
+
+A quarter of the window's pixels is worth 3 FPS (the frame goes from 33.6 to
+30.4 ms) and a quarter of the scene's pixels 2 more: the frame is the game's
+CPU work, and neither size takes much of it away. Under DX11 the game's
+full-screen mode is DXGI's, which DWM does not compose either, and Vulkan is
+11 % ahead there as well.
+
+**The mouse pointer is part of this benchmark.** At a screen edge the pointer
+scrolls the replay's camera, which ends in a corner of the map under the fog
+of war (seen in screenshots of both runs). There the two scene passes hold
+about 130 draws per frame instead of about 245, and the same replay gives
+38.95 FPS instead of 29.15 at 2560×1600 (41.28 against 28.52 in a 1280×800
+window, where the game keeps the pointer inside the window, at its corner).
+The game's own profile tells the two apart: Frame Boundary takes 3.3–3.5 ms
+with the camera in the corner and 8–9 ms on the action. The measurements of a
+1280×800 window of 21.11.2026 (37–41 FPS, Vulkan 1–3 % faster than DX11 at
+every render scale) have the profile of the scrolled camera under both APIs
+(Frame Boundary 3.7–3.9 ms) and are withdrawn. The series at the full window
+size in this file have the profile of the action (8.5–11 ms).
+`run-dota.ps1` now puts the pointer in the middle of the screen 20 s after
+the start and rejects a run during which it is found near an edge.
+
 ## ELK against Intel's compiler
 
 `flops.comp` (a loop of eight FMA chains) ran at 0.84 of Intel's driver: 4.86
@@ -378,6 +419,8 @@ Build the driver (`tools\build-icd.ps1`) and the probes
 .\tools\dev\test-flip-probe.ps1 -Exe build\probes\d3d11_flip_probe.exe -Arguments '10','flip_discard','1'
 .\tools\dev\test-flip.ps1
 .\tools\dev\run-dota.ps1 -Tag noflip -Env HASVK_WDDM_PRESENT_FLIP=0
+# the game's full-screen mode at a lower display resolution, the scene's size kept
+.\tools\dev\run-dota.ps1 -Tag s1280 -Screen 1280x800 -Extra '+mat_viewportscale 0.8'
 # analysis
 .\.tools\python\python.exe -I tools\dev\rip-compare.py <dx.rip.txt> <FPS> <vk.rip.txt> <FPS>
 .\.tools\python\python.exe -I tools\dev\talos-sections.py --since 2026-11-19T20:00

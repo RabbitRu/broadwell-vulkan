@@ -88,7 +88,10 @@ and flips the game's frames onto it, as an exclusive full-screen application
 does. When another window is activated or appears above (Alt+Tab, a
 notification, the volume indicator), the output goes back to the desktop
 within a few hundredths of a second and the game is composed like any window
-until it is alone again. What this changes:
+until it is alone again. A game's full-screen mode at a lower resolution is
+shown the same way: the game changes the display's mode, its window covers the
+screen in that mode, and the panel stretches the picture (measured with
+Dota 2 at 1280×800, 1440×900 and 1920×1200). What this changes:
 
 - frames are not copied by DWM (in Dota 2 at 2560×1600 this is worth about a
   tenth of the frame rate);

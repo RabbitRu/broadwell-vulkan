@@ -94,7 +94,13 @@ All tests run on the real GPU and need no interaction.
 - `run-dota.ps1` plays a Dota 2 replay as a timedemo under Vulkan or DX11
   (always with `-insecure`); `run-talos.ps1` runs the built-in benchmark of The
   Talos Principle. `-Sample` adds per-thread CPU time, CPU frequency and GPU
-  load in the measured window, `-RipModule` adds sampled stacks.
+  load in the measured window, `-RipModule` adds sampled stacks. `-Screen
+  1280x800` runs Dota 2 in its exclusive full-screen mode at that resolution.
+  The mouse pointer is part of Dota 2's result: at a screen edge it scrolls
+  the replay's camera into an empty corner of the map and the run comes out
+  10 FPS faster, so `run-dota.ps1` puts the pointer in the middle of the
+  screen and rejects a run during which it is found near an edge. Do not touch
+  the mouse during a run.
 - `build-probes.ps1` builds the micro-benchmarks, the `rip_sampler` profiler
   and a `d3d11.dll` proxy that breaks a DX11 frame down. With
   `D3D11_PROBE_DUMP=<prefix>` the D3D11 micro-benchmarks save the kernel that

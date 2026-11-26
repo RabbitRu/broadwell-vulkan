@@ -11,11 +11,24 @@ command-line convars (fps_max ...) are written into them on exit.
 Never waits for a person: a modal dialog, a crash or -TimeoutSeconds ends the
 run (the process is killed) and it is reported as failed.
 
+The mouse pointer is part of the measurement: at a screen edge it scrolls the
+replay's camera to the corner of the map, where there is nothing to draw, and
+the run comes out 10 FPS faster (39 against 29 at 2560x1600). So the pointer
+is put in the middle of the screen 20 s after the start, and a run during
+which it is found near an edge is reported as not comparable (exit code 1).
+Do not touch the mouse during a run.
+
   -Api Vulkan|Direct3D11
   -Icd <json>        Vulkan only: VK_DRIVER_FILES (default: build\icd; "installed"
                      uses the registered ICD)
   -Demo name         replay in game\dota\replays (default 9093360730)
   -Start/-End tick   timedemo window (timedemo_start/timedemo_end); 30 ticks a second
+  -Screen WxH        the game's exclusive full-screen mode at that resolution
+                     (-fullscreen -w W -h H): the game changes the display's mode
+                     for the run and Windows puts it back when the game exits. The
+                     scene's size follows the window: pass +mat_viewportscale too
+                     to keep it (0.8 at 1280x800 is 0.4 at 2560x1600). The display
+                     modes seen during the run are reported.
   -Env NAME=v,...    extra environment variables
   -Extra '...'       extra command line (+cvar value, -switch ...)  -Tag name          output name in build\dota
   -Sample            per-thread CPU, CPU frequency and GPU load for -SampleSeconds,
@@ -37,6 +50,7 @@ param(
    [int]$Start = 30000,
    [int]$End = 33000,
    [string[]]$Env = @(),
+   [ValidatePattern('^(\d+x\d+)?$')][string]$Screen = '',
    [string]$Extra = '',
    [string]$Tag = '',
    [int]$TimeoutSeconds = 600,
@@ -68,6 +82,37 @@ public static extern int GetClassName(System.IntPtr hwnd, System.Text.StringBuil
 [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool EnumChildWindows(System.IntPtr parent, EnumProc proc, System.IntPtr lparam);
 [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
 public static extern int GetWindowText(System.IntPtr hwnd, System.Text.StringBuilder text, int size);
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public struct DevMode {
+   [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName;
+   public ushort SpecVersion, DriverVersion, Size, DriverExtra; public uint Fields; public int X, Y; public uint Orientation, FixedOutput;
+   public short Color, Duplex, YResolution, TTOption, Collate;
+   [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 32)] public string FormName;
+   public ushort LogPixels; public uint BitsPerPel, Width, Height, DisplayFlags, Frequency, IcmMethod, IcmIntent, MediaType, DitherType, Reserved1, Reserved2, PanningWidth, PanningHeight;
+}
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern bool EnumDisplaySettingsW(string device, int mode, ref DevMode result);
+// The primary display's current mode (physical pixels, whatever this process's DPI awareness).
+public static string ScreenMode() {
+   var mode = new DevMode(); mode.Size = (ushort)System.Runtime.InteropServices.Marshal.SizeOf(typeof(DevMode));
+   return EnumDisplaySettingsW(null, -1, ref mode) ? mode.Width + "x" + mode.Height : "unknown";
+}
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)] public struct Point { public int X, Y; }
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
+// The mouse pointer to the middle of the screen; false when the mode is unknown.
+public static bool CenterPointer() {
+   var mode = new DevMode(); mode.Size = (ushort)System.Runtime.InteropServices.Marshal.SizeOf(typeof(DevMode));
+   return EnumDisplaySettingsW(null, -1, ref mode) && SetCursorPos((int)mode.Width / 2, (int)mode.Height / 2);
+}
+// Whether the pointer is within a tenth of the screen from one of its edges (or the answer is unknown).
+public static bool PointerNearEdge() {
+   var mode = new DevMode(); mode.Size = (ushort)System.Runtime.InteropServices.Marshal.SizeOf(typeof(DevMode)); Point p;
+   if (!EnumDisplaySettingsW(null, -1, ref mode) || !GetCursorPos(out p)) return true;
+   int w = (int)mode.Width, h = (int)mode.Height;
+   return p.X < w / 10 || p.X >= w - w / 10 || p.Y < h / 10 || p.Y >= h - h / 10;
+}
 public static string DialogText = "";
 public static bool HasDialog(uint pid) {
    bool found = false;
@@ -88,7 +133,8 @@ public static bool HasDialog(uint pid) {
 '@
 
 $apiSwitch = if ($Api -eq 'Vulkan') { '-vulkan' } else { '-dx11' }
-$cmdline = "-insecure -novid -nojoy -condebug $apiSwitch +fps_max 0 $Extra +timedemo replays/$Demo +timedemo_start $Start +timedemo_end $End " +
+$screenSwitch = if ($Screen) { '-fullscreen -w {0} -h {1}' -f ($Screen -split 'x') } else { '' }
+$cmdline = "-insecure -novid -nojoy -condebug $apiSwitch $screenSwitch +fps_max 0 $Extra +timedemo replays/$Demo +timedemo_start $Start +timedemo_end $End " +
            '-testscript_inline "Test_WaitForCheckPoint DemoPlaybackFinished; quit"'
 # The game appends a summary row to Source2BenchV2.csv and writes its own
 # per-section profile of the timedemo (vprof lite) to timedemo_profile.csv.
@@ -142,6 +188,9 @@ if ($Sample -or $RipModule) {
    $sampler = Start-Process powershell.exe -ArgumentList $samplerArgs -WindowStyle Hidden -PassThru -RedirectStandardError "$sampleOut.err"
 }
 $verdict = ''
+$screenModes = [ordered]@{}
+$pointerCentered = $false; $pointerEdgeSeconds = 0
+[void][DotaRun.Win]::SetProcessDPIAware()   # pointer positions in physical pixels
 try {
    if ($D3D11Proxy) { Copy-Item -LiteralPath $D3D11Proxy -Destination $proxyTarget; $proxyPlaced = $true }
    $watch = [Diagnostics.Stopwatch]::StartNew()
@@ -149,6 +198,11 @@ try {
    $stdout = $p.StandardOutput.ReadToEndAsync()
    $stderr = $p.StandardError.ReadToEndAsync()
    while (-not $p.WaitForExit(1000)) {
+      $screenModes[[DotaRun.Win]::ScreenMode()] += 1
+      # The pointer decides what the replay shows (see the header): to the middle once the game's
+      # window and display mode are there, and counted when it is found near an edge afterwards.
+      if (-not $pointerCentered -and $watch.Elapsed.TotalSeconds -ge 20) { $pointerCentered = [DotaRun.Win]::CenterPointer() }
+      elseif ($pointerCentered -and [DotaRun.Win]::PointerNearEdge()) { $pointerEdgeSeconds++ }
       if ($watch.Elapsed.TotalSeconds -gt $TimeoutSeconds) { $verdict = "timeout after $TimeoutSeconds s"; break }
       if ([DotaRun.Win]::HasDialog([uint32]$p.Id)) {
          Start-Sleep 2; [void][DotaRun.Win]::HasDialog([uint32]$p.Id)
@@ -170,6 +224,11 @@ if (Test-Path -LiteralPath $profile) { Copy-Item -LiteralPath $profile (Join-Pat
 $result = Get-Content -LiteralPath $console -ErrorAction SilentlyContinue | Select-String '\[Demo\] \d+ frames .* fps' | Select-Object -Last 1
 if ($result) { '  ' + ($result.Line -replace '^.*\[Demo\]\s*', '') }
 else { '  no timedemo result in console.log'; if (-not $verdict) { $verdict = 'no result' } }
+if ($pointerEdgeSeconds) {
+   "  NOT COMPARABLE: the mouse pointer was near a screen edge for $pointerEdgeSeconds s (the replay's camera follows it away from the action)"
+   if (-not $verdict) { $verdict = 'pointer near a screen edge' }
+}
+if ($Screen) { '  display modes seen, seconds: ' + (($screenModes.Keys | ForEach-Object { "$_ $($screenModes[$_])" }) -join ', ') }
 if ($D3D11Proxy) { "  D3D11 profile: $proxyLog" }
 if ($sampler) {
    if (-not $sampler.WaitForExit(120000)) { try { $sampler.Kill() } catch {} }

@@ -113,7 +113,9 @@ The CTS-found bugs and their fixes are listed in
   DXGI swap chain; only DXGI's full-screen state shows the application's
   buffer directly), which costs a copy of the screen per frame. The driver
   takes that state itself, as DXGI does it, with its own device:
-  - the images of a swapchain of the screen's size (IMMEDIATE or FIFO,
+  - the images of a swapchain of the screen's size (the display's mode when
+    the swapchain is created, so also a lower mode that a game has set for its
+    full-screen window; IMMEDIATE or FIFO,
     B8G8R8A8) are primaries of the output: X-tiled, no aux, allocated with the
     `Primary` flag and Intel's description of a primary;
   - at a present, if the window has no frame, covers the primary screen, is in
