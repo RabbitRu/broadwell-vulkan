@@ -2,8 +2,8 @@
 Full CTS mustpass run (vk-default, ~2.9 million cases, 8-10 hours), unattended
 and resumable.
 
-The mustpass lists of the CTS source tree are cut into chunks of -ChunkCases
-cases; each chunk is one run-cts.ps1 run (-Jobs processes, then a serial rerun
+The mustpass lists (of the CTS source tree, or their copy in the build tree
+when the sources are gone) are cut into chunks of -ChunkCases cases; each chunk is one run-cts.ps1 run (-Jobs processes, then a serial rerun
 of what did not pass). A chunk that already has a summary for this ICD binary
 is skipped, so the same command continues an interrupted run. After a chunk its
 logs are deleted (only summaries are kept: the .qpa logs of the whole run would
@@ -29,8 +29,11 @@ param([string]$Root = 'C:\VulkanCTS-local', [int]$Jobs = 2, [int]$ChunkCases = 2
                              'dEQP-VK.wsi.win32.swapchain.simulate_oom.min_image_count'))
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-$mustpass = Join-Path $Root 'src\external\vulkancts\mustpass\main\vk-default'
-if (-not (Test-Path -LiteralPath $mustpass)) { throw "mustpass lists not found: $mustpass" }
+# The lists of the source tree, or the copy the build puts next to deqp-vk.exe
+# (the same files; the source tree may be gone after the build).
+$mustpass = @('src\external\vulkancts\mustpass\main\vk-default', 'build\external\vulkancts\modules\vulkan\vk-default') |
+    ForEach-Object { Join-Path $Root $_ } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $mustpass) { throw "mustpass lists not found under ${Root}: src\external\vulkancts\mustpass\main\vk-default or build\external\vulkancts\modules\vulkan\vk-default" }
 $outDir = Join-Path $taskRoot 'build\cts-full'
 New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 $progress = Join-Path $outDir 'progress.log'
